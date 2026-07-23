@@ -42,6 +42,10 @@ type Proxy struct {
 	sxFails       int64        // atomic counter of consecutive failures
 	sxCooldownTil atomic.Int64 // unix nano; 0 = no cooldown
 	mu            sync.Mutex   // guards sxFails/sxCooldownTil updates
+
+	// Brave circuit breaker (mirrors the SearXNG pattern)
+	bvFails       int64        // atomic counter of consecutive failures
+	bvCooldownTil atomic.Int64 // unix nano; 0 = no cooldown
 }
 
 // New creates a Proxy with the given config, backends and cache.
@@ -133,6 +137,10 @@ func (p *Proxy) sufficient(r *searxng.Response) bool {
 // Uses context.Background() with BraveTimeout so the call survives upstream
 // client disconnections (which would cancel r.Context()).
 func (p *Proxy) braveOnlySearch(_ context.Context, key string) (*searxng.Response, error) {
+	if p.braveInCooldown() {
+		metrics.RequestsTotal.WithLabelValues("fallback_brave_fail").Inc()
+		return nil, fmt.Errorf("brave is in cooldown (previous failures)")
+	}
 	braveCtx, cancel := context.WithTimeout(context.Background(), p.cfg.BraveTimeout)
 	defer cancel()
 
@@ -142,10 +150,12 @@ func (p *Proxy) braveOnlySearch(_ context.Context, key string) (*searxng.Respons
 
 	if bvErr != nil {
 		metrics.RequestsTotal.WithLabelValues("fallback_brave_fail").Inc()
+		p.recordBraveFailure()
 		return nil, fmt.Errorf("searxng in cooldown, brave failed: %w", bvErr)
 	}
 
 	metrics.RequestsTotal.WithLabelValues("fallback_brave_ok").Inc()
+	p.recordBraveSuccess()
 	mapped := &searxng.Response{Results: mapper.ToSearxngResults(bvResp.Web.Results)}
 	p.observe(mapped)
 	p.c.Set(key, mapped)
@@ -157,6 +167,10 @@ func (p *Proxy) braveOnlySearch(_ context.Context, key string) (*searxng.Respons
 // Uses context.Background() with BraveTimeout so the call survives upstream
 // client disconnections (which would cancel r.Context()).
 func (p *Proxy) braveSearch(_ context.Context, key string, sxResp *searxng.Response, sxErr error) (*searxng.Response, error) {
+	if p.braveInCooldown() {
+		metrics.RequestsTotal.WithLabelValues("fallback_brave_fail").Inc()
+		return nil, fmt.Errorf("brave is in cooldown (previous failures); searxng=%v", sxErr)
+	}
 	braveCtx, cancel := context.WithTimeout(context.Background(), p.cfg.BraveTimeout)
 	defer cancel()
 
@@ -166,10 +180,12 @@ func (p *Proxy) braveSearch(_ context.Context, key string, sxResp *searxng.Respo
 
 	if bvErr != nil {
 		metrics.RequestsTotal.WithLabelValues("fallback_brave_fail").Inc()
+		p.recordBraveFailure()
 		return nil, fmt.Errorf("searxng insufficient (err=%v) and brave failed: %w", sxErr, bvErr)
 	}
 
 	metrics.RequestsTotal.WithLabelValues("fallback_brave_ok").Inc()
+	p.recordBraveSuccess()
 	mapped := &searxng.Response{Results: mapper.ToSearxngResults(bvResp.Web.Results)}
 	p.observe(mapped)
 	p.c.Set(key, mapped)
@@ -207,6 +223,42 @@ func (p *Proxy) inCooldown() bool {
 		// Cooldown expired — reset state.
 		p.sxCooldownTil.Store(0)
 		atomic.StoreInt64(&p.sxFails, 0)
+		return false
+	}
+	return true
+}
+
+// recordBraveSuccess resets the failure counter and clears any active cooldown.
+func (p *Proxy) recordBraveSuccess() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	atomic.StoreInt64(&p.bvFails, 0)
+	p.bvCooldownTil.Store(0)
+}
+
+// recordBraveFailure increments the failure counter and starts a cooldown
+// if the threshold is reached.
+func (p *Proxy) recordBraveFailure() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fails := atomic.AddInt64(&p.bvFails, 1)
+	if int(fails) >= p.cfg.BraveFailThreshold {
+		until := time.Now().Add(p.cfg.BraveFailCooldown).UnixNano()
+		p.bvCooldownTil.Store(until)
+	}
+}
+
+// braveInCooldown reports whether Brave is currently in cooldown. If the
+// cooldown period has expired, it is automatically cleared.
+func (p *Proxy) braveInCooldown() bool {
+	until := p.bvCooldownTil.Load()
+	if until == 0 {
+		return false
+	}
+	if time.Now().UnixNano() >= until {
+		// Cooldown expired — reset state.
+		p.bvCooldownTil.Store(0)
+		atomic.StoreInt64(&p.bvFails, 0)
 		return false
 	}
 	return true

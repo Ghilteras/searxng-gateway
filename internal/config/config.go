@@ -21,6 +21,8 @@ type Config struct {
 	// Community-aligned: binary fallback + cooldown circuit breaker
 	SearxngFailThreshold int           // consecutive failures before cooldown
 	SearxngFailCooldown  time.Duration // duration of cooldown period
+	BraveFailThreshold   int           // consecutive failures before Brave cooldown
+	BraveFailCooldown    time.Duration // Brave cooldown duration
 }
 
 func Load() (*Config, error) {
@@ -37,6 +39,8 @@ func Load() (*Config, error) {
 		MetricsPath:           getEnv("METRICS_PATH", "/metrics"),
 		SearxngFailThreshold:  getEnvInt("SEARXNG_FAIL_THRESHOLD", 6),
 		SearxngFailCooldown:   time.Duration(getEnvInt("SEARXNG_FAIL_COOLDOWN_SECONDS", 180)) * time.Second,
+		BraveFailThreshold:    getEnvInt("BRAVE_FAIL_THRESHOLD", 3),
+		BraveFailCooldown:     time.Duration(getEnvInt("BRAVE_FAIL_COOLDOWN_SECONDS", 300)) * time.Second,
 	}
 	return c, c.Validate()
 }
@@ -50,6 +54,12 @@ func (c *Config) Validate() error {
 	}
 	if c.SearxngFailCooldown < time.Second {
 		return fmt.Errorf("SEARXNG_FAIL_COOLDOWN_SECONDS must be >= 1, got %v", c.SearxngFailCooldown)
+	}
+	if c.BraveFailThreshold < 1 {
+		return fmt.Errorf("BRAVE_FAIL_THRESHOLD must be >= 1, got %d", c.BraveFailThreshold)
+	}
+	if c.BraveFailCooldown < time.Second {
+		return fmt.Errorf("BRAVE_FAIL_COOLDOWN_SECONDS must be >= 1, got %v", c.BraveFailCooldown)
 	}
 	return nil
 }
