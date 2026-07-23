@@ -22,15 +22,15 @@ var (
 		[]string{"outcome"},
 	)
 
-	// RequestDuration tracks request latency in seconds, labelled by source backend.
-	// source ∈ {searxng, brave}
+	// RequestDuration tracks request latency in seconds, labelled by source backend
+	// and engine. source ∈ {searxng, brave}, engine ∈ {brave, <searxng-engine-name>}.
 	RequestDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "searxng_gateway_request_duration_seconds",
-			Help:    "Request duration in seconds",
+			Help:    "Request duration in seconds per source and engine",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"source"},
+		[]string{"source", "engine"},
 	)
 
 	// ResultsCount is a histogram of the number of results returned per request.

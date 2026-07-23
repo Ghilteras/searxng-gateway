@@ -82,22 +82,29 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	// 3. SearXNG call with timeout.
 	start := time.Now()
 	sxResp, sxErr := p.sx.Search(timeoutCtx, key)
-	metrics.RequestDuration.WithLabelValues("searxng").Observe(time.Since(start).Seconds())
+	sxElapsed := time.Since(start)
 
 	// 4. If SearXNG succeeded and response is sufficient → done.
 	if sxErr == nil && p.sufficient(sxResp) {
 		// Per-engine metrics from SearXNG response.
+		seenEngines := make(map[string]struct{})
 		for _, result := range sxResp.Results {
 			if result.Engine != "" {
 				metrics.EngineResultsTotal.WithLabelValues(result.Engine).Inc()
 				metrics.EngineStatus.WithLabelValues(result.Engine).Set(1)
+				seenEngines[result.Engine] = struct{}{}
 			}
 			for _, eng := range result.Engines {
 				if eng != "" {
 					metrics.EngineResultsTotal.WithLabelValues(eng).Inc()
 					metrics.EngineStatus.WithLabelValues(eng).Set(1)
+					seenEngines[eng] = struct{}{}
 				}
 			}
+		}
+		// Record duration per distinct engine contributing results.
+		for eng := range seenEngines {
+			metrics.RequestDuration.WithLabelValues("searxng", eng).Observe(sxElapsed.Seconds())
 		}
 		unresponsiveSet := make(map[string]string)
 		for _, ue := range sxResp.UnresponsiveEngines {
@@ -146,7 +153,7 @@ func (p *Proxy) braveOnlySearch(_ context.Context, key string) (*searxng.Respons
 
 	start := time.Now()
 	bvResp, bvErr := p.bv.Search(braveCtx, key)
-	metrics.RequestDuration.WithLabelValues("brave").Observe(time.Since(start).Seconds())
+	metrics.RequestDuration.WithLabelValues("brave", "brave").Observe(time.Since(start).Seconds())
 
 	if bvErr != nil {
 		metrics.RequestsTotal.WithLabelValues("fallback_brave_fail").Inc()
@@ -176,7 +183,7 @@ func (p *Proxy) braveSearch(_ context.Context, key string, sxResp *searxng.Respo
 
 	start := time.Now()
 	bvResp, bvErr := p.bv.Search(braveCtx, key)
-	metrics.RequestDuration.WithLabelValues("brave").Observe(time.Since(start).Seconds())
+	metrics.RequestDuration.WithLabelValues("brave", "brave").Observe(time.Since(start).Seconds())
 
 	if bvErr != nil {
 		metrics.RequestsTotal.WithLabelValues("fallback_brave_fail").Inc()
