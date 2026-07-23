@@ -1,7 +1,6 @@
 .git
 .github
 *.md
-Dockerfile
 docker-compose.yml
 .tokensave
 *.test
