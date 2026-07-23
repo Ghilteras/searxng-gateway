@@ -106,9 +106,14 @@ func (p *Proxy) sufficient(r *searxng.Response) bool {
 }
 
 // braveOnlySearch is called when SearXNG is in cooldown — searches Brave only.
-func (p *Proxy) braveOnlySearch(ctx context.Context, key string) (*searxng.Response, error) {
+// Uses context.Background() with BraveTimeout so the call survives upstream
+// client disconnections (which would cancel r.Context()).
+func (p *Proxy) braveOnlySearch(_ context.Context, key string) (*searxng.Response, error) {
+	braveCtx, cancel := context.WithTimeout(context.Background(), p.cfg.BraveTimeout)
+	defer cancel()
+
 	start := time.Now()
-	bvResp, bvErr := p.bv.Search(ctx, key)
+	bvResp, bvErr := p.bv.Search(braveCtx, key)
 	metrics.RequestDuration.WithLabelValues("brave").Observe(time.Since(start).Seconds())
 
 	if bvErr != nil {
@@ -125,9 +130,14 @@ func (p *Proxy) braveOnlySearch(ctx context.Context, key string) (*searxng.Respo
 
 // braveSearch is called when SearXNG was attempted but failed or was
 // insufficient — searches Brave as fallback.
-func (p *Proxy) braveSearch(ctx context.Context, key string, sxResp *searxng.Response, sxErr error) (*searxng.Response, error) {
+// Uses context.Background() with BraveTimeout so the call survives upstream
+// client disconnections (which would cancel r.Context()).
+func (p *Proxy) braveSearch(_ context.Context, key string, sxResp *searxng.Response, sxErr error) (*searxng.Response, error) {
+	braveCtx, cancel := context.WithTimeout(context.Background(), p.cfg.BraveTimeout)
+	defer cancel()
+
 	start := time.Now()
-	bvResp, bvErr := p.bv.Search(ctx, key)
+	bvResp, bvErr := p.bv.Search(braveCtx, key)
 	metrics.RequestDuration.WithLabelValues("brave").Observe(time.Since(start).Seconds())
 
 	if bvErr != nil {
