@@ -1,301 +1,45 @@
-# sx
+# searxng-gateway
 
-Multi-engine web search from the command line
+Decision proxy in front of SearXNG: forwards queries to SearXNG, falls back to Brave Search API when results are too few or engine diversity is too low. Same JSON shape as SearXNG, Prometheus /metrics, in-memory LRU cache.
 
-`sx` is a CLI tool for searching the web from your terminal. It supports
-multiple search backends -- [SearXNG](https://github.com/searxng/searxng)
-(self-hosted), keyless Brave Search and Bing (built-in HTML scrapers, no
-account needed), [Exa](https://exa.ai/), [Jina](https://jina.ai/),
-[Brave Search API](https://api.search.brave.com/) and
-[Tavily](https://tavily.com/) -- with automatic fallback when the primary
-engine is unreachable or returns no results. Searches work out of the box
-with zero configuration and no API keys.
+Forked from [byteowlz/sx](https://github.com/byteowlz/sx) for the fallback orchestration logic; this repo adds the HTTP server, metrics, cache, and packaging.
 
-This is a Go port of the original Python [searxngr](https://github.com/scross01/searxngr) project, extended with multi-engine support.
+## Env vars
 
-## Key Features
+| Var | Default | Required |
+|-----|---------|----------|
+| `LISTEN_ADDR` | `:8080` | no |
+| `SEARXNG_BACKEND_URL` | `http://searxng-primary:8080` | no |
+| `BRAVE_API_KEY` | — | **yes** |
+| `FALLBACK_MIN_RESULTS` | `5` | no |
+| `FALLBACK_MIN_ENGINES` | `2` | no |
+| `FALLBACK_TIMEOUT_SECONDS` | `30` | no |
+| `SEARXNG_TIMEOUT_SECONDS` | `25` | no |
+| `BRAVE_TIMEOUT_SECONDS` | `15` | no |
+| `CACHE_SIZE` | `1000` | no |
+| `CACHE_TTL_SECONDS` | `3600` | no |
+| `LOG_LEVEL` | `info` | no |
+| `METRICS_PATH` | `/metrics` | no |
 
-- **Multiple search backends** - SearXNG, Exa, Jina, Brave Search, Tavily with automatic fallback
-- **Keyless fallback engines** - built-in `brave-web` and `bing` scrapers keep searches working with no API keys and no SearXNG instance
-- **Multi-instance SearXNG failover** - ordered or parallel-fastest strategy
-- **Terminal-based interface** with colorized output
-- **Non-interactive by default** for scripting; `-i` for interactive mode
-- **Search engine selection** (bing, duckduckgo, google, etc. via SearXNG)
-- Support for **search categories** (general, news, images, videos, science, etc.)
-- **Safe search filtering** (none, moderate, strict)
-- **Time-range filtering** (day, week, month, year)
-- **JSON output** for scripting
-- **Built-in content extraction** - fetch and convert results to clean markdown
-- **Anti-bot detection** - rotating user agents, realistic headers, random delays
-- **Query history** - searchable history with `sx history`
-- **Shell completions** - bash, zsh, fish, powershell
-- **Cross-platform** (macOS, Linux, Windows)
+## Endpoints
 
-## Installation
+- `GET /search?q=<query>&format=json` — proxy endpoint
+- `GET /healthz` — liveness
+- `GET /metrics` — Prometheus exposition
 
-```shell
-go install github.com/your-repo/sx@latest
+## Build
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/Ghilteras/searxng-gateway:latest --push .
 ```
 
-Or build from source:
+## Run
 
-```shell
-git clone https://github.com/your-repo/sx.git
-cd sx
-go build -o sx .
+```bash
+docker run -d --name searxng-fallback \
+  -e BRAVE_API_KEY=<your-key> \
+  -e SEARXNG_BACKEND_URL=http://searxng-primary:8080 \
+  -p 8080:8080 \
+  ghcr.io/Ghilteras/searxng-gateway:latest
 ```
-
-## Configuration
-
-Config is stored at `$XDG_CONFIG_HOME/sx/config.toml` (typically `~/.config/sx/config.toml`).
-Created automatically on first run.
-
-### Example config.toml
-
-```toml
-# sx configuration file
-
-# Primary search engine (searxng, bing, brave-web, brave, tavily, exa, jina)
-engine = "searxng"
-
-# Fallback engines tried in order if primary fails or returns no results.
-# Default: ["brave-web", "bing"] (keyless, no configuration needed)
-fallback_engines = ["brave-web", "bing", "tavily", "exa", "jina"]
-
-# SearXNG instance settings
-searxng_url = "https://searxng.example.com"
-searxng_urls = ["https://searxng-backup-1.example.com", "https://searxng-backup-2.example.com"]
-searxng_strategy = "ordered" # ordered or parallel-fastest
-# searxng_username = ""
-# searxng_password = ""
-
-# General settings
-result_count = 10
-safe_search = "strict"
-http_method = "GET"
-timeout = 30.0
-expand = false
-no_verify_ssl = false
-no_user_agent = false
-no_color = false
-debug = false
-
-# Output defaults
-# default_output = ""       # "interactive" to default to interactive mode
-history_enabled = true
-max_history = 100
-
-# Brave Search API (https://api.search.brave.com/)
-# Free tier: 2,000 requests/month
-[engines_brave]
-api_key = ""  # or set BRAVE_API_KEY env var
-
-# Tavily Search API (https://tavily.com/)
-# Free tier: 1,000 credits/month
-[engines_tavily]
-api_key = ""                  # or set TAVILY_API_KEY env var
-search_depth = "basic"        # basic (1 credit) or advanced (2 credits)
-include_raw_content = false   # return full page content with results
-include_answer = false        # return a direct answer
-
-# Exa Search (API + MCP)
-[engines_exa]
-mode = "auto"                # auto, api, mcp
-api_key = ""                 # or set EXA_API_KEY env var
-mcp_url = ""                 # optional MCP HTTP endpoint
-mcp_tool = "exa-web-search"  # MCP tool name
-num_results = 10
-
-# Jina Search
-[engines_jina]
-api_key = ""                 # or set JINA_API_KEY env var
-allow_keyless = true
-base_url = "https://s.jina.ai"
-```
-
-### API Keys via Environment Variables
-
-```shell
-export BRAVE_API_KEY="your-brave-key"
-export TAVILY_API_KEY="tvly-your-tavily-key"
-export EXA_API_KEY="your-exa-key"
-export JINA_API_KEY="your-jina-key"
-```
-
-## Usage
-
-### Basic Search
-
-```shell
-sx "why is the sky blue"
-sx "golang tutorials" -n 5
-```
-
-### Select Search Engine
-
-```shell
-# Use a specific backend
-sx "query" --engine exa
-sx "query" --engine jina
-sx "query" --engine brave
-sx "query" --engine tavily
-
-# Default: uses primary engine with automatic fallback
-sx "query"
-```
-
-### Output Links for Piping
-
-```shell
-# Get URLs only (one per line)
-sx "golang testing" -L -n 5
-
-# Pipe to other tools
-sx "rust tutorials" -L -n 3 | xargs open
-```
-
-### Fetch and Convert Pages to Markdown
-
-```shell
-# Top result as markdown
-sx "golang channels tutorial" --text --top
-
-# Multiple results saved to file
-sx "rust ownership" --text -n 3 -o results.md
-```
-
-### Pipelines with scrpr
-
-`sx` pairs with [scrpr](https://github.com/byteowlz/scrpr) for content extraction:
-
-```shell
-# Search + extract content
-sx "query" -L -n 5 | scrpr --format markdown
-
-# Save to directory
-sx "query" -L -n 5 | scrpr --format markdown -o articles/
-
-# Use Jina Reader for JS-heavy sites
-sx "query" -L -n 5 | scrpr -B jina --format markdown
-
-# With rate limiting
-sx "query" -L -n 10 | scrpr --delay 0.5 --continue-on-error
-```
-
-### Other Options
-
-```shell
-# Categories
-sx "query" -N              # news
-sx "query" -V              # videos
-sx "query" -S              # social media
-sx "query" -F              # files
-
-# Filtering
-sx "query" -r week         # time range: day, week, month, year
-sx "query" -w example.com  # site-specific search
-sx "query" --safe-search none
-
-# Output formats
-sx "query" --json          # JSON output
-sx "query" --json -c       # Clean JSON (no null fields)
-sx "query" -H              # Raw HTML with anti-bot headers
-
-# Interactive mode
-sx "query" -i
-
-# History
-sx history
-sx history clear
-sx history -n 50
-
-# Shell completions
-sx completion bash
-sx completion zsh
-```
-
-### All Flags
-
-```
-Flags:
-      --categories strings   search categories (general, news, videos, images, music, etc.)
-      --clean                omit empty/null values in JSON output
-      --debug                show debug output
-  -e, --engines strings      SearXNG engines to use
-      --engine string        search backend (searxng, brave, tavily, exa, jina)
-  -x, --expand               show full URLs in results (URLs are shown by default)
-  -F, --files                files category shortcut
-  -j, --first                open first result in browser
-  -h, --help                 help for sx
-  -H, --html                 fetch raw HTML with anti-bot headers
-      --http-method string   GET or POST for SearXNG (default "GET")
-  -i, --interactive          enter interactive mode after results
-      --json                 JSON output
-  -l, --language string      search language
-  -L, --links-only           output URLs only, one per line
-      --lucky                open random result in browser
-  -M, --music                music category shortcut
-  -N, --news                 news category shortcut
-      --no-verify-ssl        skip SSL verification
-      --nocolor              disable colors
-      --noua                 disable user agent
-  -n, --num int              results per page (default 10)
-  -o, --output string        save output to file
-      --safe-search string      none, moderate, strict (default "strict")
-      --searxng-strategy string SearXNG instance strategy (ordered, parallel-fastest)
-      --searxng-url string      Primary SearXNG instance URL
-      --searxng-urls strings    Additional SearXNG instance URLs for failover
-  -w, --site string             search within a specific site
-  -S, --social               social media category shortcut
-  -T, --text                 fetch pages and convert to markdown
-  -r, --time-range string    day, week, month, year
-      --timeout float        request timeout in seconds (default 30)
-      --top                  show only top result
-      --unsafe               disable safe search
-  -v, --version              version
-  -V, --videos               videos category shortcut
-```
-
-## Search Backend Comparison
-
-| Backend | Auth | Free Tier | Best For |
-|---------|------|-----------|----------|
-| **SearXNG** | None (self-hosted) | Unlimited | Privacy, full control |
-| **brave-web** | None (HTML scraper) | Best-effort | Keyless fallback, works out of the box |
-| **bing** | None (HTML scraper) | Best-effort | Keyless fallback; rejects Bing's bot-decoy result pages |
-| **Exa** | API key or MCP | Varies by plan/MCP setup | Research-focused search, MCP workflows |
-| **Jina** | API key (keyless access was discontinued upstream) | -- | LLM-oriented content |
-| **Brave** | API key | 2,000 req/month | Official API, quick setup |
-| **Tavily** | API key | 1,000 credits/month | LLM workflows, rich content |
-
-## Troubleshooting
-
-**Error: all backends failed**
-Check your primary engine URL and API keys. Use `--debug` for details.
-
-**Error: no results, upstream engines unresponsive**
-Your SearXNG instance is reachable, but its upstream engines are rate limiting or
-blocking it (e.g. `Suspended: too many requests`, `Suspended: CAPTCHA`). sx treats
-this as a failure and tries the next `searxng_urls` instance and then your
-`fallback_engines`. To reduce it, enable more upstream engines in SearXNG's
-`settings.yml` or add additional SearXNG instances to `searxng_urls`.
-
-**Error: HTTP 429 Too Many Requests**
-SearXNG rate limiting. Update server limiter settings or use a fallback engine.
-
-**Error: failed to parse JSON response**
-Enable JSON format in SearXNG's `settings.yml`:
-```yaml
-search:
-  formats:
-    - html
-    - json
-```
-
-## Dependencies
-
-- [cobra](https://github.com/spf13/cobra) - CLI framework
-- [toml](https://github.com/BurntSushi/toml) - Configuration
-- [color](https://github.com/fatih/color) - Terminal colors
-- [go-readability](https://github.com/go-shiori/go-readability) - Content extraction
-- [html-to-markdown](https://github.com/JohannesKaufmann/html-to-markdown) - HTML to Markdown
