@@ -16,6 +16,7 @@ func ToSearxngResults(in []brave.Result) []searxng.Result {
 			Engine:        "brave-api",
 			Score:         1.0,
 			PublishedDate: b.Age,
+			Template:      "default.html",
 		}
 		out = append(out, r)
 	}

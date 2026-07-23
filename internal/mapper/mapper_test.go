@@ -37,4 +37,10 @@ func TestToSearxngResultsMapping(t *testing.T) {
 	if got[1].PublishedDate != "" {
 		t.Errorf("got[1].PublishedDate = %q, want empty (Age was empty)", got[1].PublishedDate)
 	}
+	if got[0].Template != "default.html" {
+		t.Errorf("got[0].Template = %q, want %q", got[0].Template, "default.html")
+	}
+	if got[1].Template != "default.html" {
+		t.Errorf("got[1].Template = %q, want %q", got[1].Template, "default.html")
+	}
 }

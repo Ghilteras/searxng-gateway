@@ -17,6 +17,7 @@ type Result struct {
 	Engine        string  `json:"engine"`
 	Score         float64 `json:"score"`
 	PublishedDate string  `json:"publishedDate,omitempty"`
+	Template      string  `json:"template,omitempty"`
 }
 
 // Response is the top-level API response from SearXNG.
