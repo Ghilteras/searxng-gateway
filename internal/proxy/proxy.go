@@ -4,8 +4,14 @@
 // The Proxy.Search method orchestrates the four stages:
 //  1. Normalise the query and check the LRU cache.
 //  2. Call SearXNG with a FallbackTimeout context.
-//  3. If the response is insufficient (too few results / engines), call Brave.
+//  3. If the response is insufficient (len(Results)==0), call Brave.
 //  4. Map Brave results to the SearXNG shape and cache them.
+//
+// Community-aligned behaviour (2026):
+//   - Binary fallback: a SearXNG response is sufficient if it has ≥1 result.
+//   - Cooldown circuit breaker: after SEARXNG_FAIL_THRESHOLD consecutive
+//     failures, SearXNG is skipped entirely for SEARXNG_FAIL_COOLDOWN_SECONDS,
+//     going directly to Brave.
 package proxy
 
 import (
@@ -13,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"sx/internal/brave"
@@ -29,6 +37,11 @@ type Proxy struct {
 	sx  searxng.Client
 	bv  brave.Client
 	c   *cache.Cache
+
+	// Cooldown circuit breaker (community pattern: searxng-resilient-router)
+	sxFails       int64        // atomic counter of consecutive failures
+	sxCooldownTil atomic.Int64 // unix nano; 0 = no cooldown
+	mu            sync.Mutex   // guards sxFails/sxCooldownTil updates
 }
 
 // New creates a Proxy with the given config, backends and cache.
@@ -39,11 +52,11 @@ func New(cfg *config.Config, sx searxng.Client, bv brave.Client, c *cache.Cache)
 // Search runs the full orchestration pipeline for a raw query string.
 //
 // Outcome counters (all via RequestsTotal):
-//   - cache_hit:          entry found in cache, SearXNG not called.
-//   - searxng_ok:         SearXNG returned a sufficient response.
-//   - timeout:            SearXNG returned context.DeadlineExceeded.
-//   - fallback_brave_ok:  SearXNG insufficient/failed, Brave returned OK.
-//   - fallback_brave_fail:SearXNG insufficient/failed, Brave also failed.
+//   - cache_hit:           entry found in cache, SearXNG not called.
+//   - searxng_ok:          SearXNG returned a sufficient response.
+//   - timeout:             SearXNG returned context.DeadlineExceeded.
+//   - fallback_brave_ok:   SearXNG insufficient/failed/cooldown, Brave OK.
+//   - fallback_brave_fail: SearXNG insufficient/failed/cooldown, Brave also failed.
 func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, error) {
 	key := normalize(raw)
 
@@ -53,31 +66,69 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		return v.(*searxng.Response), nil
 	}
 
-	// 2. SearXNG call with timeout.
 	timeoutCtx, cancel := context.WithTimeout(ctx, p.cfg.FallbackTimeout)
 	defer cancel()
 
+	// 2. Check if SearXNG is in cooldown (binary fallback during outage).
+	if p.inCooldown() {
+		// Skip SearXNG entirely, go direct to Brave.
+		return p.braveOnlySearch(ctx, key)
+	}
+
+	// 3. SearXNG call with timeout.
 	start := time.Now()
 	sxResp, sxErr := p.sx.Search(timeoutCtx, key)
 	metrics.RequestDuration.WithLabelValues("searxng").Observe(time.Since(start).Seconds())
 
-	// 3. If SearXNG succeeded and response is sufficient → done.
+	// 4. If SearXNG succeeded and response is sufficient → done.
 	if sxErr == nil && p.sufficient(sxResp) {
+		p.recordSearxngSuccess()
 		metrics.RequestsTotal.WithLabelValues("searxng_ok").Inc()
 		p.observe(sxResp)
 		p.c.Set(key, sxResp)
 		return sxResp, nil
 	}
 
-	// 4. Record timeout independently (regardless of Brave outcome).
+	// 5. Record failure (timeout counts as a consecutive failure).
+	p.recordSearxngFailure()
 	if errors.Is(sxErr, context.DeadlineExceeded) {
 		metrics.RequestsTotal.WithLabelValues("timeout").Inc()
 	}
 
-	// 5. Fallback to Brave (with the original ctx, not the expired timeoutCtx).
-	startB := time.Now()
+	// 6. Fallback to Brave (with the original ctx, not the expired timeoutCtx).
+	return p.braveSearch(ctx, key, sxResp, sxErr)
+}
+
+// sufficient returns true when the SearXNG response has at least one result
+// (community-aligned binary fallback, original byteowlz/sx pattern).
+func (p *Proxy) sufficient(r *searxng.Response) bool {
+	return len(r.Results) > 0
+}
+
+// braveOnlySearch is called when SearXNG is in cooldown — searches Brave only.
+func (p *Proxy) braveOnlySearch(ctx context.Context, key string) (*searxng.Response, error) {
+	start := time.Now()
 	bvResp, bvErr := p.bv.Search(ctx, key)
-	metrics.RequestDuration.WithLabelValues("brave").Observe(time.Since(startB).Seconds())
+	metrics.RequestDuration.WithLabelValues("brave").Observe(time.Since(start).Seconds())
+
+	if bvErr != nil {
+		metrics.RequestsTotal.WithLabelValues("fallback_brave_fail").Inc()
+		return nil, fmt.Errorf("searxng in cooldown, brave failed: %w", bvErr)
+	}
+
+	metrics.RequestsTotal.WithLabelValues("fallback_brave_ok").Inc()
+	mapped := &searxng.Response{Results: mapper.ToSearxngResults(bvResp.Web.Results)}
+	p.observe(mapped)
+	p.c.Set(key, mapped)
+	return mapped, nil
+}
+
+// braveSearch is called when SearXNG was attempted but failed or was
+// insufficient — searches Brave as fallback.
+func (p *Proxy) braveSearch(ctx context.Context, key string, sxResp *searxng.Response, sxErr error) (*searxng.Response, error) {
+	start := time.Now()
+	bvResp, bvErr := p.bv.Search(ctx, key)
+	metrics.RequestDuration.WithLabelValues("brave").Observe(time.Since(start).Seconds())
 
 	if bvErr != nil {
 		metrics.RequestsTotal.WithLabelValues("fallback_brave_fail").Inc()
@@ -91,17 +142,40 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	return mapped, nil
 }
 
-// sufficient returns true when the SearXNG response meets the configured
-// minimum result count and minimum distinct engine count.
-func (p *Proxy) sufficient(r *searxng.Response) bool {
-	if len(r.Results) < p.cfg.FallbackMinResults {
+// recordSearxngSuccess resets the failure counter and clears any active cooldown.
+func (p *Proxy) recordSearxngSuccess() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	atomic.StoreInt64(&p.sxFails, 0)
+	p.sxCooldownTil.Store(0)
+}
+
+// recordSearxngFailure increments the failure counter and starts a cooldown
+// if the threshold is reached.
+func (p *Proxy) recordSearxngFailure() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fails := atomic.AddInt64(&p.sxFails, 1)
+	if int(fails) >= p.cfg.SearxngFailThreshold {
+		until := time.Now().Add(p.cfg.SearxngFailCooldown).UnixNano()
+		p.sxCooldownTil.Store(until)
+	}
+}
+
+// inCooldown reports whether SearXNG is currently in cooldown. If the
+// cooldown period has expired, it is automatically cleared.
+func (p *Proxy) inCooldown() bool {
+	until := p.sxCooldownTil.Load()
+	if until == 0 {
 		return false
 	}
-	distinct := make(map[string]struct{}, len(r.Results))
-	for _, res := range r.Results {
-		distinct[res.Engine] = struct{}{}
+	if time.Now().UnixNano() >= until {
+		// Cooldown expired — reset state.
+		p.sxCooldownTil.Store(0)
+		atomic.StoreInt64(&p.sxFails, 0)
+		return false
 	}
-	return len(distinct) >= p.cfg.FallbackMinEngines
+	return true
 }
 
 // observe records Prometheus metrics for the given response.

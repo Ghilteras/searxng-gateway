@@ -32,10 +32,10 @@ func (s *stubBrave) Search(_ context.Context, _ string) (*brave.Response, error)
 func setupRouter(t *testing.T) http.Handler {
 	t.Helper()
 	cfg := &config.Config{
-		FallbackMinResults: 5,
-		FallbackMinEngines: 2,
-		FallbackTimeout:    5 * time.Second,
-		MetricsPath:        "/metrics",
+		FallbackTimeout:      5 * time.Second,
+		MetricsPath:          "/metrics",
+		SearxngFailThreshold: 6,
+		SearxngFailCooldown:  180 * time.Second,
 	}
 	c, _ := cache.New(10)
 	metrics.Init()
