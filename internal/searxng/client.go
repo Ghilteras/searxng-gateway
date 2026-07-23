@@ -11,18 +11,22 @@ import (
 
 // Result represents a single search result from SearXNG.
 type Result struct {
-	Title         string  `json:"title"`
-	URL           string  `json:"url"`
-	Content       string  `json:"content"`
-	Engine        string  `json:"engine"`
-	Score         float64 `json:"score"`
-	PublishedDate string  `json:"publishedDate,omitempty"`
-	Template      string  `json:"template,omitempty"`
+	Title         string   `json:"title"`
+	URL           string   `json:"url"`
+	Content       string   `json:"content"`
+	Engine        string   `json:"engine"`
+	Engines       []string `json:"engines,omitempty"`
+	Score         float64  `json:"score"`
+	PublishedDate string   `json:"publishedDate,omitempty"`
+	Template      string   `json:"template,omitempty"`
 }
 
 // Response is the top-level API response from SearXNG.
 type Response struct {
-	Results []Result `json:"results"`
+	Query               string     `json:"query,omitempty"`
+	Results             []Result   `json:"results"`
+	UnresponsiveEngines [][]string `json:"unresponsive_engines,omitempty"`
+	Suggestions         []string   `json:"suggestions,omitempty"`
 }
 
 // Client defines the interface for searching SearXNG.

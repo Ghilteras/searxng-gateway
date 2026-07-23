@@ -82,6 +82,30 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 
 	// 4. If SearXNG succeeded and response is sufficient → done.
 	if sxErr == nil && p.sufficient(sxResp) {
+		// Per-engine metrics from SearXNG response.
+		for _, result := range sxResp.Results {
+			if result.Engine != "" {
+				metrics.EngineResultsTotal.WithLabelValues(result.Engine).Inc()
+				metrics.EngineStatus.WithLabelValues(result.Engine).Set(1)
+			}
+			for _, eng := range result.Engines {
+				if eng != "" {
+					metrics.EngineResultsTotal.WithLabelValues(eng).Inc()
+					metrics.EngineStatus.WithLabelValues(eng).Set(1)
+				}
+			}
+		}
+		unresponsiveSet := make(map[string]string)
+		for _, ue := range sxResp.UnresponsiveEngines {
+			if len(ue) >= 2 {
+				unresponsiveSet[ue[0]] = ue[1]
+			}
+		}
+		for engine, reason := range unresponsiveSet {
+			metrics.EngineUnresponsiveTotal.WithLabelValues(engine, reason).Inc()
+			metrics.EngineStatus.WithLabelValues(engine).Set(0)
+		}
+
 		p.recordSearxngSuccess()
 		metrics.RequestsTotal.WithLabelValues("searxng_ok").Inc()
 		p.observe(sxResp)

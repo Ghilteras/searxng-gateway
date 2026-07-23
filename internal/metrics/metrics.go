@@ -51,6 +51,34 @@ var (
 		Name: "searxng_gateway_cache_size",
 		Help: "Current LRU cache size (entries)",
 	})
+
+	// EngineResultsTotal counts results contributed per SearXNG engine.
+	EngineResultsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "searxng_gateway_engine_results_total",
+			Help: "Total results contributed by each SearXNG engine",
+		},
+		[]string{"engine"},
+	)
+
+	// EngineUnresponsiveTotal counts how often each SearXNG engine was
+	// reported as unresponsive, labelled by reason (CAPTCHA, rate limit, …).
+	EngineUnresponsiveTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "searxng_gateway_engine_unresponsive_total",
+			Help: "Total times an engine was reported as unresponsive by SearXNG",
+		},
+		[]string{"engine", "reason"},
+	)
+
+	// EngineStatus is 1 if the engine responded in the last request, 0 otherwise.
+	EngineStatus = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "searxng_gateway_engine_status",
+			Help: "Last-seen status per engine (1=responded, 0=unresponsive/absent)",
+		},
+		[]string{"engine"},
+	)
 )
 
 var initOnce sync.Once
@@ -59,6 +87,6 @@ var initOnce sync.Once
 // It is safe to call multiple times — subsequent calls are no-ops.
 func Init() {
 	initOnce.Do(func() {
-		prometheus.MustRegister(RequestsTotal, RequestDuration, ResultsCount, EnginesCount, CacheSize)
+		prometheus.MustRegister(RequestsTotal, RequestDuration, ResultsCount, EnginesCount, CacheSize, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus)
 	})
 }
