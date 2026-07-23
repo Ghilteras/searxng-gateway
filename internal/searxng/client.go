@@ -11,11 +11,12 @@ import (
 
 // Result represents a single search result from SearXNG.
 type Result struct {
-	Title   string  `json:"title"`
-	URL     string  `json:"url"`
-	Content string  `json:"content"`
-	Engine  string  `json:"engine"`
-	Score   float64 `json:"score"`
+	Title         string  `json:"title"`
+	URL           string  `json:"url"`
+	Content       string  `json:"content"`
+	Engine        string  `json:"engine"`
+	Score         float64 `json:"score"`
+	PublishedDate string  `json:"publishedDate,omitempty"`
 }
 
 // Response is the top-level API response from SearXNG.
