@@ -113,6 +113,12 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		for eng := range seenEngines {
 			metrics.RequestDuration.WithLabelValues("searxng", eng).Observe(sxElapsed.Seconds())
 		}
+
+		// Record circuit breaker success for engines that produced results
+		// (closes half-open probes, keeps the breaker closed).
+		for eng := range seenEngines {
+			p.breakerMgr.RecordSuccess(eng)
+		}
 		unresponsiveSet := make(map[string]string)
 		for _, ue := range sxResp.UnresponsiveEngines {
 			if len(ue) >= 2 {
@@ -122,6 +128,11 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		for engine, reason := range unresponsiveSet {
 			metrics.EngineUnresponsiveTotal.WithLabelValues(engine, reason).Inc()
 			metrics.EngineStatus.WithLabelValues(engine).Set(0)
+			// 4xx: circuit breaker (skip engine for 5min).
+			// 5xx/timeout: already retried via retryWithBackoff, no breaker action.
+			if isClientError(reason) {
+				p.breakerMgr.RecordClientError(engine, reason)
+			}
 		}
 
 		p.recordSearxngSuccess()
