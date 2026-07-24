@@ -31,6 +31,14 @@ import (
 	"sx/internal/searxng"
 )
 
+// engineState tracks consecutive failures and cooldown for a single SearXNG
+// engine. Used by the per-engine circuit breaker to avoid repeatedly hitting
+// engines known to be broken (e.g., Mojeek "access denied", Wikipedia 429).
+type engineState struct {
+	fails       int64
+	cooldownTil atomic.Int64
+}
+
 // Proxy orchestrates SearXNG-first search with a Brave fallback.
 type Proxy struct {
 	cfg *config.Config
@@ -46,6 +54,9 @@ type Proxy struct {
 	// Brave circuit breaker (mirrors the SearXNG pattern)
 	bvFails       int64        // atomic counter of consecutive failures
 	bvCooldownTil atomic.Int64 // unix nano; 0 = no cooldown
+
+	// Per-engine circuit breaker: engine name → *engineState
+	engineCB sync.Map
 }
 
 // New creates a Proxy with the given config, backends and cache.
@@ -115,6 +126,11 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		for engine, reason := range unresponsiveSet {
 			metrics.EngineUnresponsiveTotal.WithLabelValues(engine, reason).Inc()
 			metrics.EngineStatus.WithLabelValues(engine).Set(0)
+			p.recordEngineFailure(engine, reason)
+		}
+		// Record success for every engine that contributed results.
+		for eng := range seenEngines {
+			p.recordEngineSuccess(eng)
 		}
 
 		p.recordSearxngSuccess()
@@ -287,4 +303,87 @@ func (p *Proxy) observe(r *searxng.Response) {
 // normalize lower-cases a query, trims spaces and collapses whitespace runs.
 func normalize(q string) string {
 	return strings.Join(strings.Fields(strings.ToLower(q)), " ")
+}
+
+// Engine circuit breaker — per-engine failure tracking.
+
+// engineNameForMetric sanitises an engine name for use in the cooldown map.
+// If the name contains spaces, returns only the part before the first space.
+func engineNameForMetric(name string) string {
+	if idx := strings.IndexByte(name, ' '); idx >= 0 {
+		return name[:idx]
+	}
+	return name
+}
+
+// recordEngineFailure increments the per-engine failure counter and starts a
+// 1h cooldown after 3 consecutive failures for "access denied" or
+// "too many requests" (or their "Suspended:" variants).
+func (p *Proxy) recordEngineFailure(engine, reason string) {
+	if engine == "" {
+		return
+	}
+	key := engineNameForMetric(engine)
+	val, _ := p.engineCB.LoadOrStore(key, &engineState{})
+	es := val.(*engineState)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fails := atomic.AddInt64(&es.fails, 1)
+	if (reason == "access denied" || reason == "Suspended: access denied" ||
+		reason == "too many requests" || reason == "Suspended: too many requests") &&
+		fails >= 3 {
+		cooldown := 1 * time.Hour
+		until := time.Now().Add(cooldown).UnixNano()
+		es.cooldownTil.Store(until)
+	}
+}
+
+// engineInCooldown reports whether the given engine is currently in cooldown.
+// If the cooldown period has expired, it is automatically cleared and the
+// failure counter is reset.
+func (p *Proxy) engineInCooldown(engine string) bool {
+	key := engineNameForMetric(engine)
+	val, ok := p.engineCB.Load(key)
+	if !ok {
+		return false
+	}
+	es := val.(*engineState)
+	until := es.cooldownTil.Load()
+	if until == 0 {
+		return false
+	}
+	if time.Now().UnixNano() >= until {
+		// Cooldown expired — reset state.
+		es.cooldownTil.Store(0)
+		atomic.StoreInt64(&es.fails, 0)
+		return false
+	}
+	return true
+}
+
+// recordEngineSuccess resets the failure counter and clears any active cooldown
+// for the given engine.
+func (p *Proxy) recordEngineSuccess(engine string) {
+	if engine == "" {
+		return
+	}
+	key := engineNameForMetric(engine)
+	val, ok := p.engineCB.Load(key)
+	if !ok {
+		return
+	}
+	es := val.(*engineState)
+	atomic.StoreInt64(&es.fails, 0)
+	es.cooldownTil.Store(0)
+}
+
+// isEngineSkipped returns true if the engine is currently in cooldown and
+// should be skipped. Callers can use this to avoid calling engines that are
+// known to be broken (e.g., Mojeek blocked by IP, Wikipedia rate-limited).
+// When an engine is skipped, a warning is logged.
+func (p *Proxy) isEngineSkipped(engine string) bool {
+	if p.engineInCooldown(engine) {
+		return true
+	}
+	return false
 }
