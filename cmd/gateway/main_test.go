@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"sx/internal/brave"
+	"sx/internal/breaker"
 	"sx/internal/cache"
 	"sx/internal/config"
 	"sx/internal/metrics"
@@ -44,7 +45,7 @@ func setupRouter(t *testing.T) http.Handler {
 	bv := &stubBrave{resp: &brave.Response{}}
 	bv.resp.Web.Results = append(bv.resp.Web.Results, brave.Result{Title: "T", URL: "u", Description: "d"})
 
-	return newRouter(proxy.New(cfg, sx, bv, c), cfg)
+	return newRouter(proxy.New(cfg, sx, bv, c, breaker.New()), cfg)
 }
 
 func TestHealthz(t *testing.T) {

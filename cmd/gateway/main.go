@@ -14,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"sx/internal/brave"
+	"sx/internal/breaker"
 	"sx/internal/cache"
 	"sx/internal/config"
 	"sx/internal/metrics"
@@ -35,7 +36,8 @@ func main() {
 
 	sx := searxng.New(cfg.SearxngBackendURL, cfg.SearxngTimeout)
 	bv := brave.New(cfg.BraveAPIKey, cfg.BraveTimeout)
-	p := proxy.New(cfg, sx, bv, c)
+	breakerMgr := breaker.New()
+	p := proxy.New(cfg, sx, bv, c, breakerMgr)
 
 	mux := newRouter(p, cfg)
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}

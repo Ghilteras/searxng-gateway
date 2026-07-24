@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"sx/internal/brave"
+	"sx/internal/breaker"
 	"sx/internal/cache"
 	"sx/internal/config"
 	"sx/internal/searxng"
@@ -47,7 +48,7 @@ func TestSearchSearxngOK(t *testing.T) {
 		{Title: "single", Engine: "wikipedia"},
 	}}}
 	c, _ := cache.New(10)
-	p := New(newCfg(), sx, &fakeBrave{}, c)
+	p := New(newCfg(), sx, &fakeBrave{}, c, breaker.New())
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
@@ -66,7 +67,7 @@ func TestSearchFallbackBrave(t *testing.T) {
 	bv := &fakeBrave{resp: &brave.Response{}}
 	bv.resp.Web.Results = append(bv.resp.Web.Results, brave.Result{Title: "T1", URL: "u1", Description: "d1", Age: "1d"})
 	c, _ := cache.New(10)
-	p := New(newCfg(), sx, bv, c)
+	p := New(newCfg(), sx, bv, c, breaker.New())
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
@@ -85,7 +86,7 @@ func TestSearchFallbackTimeout(t *testing.T) {
 	bv := &fakeBrave{resp: &brave.Response{}}
 	bv.resp.Web.Results = append(bv.resp.Web.Results, brave.Result{Title: "T", URL: "u", Description: "d"})
 	c, _ := cache.New(10)
-	p := New(newCfg(), sx, bv, c)
+	p := New(newCfg(), sx, bv, c, breaker.New())
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
@@ -100,7 +101,7 @@ func TestSearchCacheHit(t *testing.T) {
 	c, _ := cache.New(10)
 	c.Set("x", &searxng.Response{Results: []searxng.Result{{Title: "cached"}}})
 	sx := &fakeSearxng{} // must NOT be called
-	p := New(newCfg(), sx, &fakeBrave{}, c)
+	p := New(newCfg(), sx, &fakeBrave{}, c, breaker.New())
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
@@ -115,7 +116,7 @@ func TestSearchFallbackBraveFails(t *testing.T) {
 	sx := &fakeSearxng{resp: &searxng.Response{Results: nil}}
 	bv := &fakeBrave{err: errors.New("upstream 500")}
 	c, _ := cache.New(10)
-	p := New(newCfg(), sx, bv, c)
+	p := New(newCfg(), sx, bv, c, breaker.New())
 	if _, err := p.Search(context.Background(), "x"); err == nil {
 		t.Error("Search expected error when both SearXNG and Brave fail")
 	}
@@ -129,7 +130,7 @@ func TestSearchSearxngBinaryOK(t *testing.T) {
 		{Title: "single", Engine: "wikipedia"},
 	}}}
 	c, _ := cache.New(10)
-	p := New(newCfg(), sx, &fakeBrave{}, c)
+	p := New(newCfg(), sx, &fakeBrave{}, c, breaker.New())
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
@@ -150,7 +151,7 @@ func TestSearchSearxngBinaryFailSkipsCooldown(t *testing.T) {
 	bv.resp.Web.Results = append(bv.resp.Web.Results, brave.Result{Title: "T", URL: "u", Description: "d"})
 	c, _ := cache.New(10)
 	cfg := newCfg()
-	p := New(cfg, sx, bv, c)
+	p := New(cfg, sx, bv, c, breaker.New())
 
 	// 5 consecutive failures
 	for i := 0; i < 5; i++ {
@@ -182,7 +183,7 @@ func TestSearchSearxngCooldownActive(t *testing.T) {
 	c, _ := cache.New(10)
 	cfg := newCfg()
 	cfg.SearxngFailCooldown = 1 * time.Second // short for fast test
-	p := New(cfg, sx, bv, c)
+	p := New(cfg, sx, bv, c, breaker.New())
 
 	// 6 warmup calls to trigger cooldown
 	for i := 0; i < 6; i++ {
@@ -191,7 +192,7 @@ func TestSearchSearxngCooldownActive(t *testing.T) {
 
 	// Cooldown active: new instance without cooldown checks isolation
 	sxTracked := &fakeSearxng{err: errors.New("CALLED!")}
-	p2 := New(cfg, sxTracked, bv, c)
+	p2 := New(cfg, sxTracked, bv, c, breaker.New())
 	out, err := p2.Search(context.Background(), "different-key")
 	if err != nil {
 		t.Fatal(err)

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"sx/internal/brave"
+	"sx/internal/breaker"
 	"sx/internal/cache"
 	"sx/internal/config"
 	"sx/internal/mapper"
@@ -40,6 +41,7 @@ type Proxy struct {
 	sx  searxng.Client
 	bv  brave.Client
 	c   *cache.Cache
+	breakerMgr *breaker.Manager
 
 	// Cooldown circuit breaker (community pattern: searxng-resilient-router)
 	sxFails       int64        // atomic counter of consecutive failures
@@ -52,8 +54,8 @@ type Proxy struct {
 }
 
 // New creates a Proxy with the given config, backends and cache.
-func New(cfg *config.Config, sx searxng.Client, bv brave.Client, c *cache.Cache) *Proxy {
-	return &Proxy{cfg: cfg, sx: sx, bv: bv, c: c}
+func New(cfg *config.Config, sx searxng.Client, bv brave.Client, c *cache.Cache, breakerMgr *breaker.Manager) *Proxy {
+	return &Proxy{cfg: cfg, sx: sx, bv: bv, c: c, breakerMgr: breakerMgr}
 }
 
 // Search runs the full orchestration pipeline for a raw query string.
@@ -396,4 +398,29 @@ func classifyError(err error) string {
 // normalize lower-cases a query, trims spaces and collapses whitespace runs.
 func normalize(q string) string {
 	return strings.Join(strings.Fields(strings.ToLower(q)), " ")
+}
+
+// isClientError returns true if reason indicates a 4xx client error
+// (server is blocking us: 403, 429, access denied, forbidden, etc.)
+func isClientError(reason string) bool {
+	if strings.Contains(reason, "access denied") {
+		return true
+	}
+	if strings.Contains(reason, "forbidden") {
+		return true
+	}
+	if strings.Contains(reason, "too many requests") {
+		return true
+	}
+	if strings.Contains(reason, "not found") {
+		return true
+	}
+	if strings.Contains(reason, "unauthorized") {
+		return true
+	}
+	if strings.Contains(reason, "HTTP error 4") {
+		return true
+	}
+	// 5xx, timeout, HTTP error (5xx), connection refused = server error
+	return false
 }
