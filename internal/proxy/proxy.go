@@ -309,6 +309,10 @@ func (p *Proxy) observe(r *searxng.Response) {
 //   - attempt 4: after 4s (final)
 // Returns the last error if all retries fail.
 // All errors are retried — no 4xx/5xx distinction, no circuit breaker.
+//
+// Metrics (v0.8.1): every attempt is instrumented with attempt, outcome,
+// and error_class. Without per-attempt metrics, the retry path is invisible
+// to monitoring when SearXNG succeeds on the first try.
 func (p *Proxy) retryWithBackoff(ctx context.Context, fn func() (*searxng.Response, error)) (*searxng.Response, error) {
 	backoff := 1 * time.Second
 	const maxAttempts = 3
@@ -318,9 +322,12 @@ func (p *Proxy) retryWithBackoff(ctx context.Context, fn func() (*searxng.Respon
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
-			metrics.RetryTotal.WithLabelValues("retry", fmt.Sprintf("%d", attempt)).Inc()
 			select {
 			case <-ctx.Done():
+				// Context cancelled while waiting between attempts.
+				metrics.RetryAttemptsTotal.WithLabelValues(
+					fmt.Sprintf("%d", attempt), "cancelled", "cancelled",
+				).Inc()
 				return lastResp, ctx.Err()
 			case <-time.After(backoff):
 			}
@@ -328,18 +335,75 @@ func (p *Proxy) retryWithBackoff(ctx context.Context, fn func() (*searxng.Respon
 		}
 
 		resp, err := fn()
+		outcome := "success"
+		errClass := "none"
+		if err != nil {
+			outcome = "error"
+			errClass = classifyError(err)
+		}
+		metrics.RetryAttemptsTotal.WithLabelValues(
+			fmt.Sprintf("%d", attempt), outcome, errClass,
+		).Inc()
+
 		if err == nil {
-			if attempt > 1 {
-				metrics.RetryTotal.WithLabelValues("success", fmt.Sprintf("%d", attempt)).Inc()
-			}
 			return resp, nil
 		}
 		lastErr = err
 		lastResp = resp
 	}
 
-	metrics.RetryTotal.WithLabelValues("exhausted", "final").Inc()
+	// All retry attempts exhausted.
+	errClass := "other"
+	if lastErr != nil {
+		errClass = classifyError(lastErr)
+	}
+	metrics.RetryAttemptsTotal.WithLabelValues("final", "exhausted", errClass).Inc()
+	metrics.RetryExhaustedTotal.WithLabelValues(errClass).Inc()
 	return lastResp, lastErr
+}
+
+// classifyError maps an error to a Prometheus label value for retry metrics.
+//   - context.DeadlineExceeded         -> "timeout"
+//   - context.Canceled                 -> "cancelled"
+//   - HTTP 5xx (500/502/503/504/...)   -> "5xx"
+//   - network errors                   -> "network"
+//   - HTTP 4xx (rare)                  -> "4xx"
+//   - default                          -> "other"
+func classifyError(err error) string {
+	if err == nil {
+		return "none"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "cancelled"
+	}
+	msg := err.Error()
+	low := strings.ToLower(msg)
+	if strings.Contains(low, "5xx") ||
+		strings.Contains(low, "http error 5") ||
+		strings.Contains(msg, "500 ") || strings.Contains(msg, "502 ") ||
+		strings.Contains(msg, "503 ") || strings.Contains(msg, "504 ") ||
+		strings.Contains(low, "internal server error") ||
+		strings.Contains(low, "bad gateway") ||
+		strings.Contains(low, "service unavailable") ||
+		strings.Contains(low, "gateway timeout") {
+		return "5xx"
+	}
+	if strings.Contains(low, "4xx") || strings.Contains(low, "http error 4") {
+		return "4xx"
+	}
+	if strings.Contains(low, "connection refused") ||
+		strings.Contains(low, "no such host") ||
+		strings.Contains(low, "dial tcp") ||
+		strings.Contains(low, "i/o timeout") ||
+		strings.Contains(low, "connection reset") ||
+		strings.Contains(low, "no route to host") ||
+		strings.Contains(low, "network is unreachable") {
+		return "network"
+	}
+	return "other"
 }
 
 // normalize lower-cases a query, trims spaces and collapses whitespace runs.
