@@ -12,6 +12,9 @@
 //   - Cooldown circuit breaker: after SEARXNG_FAIL_THRESHOLD consecutive
 //     failures, SearXNG is skipped entirely for SEARXNG_FAIL_COOLDOWN_SECONDS,
 //     going directly to Brave.
+//   - Retry with exponential backoff (v0.7.0+): on SearXNG errors, retry up to
+//     3 times with 1s/2s/4s backoff. No circuit breaker, no cooldown, no
+//     engine skipping — just transient-fault resilience.
 package proxy
 
 import (
@@ -79,9 +82,11 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		return p.braveOnlySearch(ctx, key)
 	}
 
-	// 3. SearXNG call with timeout.
+	// 3. SearXNG call with timeout and retry (exponential backoff: 1s, 2s, 4s).
 	start := time.Now()
-	sxResp, sxErr := p.sx.Search(timeoutCtx, key)
+	sxResp, sxErr := p.retryWithBackoff(timeoutCtx, func() (*searxng.Response, error) {
+		return p.sx.Search(timeoutCtx, key)
+	})
 	sxElapsed := time.Since(start)
 
 	// 4. If SearXNG succeeded and response is sufficient → done.
@@ -282,6 +287,46 @@ func (p *Proxy) observe(r *searxng.Response) {
 	metrics.EnginesCount.Set(float64(len(distinct)))
 
 	metrics.CacheSize.Set(float64(p.c.Len()))
+}
+
+// retryWithBackoff retries fn up to maxAttempts with exponential backoff.
+//   - attempt 1: immediate
+//   - attempt 2: after 1s
+//   - attempt 3: after 2s
+//   - attempt 4: after 4s (final)
+// Returns the last error if all retries fail.
+// All errors are retried — no 4xx/5xx distinction, no circuit breaker.
+func (p *Proxy) retryWithBackoff(ctx context.Context, fn func() (*searxng.Response, error)) (*searxng.Response, error) {
+	backoff := 1 * time.Second
+	const maxAttempts = 3
+
+	var lastErr error
+	var lastResp *searxng.Response
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			metrics.RetryTotal.WithLabelValues("retry", fmt.Sprintf("%d", attempt)).Inc()
+			select {
+			case <-ctx.Done():
+				return lastResp, ctx.Err()
+			case <-time.After(backoff):
+			}
+			backoff *= 2 // exponential: 1s -> 2s -> 4s
+		}
+
+		resp, err := fn()
+		if err == nil {
+			if attempt > 1 {
+				metrics.RetryTotal.WithLabelValues("success", fmt.Sprintf("%d", attempt)).Inc()
+			}
+			return resp, nil
+		}
+		lastErr = err
+		lastResp = resp
+	}
+
+	metrics.RetryTotal.WithLabelValues("exhausted", "final").Inc()
+	return lastResp, lastErr
 }
 
 // normalize lower-cases a query, trims spaces and collapses whitespace runs.

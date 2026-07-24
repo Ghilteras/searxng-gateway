@@ -52,6 +52,16 @@ var (
 		Help: "Current LRU cache size (entries)",
 	})
 
+	// RetryTotal counts retry attempts on SearXNG errors.
+	// outcome: retry, success, exhausted; attempt: 1, 2, 3, final.
+	RetryTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "searxng_gateway_retry_total",
+			Help: "Total retry attempts on SearXNG errors",
+		},
+		[]string{"outcome", "attempt"},
+	)
+
 	// EngineResultsTotal counts results contributed per SearXNG engine.
 	EngineResultsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -87,6 +97,6 @@ var initOnce sync.Once
 // It is safe to call multiple times — subsequent calls are no-ops.
 func Init() {
 	initOnce.Do(func() {
-		prometheus.MustRegister(RequestsTotal, RequestDuration, ResultsCount, EnginesCount, CacheSize, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus)
+		prometheus.MustRegister(RequestsTotal, RequestDuration, ResultsCount, EnginesCount, CacheSize, RetryTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus)
 	})
 }
