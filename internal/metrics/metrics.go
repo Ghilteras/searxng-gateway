@@ -52,14 +52,28 @@ var (
 		Help: "Current LRU cache size (entries)",
 	})
 
-	// RetryTotal counts retry attempts on SearXNG errors.
-	// outcome: retry, success, exhausted; attempt: 1, 2, 3, final.
-	RetryTotal = prometheus.NewCounterVec(
+	// RetryAttemptsTotal counts every retry attempt (including the first).
+	//   attempt:      1, 2, 3, final
+	//   outcome:      success, error, exhausted, cancelled
+	//   error_class:  none, 5xx, timeout, network, 4xx, cancelled, other
+	// Without per-attempt instrumentation, the retry path is invisible when
+	// SearXNG succeeds on the first try (no .Inc() ever fires).
+	RetryAttemptsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "searxng_gateway_retry_total",
-			Help: "Total retry attempts on SearXNG errors",
+			Name: "searxng_gateway_retry_attempts_total",
+			Help: "Total retry attempts on SearXNG errors by attempt, outcome, error_class",
 		},
-		[]string{"outcome", "attempt"},
+		[]string{"attempt", "outcome", "error_class"},
+	)
+
+	// RetryExhaustedTotal counts requests where all retry attempts failed.
+	//   error_class:  5xx, timeout, network, other
+	RetryExhaustedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "searxng_gateway_retry_exhausted_total",
+			Help: "Total times all retry attempts were exhausted",
+		},
+		[]string{"error_class"},
 	)
 
 	// EngineResultsTotal counts results contributed per SearXNG engine.
@@ -97,6 +111,6 @@ var initOnce sync.Once
 // It is safe to call multiple times — subsequent calls are no-ops.
 func Init() {
 	initOnce.Do(func() {
-		prometheus.MustRegister(RequestsTotal, RequestDuration, ResultsCount, EnginesCount, CacheSize, RetryTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus)
+		prometheus.MustRegister(RequestsTotal, RequestDuration, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus)
 	})
 }
