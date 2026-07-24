@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"sx/internal/brave"
-	"sx/internal/breaker"
 	"sx/internal/cache"
 	"sx/internal/config"
 	"sx/internal/mapper"
@@ -42,8 +41,6 @@ type Proxy struct {
 	bv  brave.Client
 	c   *cache.Cache
 
-	breakerMgr *breaker.Manager
-
 	// Cooldown circuit breaker (community pattern: searxng-resilient-router)
 	sxFails       int64        // atomic counter of consecutive failures
 	sxCooldownTil atomic.Int64 // unix nano; 0 = no cooldown
@@ -56,7 +53,7 @@ type Proxy struct {
 
 // New creates a Proxy with the given config, backends and cache.
 func New(cfg *config.Config, sx searxng.Client, bv brave.Client, c *cache.Cache) *Proxy {
-	return &Proxy{cfg: cfg, sx: sx, bv: bv, c: c, breakerMgr: breaker.New()}
+	return &Proxy{cfg: cfg, sx: sx, bv: bv, c: c}
 }
 
 // Search runs the full orchestration pipeline for a raw query string.
@@ -123,16 +120,6 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		for engine, reason := range unresponsiveSet {
 			metrics.EngineUnresponsiveTotal.WithLabelValues(engine, reason).Inc()
 			metrics.EngineStatus.WithLabelValues(engine).Set(0)
-			// 4xx: circuit breaker (skip engine for 5min).
-			// 5xx/timeout: already retried via retryWithBackoff, no breaker action.
-			if isClientError(reason) {
-				p.breakerMgr.RecordClientError(engine, reason)
-			}
-		}
-
-		// Record circuit breaker success for engines that produced results.
-		for eng := range seenEngines {
-			p.breakerMgr.RecordSuccess(eng)
 		}
 
 		p.recordSearxngSuccess()
@@ -345,29 +332,4 @@ func (p *Proxy) retryWithBackoff(ctx context.Context, fn func() (*searxng.Respon
 // normalize lower-cases a query, trims spaces and collapses whitespace runs.
 func normalize(q string) string {
 	return strings.Join(strings.Fields(strings.ToLower(q)), " ")
-}
-
-// isClientError returns true if reason indicates a 4xx client error
-// (server is blocking us: 403, 429, access denied, forbidden, etc.)
-func isClientError(reason string) bool {
-	if strings.Contains(reason, "access denied") {
-		return true
-	}
-	if strings.Contains(reason, "forbidden") {
-		return true
-	}
-	if strings.Contains(reason, "too many requests") {
-		return true
-	}
-	if strings.Contains(reason, "not found") {
-		return true
-	}
-	if strings.Contains(reason, "unauthorized") {
-		return true
-	}
-	if strings.Contains(reason, "HTTP error 4") {
-		return true
-	}
-	// 5xx, timeout, HTTP error (5xx), connection refused = server error
-	return false
 }
