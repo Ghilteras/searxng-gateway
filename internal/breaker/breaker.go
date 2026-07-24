@@ -143,6 +143,22 @@ func (m *Manager) RecordClientError(engine, reason string) {
 	})
 }
 
+// RecordEngineSeen initializes the circuit breaker state gauge for an engine
+// to closed (=0), without triggering any state transition. Used to ensure
+// the metric series exists for every engine that has been observed, even
+// ones that have not yet tripped the breaker.
+//
+// Lesson MEMORY 2026-07-24 L1: promauto gauges don't emit a series until
+// .Set() is called. Engines like 'serper' that are 4xx-blocked but with
+// reasons not matching isClientError() would otherwise be invisible in
+// the CB panel.
+func (m *Manager) RecordEngineSeen(engine string) {
+	if engine == "" {
+		return
+	}
+	breakerState.WithLabelValues(engine).Set(stateFloat(gobreaker.StateClosed))
+}
+
 // RecordSuccess feeds a success (closes the breaker if half-open).
 func (m *Manager) RecordSuccess(engine string) {
 	if engine == "" {

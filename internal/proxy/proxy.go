@@ -114,9 +114,11 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 			metrics.RequestDuration.WithLabelValues("searxng", eng).Observe(sxElapsed.Seconds())
 		}
 
-		// Record circuit breaker success for engines that produced results
-		// (closes half-open probes, keeps the breaker closed).
+		// Record circuit breaker state for engines that produced results
+		// (RecordEngineSeen ensures the gauge series exists; RecordSuccess
+		// closes half-open probes, keeps the breaker closed).
 		for eng := range seenEngines {
+			p.breakerMgr.RecordEngineSeen(eng)
 			p.breakerMgr.RecordSuccess(eng)
 		}
 		unresponsiveSet := make(map[string]string)
@@ -128,6 +130,9 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		for engine, reason := range unresponsiveSet {
 			metrics.EngineUnresponsiveTotal.WithLabelValues(engine, reason).Inc()
 			metrics.EngineStatus.WithLabelValues(engine).Set(0)
+			// Ensure CB state gauge exists for this engine (closed unless tripped).
+			// Lesson MEMORY 2026-07-24 L1: promauto doesn't emit until .Set().
+			p.breakerMgr.RecordEngineSeen(engine)
 			// 4xx: circuit breaker (skip engine for 5min).
 			// 5xx/timeout: already retried via retryWithBackoff, no breaker action.
 			if isClientError(reason) {
