@@ -4,6 +4,7 @@
 package breaker
 
 import (
+	"log"
 	"sync"
 	"time"
 
@@ -210,8 +211,9 @@ func (m *Manager) getBreaker(engine string) *gobreaker.CircuitBreaker {
 				breakerTriggeredAt.WithLabelValues(name, reason).Set(timestamp)
 				breakerTripsTotal.WithLabelValues(name, reason).Inc()
 			}
-			if from == gobreaker.StateOpen && to == gobreaker.StateClosed {
+			if to == gobreaker.StateClosed && from != gobreaker.StateClosed {
 				breakerRecoveryTotal.WithLabelValues(name).Inc()
+				log.Printf("[CB] %s recovered: %s -> %s", name, from, to)
 			}
 		},
 	})
