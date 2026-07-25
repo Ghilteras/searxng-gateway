@@ -19,6 +19,7 @@ import (
 	"sx/internal/config"
 	"sx/internal/metrics"
 	"sx/internal/proxy"
+	"sx/internal/quota"
 	"sx/internal/searxng"
 )
 
@@ -38,6 +39,11 @@ func main() {
 	bv := brave.New(cfg.BraveAPIKey, cfg.BraveTimeout)
 	breakerMgr := breaker.New()
 	p := proxy.New(cfg, sx, bv, c, breakerMgr)
+
+	// Start quota scraper (Brave + Serper API usage, every 5min).
+	scraperCtx, stopScraper := context.WithCancel(context.Background())
+	defer stopScraper()
+	quota.StartScraper(scraperCtx, cfg.BraveAPIKey, os.Getenv("SERPER_API_KEY"), 5*time.Minute)
 
 	mux := newRouter(p, cfg)
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}

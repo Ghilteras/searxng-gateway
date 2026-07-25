@@ -122,6 +122,24 @@ var (
 		},
 		[]string{"period"},
 	)
+
+	// SerperSearchesRemaining tracks the remaining Serper API searches this month.
+	SerperSearchesRemaining = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "searxng_gateway_serper_searches_remaining",
+			Help: "Serper API searches remaining this month",
+		},
+		[]string{"period"},
+	)
+
+	// SerperSearchesLimit tracks the Serper API searches limit this month.
+	SerperSearchesLimit = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "searxng_gateway_serper_searches_limit",
+			Help: "Serper API searches limit this month",
+		},
+		[]string{"period"},
+	)
 )
 
 var initOnce sync.Once
@@ -130,6 +148,6 @@ var initOnce sync.Once
 // It is safe to call multiple times — subsequent calls are no-ops.
 func Init() {
 	initOnce.Do(func() {
-		prometheus.MustRegister(RequestsTotal, RequestDuration, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveCreditsRemaining, BraveCreditsLimit)
+		prometheus.MustRegister(RequestsTotal, RequestDuration, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveCreditsRemaining, BraveCreditsLimit, SerperSearchesRemaining, SerperSearchesLimit)
 	})
 }
