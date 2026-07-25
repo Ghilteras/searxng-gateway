@@ -157,10 +157,9 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	return p.braveSearch(ctx, key, sxResp, sxErr)
 }
 
-// sufficient returns true when the SearXNG response has at least one result
-// (community-aligned binary fallback, original byteowlz/sx pattern).
+// sufficient returns true when the SearXNG response has at least SufficientMinResults.
 func (p *Proxy) sufficient(r *searxng.Response) bool {
-	return len(r.Results) > 0
+	return len(r.Results) >= p.cfg.SufficientMinResults
 }
 
 // braveOnlySearch is called when SearXNG is in cooldown — searches Brave only.
@@ -187,6 +186,9 @@ func (p *Proxy) braveOnlySearch(_ context.Context, key string) (*searxng.Respons
 	metrics.RequestsTotal.WithLabelValues("fallback_brave_ok").Inc()
 	p.recordBraveSuccess()
 	p.recordBraveCredits(bvResp.RateLimit)
+	if len(bvResp.Web.Results) > 0 {
+		metrics.EngineResultsTotal.WithLabelValues("brave-premium").Add(float64(len(bvResp.Web.Results)))
+	}
 	mapped := &searxng.Response{Results: mapper.ToSearxngResults(bvResp.Web.Results)}
 	p.observe(mapped)
 	p.c.Set(key, mapped)
@@ -218,6 +220,9 @@ func (p *Proxy) braveSearch(_ context.Context, key string, sxResp *searxng.Respo
 	metrics.RequestsTotal.WithLabelValues("fallback_brave_ok").Inc()
 	p.recordBraveSuccess()
 	p.recordBraveCredits(bvResp.RateLimit)
+	if len(bvResp.Web.Results) > 0 {
+		metrics.EngineResultsTotal.WithLabelValues("brave-premium").Add(float64(len(bvResp.Web.Results)))
+	}
 	mapped := &searxng.Response{Results: mapper.ToSearxngResults(bvResp.Web.Results)}
 	p.observe(mapped)
 	p.c.Set(key, mapped)

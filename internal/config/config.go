@@ -16,8 +16,9 @@ type Config struct {
 	BraveTimeout       time.Duration
 	CacheSize          int
 	CacheTTL           time.Duration
-	LogLevel           string
-	MetricsPath        string
+	LogLevel             string
+	MetricsPath          string
+	SufficientMinResults int // minimum SearXNG results before fallback is considered "sufficient"
 	// Community-aligned: binary fallback + cooldown circuit breaker
 	SearxngFailThreshold int           // consecutive failures before cooldown
 	SearxngFailCooldown  time.Duration // duration of cooldown period
@@ -37,6 +38,7 @@ func Load() (*Config, error) {
 		CacheTTL:              time.Duration(getEnvInt("CACHE_TTL_SECONDS", 3600)) * time.Second,
 		LogLevel:              getEnv("LOG_LEVEL", "info"),
 		MetricsPath:           getEnv("METRICS_PATH", "/metrics"),
+		SufficientMinResults:  getEnvInt("SUFFICIENT_MIN_RESULTS", 1),
 		SearxngFailThreshold:  getEnvInt("SEARXNG_FAIL_THRESHOLD", 6),
 		SearxngFailCooldown:   time.Duration(getEnvInt("SEARXNG_FAIL_COOLDOWN_SECONDS", 180)) * time.Second,
 		BraveFailThreshold:    getEnvInt("BRAVE_FAIL_THRESHOLD", 3),
