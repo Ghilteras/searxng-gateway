@@ -186,6 +186,7 @@ func (p *Proxy) braveOnlySearch(_ context.Context, key string) (*searxng.Respons
 
 	metrics.RequestsTotal.WithLabelValues("fallback_brave_ok").Inc()
 	p.recordBraveSuccess()
+	p.recordBraveCredits(bvResp.RateLimit)
 	mapped := &searxng.Response{Results: mapper.ToSearxngResults(bvResp.Web.Results)}
 	p.observe(mapped)
 	p.c.Set(key, mapped)
@@ -216,6 +217,7 @@ func (p *Proxy) braveSearch(_ context.Context, key string, sxResp *searxng.Respo
 
 	metrics.RequestsTotal.WithLabelValues("fallback_brave_ok").Inc()
 	p.recordBraveSuccess()
+	p.recordBraveCredits(bvResp.RateLimit)
 	mapped := &searxng.Response{Results: mapper.ToSearxngResults(bvResp.Web.Results)}
 	p.observe(mapped)
 	p.c.Set(key, mapped)
@@ -264,6 +266,17 @@ func (p *Proxy) recordBraveSuccess() {
 	defer p.mu.Unlock()
 	atomic.StoreInt64(&p.bvFails, 0)
 	p.bvCooldownTil.Store(0)
+}
+
+// recordBraveCredits updates Prometheus gauges from Brave API rate limit
+// headers parsed by the Brave client. If rl is nil (no headers present),
+// this is a no-op.
+func (p *Proxy) recordBraveCredits(rl *brave.RateLimit) {
+	if rl == nil {
+		return
+	}
+	metrics.BraveCreditsRemaining.WithLabelValues("month").Set(rl.RemainingMonth)
+	metrics.BraveCreditsLimit.WithLabelValues("month").Set(rl.LimitMonth)
 }
 
 // recordBraveFailure increments the failure counter and starts a cooldown

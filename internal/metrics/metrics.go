@@ -103,6 +103,25 @@ var (
 		},
 		[]string{"engine"},
 	)
+
+	// BraveCreditsRemaining tracks the remaining Brave API credits parsed from
+	// X-RateLimit-Remaining response header. Period label: "second" or "month".
+	BraveCreditsRemaining = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "searxng_gateway_brave_credits_remaining",
+			Help: "Brave API credits remaining per period (parsed from X-RateLimit-Remaining header)",
+		},
+		[]string{"period"},
+	)
+
+	// BraveCreditsLimit tracks the Brave API rate limit per period.
+	BraveCreditsLimit = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "searxng_gateway_brave_credits_limit",
+			Help: "Brave API credits limit per period (parsed from X-RateLimit-Limit header)",
+		},
+		[]string{"period"},
+	)
 )
 
 var initOnce sync.Once
@@ -111,6 +130,6 @@ var initOnce sync.Once
 // It is safe to call multiple times — subsequent calls are no-ops.
 func Init() {
 	initOnce.Do(func() {
-		prometheus.MustRegister(RequestsTotal, RequestDuration, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus)
+		prometheus.MustRegister(RequestsTotal, RequestDuration, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveCreditsRemaining, BraveCreditsLimit)
 	})
 }
