@@ -1,6 +1,6 @@
 # searxng-gateway
 
-Decision proxy in front of SearXNG: forwards queries to SearXNG, falls back to Brave Search API when results are too few or engine diversity is too low. Same JSON shape as SearXNG, Prometheus /metrics, in-memory LRU cache.
+Decision proxy in front of SearXNG: forwards queries to SearXNG, falls back to configurable freemium providers (e.g. Brave Search API) when results are too few or engine diversity is too low. Same JSON shape as SearXNG, Prometheus /metrics, in-memory LRU cache.
 
 Forked from [byteowlz/sx](https://github.com/byteowlz/sx) for the fallback orchestration logic; this repo adds the HTTP server, per-engine circuit breaker, Prometheus metrics, cache, and Docker packaging.
 
@@ -32,7 +32,7 @@ Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (Tier 1+2 engin
                     │                        ├── Bing, Wikipedia, GitHub...
                     │                        └── Circuit breaker tracks failures
                     │
-                    └──▶ Premium fallback (e.g. Brave, Tavily, Exa...)
+                    └──▶ Premium fallback (e.g. Brave Search API)
                          Triggered when SearXNG returns < SUFFICIENT_MIN_RESULTS
 ```
 
@@ -44,7 +44,7 @@ See [docs/architecture.md](docs/architecture.md) for the full design.
 |------|--------|------|---------------|
 | T1 | Serper (Google) | Free 2,500/mo | Yes (optional) |
 | T2 | Bing, Wikipedia, GitHub, StackOverflow, ArXiv, PyPI, Docker Hub, Mwmbl, Marginalia | Free | No |
-| T3 | Brave, Tavily, Exa, Jina, Bing API | Free tiers available | Provider-dependent |
+| T3 | Brave Search API | Free tier ($5 credit) | Yes (optional) |
 
 Keyless mode (T2 only) works out of the box. See [docs/keyless.md](docs/keyless.md).
 
@@ -55,7 +55,7 @@ Keyless mode (T2 only) works out of the box. See [docs/keyless.md](docs/keyless.
 - **Prometheus /metrics** — 10+ gauges and counters prefixed `searxng_gateway_`
 - **LRU cache** — 1000 entries, 1h TTL, in-memory
 - **SearXNG config tuning** — reference `examples/searxng/` with engine selection, `suspended_times` tuning, custom User-Agent, and custom Python engines (Serper, Mojeek)
-- **Brave billing alert** — `engine_results_total{engine="brave-premium"}` tracks fallback usage
+- **Fallback billing alert** — `engine_results_total` tracks fallback API usage so you can alert before hitting quota limits
 
 ## Observability
 
@@ -126,16 +126,13 @@ groups:
 | `SEARXNG_BACKEND_URL` | `http://searxng-primary:8080` | no | SearXNG instance URL |
 | `FALLBACK_PROVIDERS` | `brave` | no | Comma-separated list of fallback backends (brave, tavily, exa, jina, bing) |
 | `BRAVE_API_KEY` | — | no | Brave Search API key |
-| `TAVILY_API_KEY` | — | no | Tavily Search API key |
-| `EXA_API_KEY` | — | no | Exa Search API key |
-| `JINA_API_KEY` | — | no | Jina Search API key |
-| `BING_API_KEY` | — | no | Bing Search API key (currently unused — keyless HTML scraping) |
+| (any `*_API_KEY`) | — | no | Any supported backend: `BRAVE_API_KEY`, `SERPER_API_KEY`, etc. |
 | `SUFFICIENT_MIN_RESULTS` | `1` | no | Minimum SearXNG results before triggering fallback |
 | `FALLBACK_MIN_RESULTS` | `5` | no | Minimum results from any single fallback backend |
 | `FALLBACK_MIN_ENGINES` | `2` | no | Minimum distinct engines in SearXNG response |
 | `FALLBACK_TIMEOUT_SECONDS` | `30` | no | Maximum time for the entire fallback chain |
 | `SEARXNG_TIMEOUT_SECONDS` | `25` | no | Per-request timeout for SearXNG |
-| `BRAVE_TIMEOUT_SECONDS` | `15` | no | Per-request timeout for Brave API |
+| `FALLBACK_TIMEOUT_SECONDS` | `30` | no | Per-request timeout for fallback backends |
 | `SEARXNG_FAIL_THRESHOLD` | `6` | no | Consecutive SearXNG failures before cooldown |
 | `SEARXNG_FAIL_COOLDOWN_SECONDS` | `180` | no | Cooldown duration for SearXNG (seconds) |
 | `CACHE_SIZE` | `1000` | no | LRU cache entries (in-memory) |
@@ -145,31 +142,25 @@ groups:
 
 ## Supported fallback providers
 
-Any `SearchBackend` registered in `backends/` can be used as a fallback. Set `FALLBACK_PROVIDERS` to a comma-separated list:
+Set `FALLBACK_PROVIDERS` to a comma-separated list:
 
 ```bash
 # Brave only (default)
 FALLBACK_PROVIDERS=brave
 BRAVE_API_KEY=xxx
 
-# Tavily instead of Brave
-FALLBACK_PROVIDERS=tavily
-TAVILY_API_KEY=xxx
-
-# Multiple fallbacks: try Brave first, then Tavily, then Exa
-FALLBACK_PROVIDERS=brave,tavily,exa
+# Multiple fallbacks: try Brave first, then Serper
+FALLBACK_PROVIDERS=brave,serper
 BRAVE_API_KEY=xxx
-TAVILY_API_KEY=xxx
-EXA_API_KEY=xxx
+SERPER_API_KEY=xxx
 ```
 
 | Provider | Env var | Free tier | Notes |
 |----------|---------|-----------|-------|
-| Brave | `BRAVE_API_KEY` | $5 credit (1,000/mo) | Good web coverage, rate-limit headers |
-| Tavily | `TAVILY_API_KEY` | 1,000 credits/mo | AI-optimized, includes answers |
-| Exa | `EXA_API_KEY` | 1,000 searches/mo | Semantic search, content extraction |
-| Jina | `JINA_API_KEY` | 1M tokens/mo (keyless available) | Reader/search API, keyless fallback |
-| Bing | — (keyless) | $0 (Azure free tier) | HTML scraping, no API key needed |
+| Brave | `BRAVE_API_KEY` | $5 credit (1,000/mo) | Good web coverage |
+| Serper | `SERPER_API_KEY` | 2,500/mo | Google results via API |
+
+Additional backends from upstream (Tavily, Exa, Jina, Bing) are included but untested by us — configure them the same way via their `_API_KEY` env vars.
 
 ### Adding a new provider
 
