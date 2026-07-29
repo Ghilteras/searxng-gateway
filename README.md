@@ -2,6 +2,8 @@
 
 Decision proxy in front of SearXNG: forwards queries to SearXNG, falls back to configurable freemium providers (e.g. Brave Search API) when results are too few or engine diversity is too low. Same JSON shape as SearXNG, Prometheus /metrics, in-memory LRU cache.
 
+🚀 **Works with zero API keys in keyless mode.** See [docs/keyless.md](docs/keyless.md).
+
 Forked from [byteowlz/sx](https://github.com/byteowlz/sx) for the fallback orchestration logic; this repo adds the HTTP server, per-engine circuit breaker, Prometheus metrics, cache, and Docker packaging.
 
 ## Quick Start
@@ -42,9 +44,11 @@ See [docs/architecture.md](docs/architecture.md) for the full design.
 
 | Tier | Source | Cost | Key required? |
 |------|--------|------|---------------|
-| T1 | Serper (Google) | Free 2,500/mo | Yes (optional) |
+| T1 | Serper (Google) | Free 2,500/mo | Yes (optional)* |
 | T2 | Bing, Wikipedia, GitHub, StackOverflow, ArXiv, PyPI, Docker Hub, Mwmbl, Marginalia | Free | No |
 | T3 | Brave Search API | Free tier ($5 credit) | Yes (optional) |
+
+*Tier 1 requires an API key but is optional — the gateway works with T2+T3 only.
 
 Keyless mode (T2 only) works out of the box. See [docs/keyless.md](docs/keyless.md).
 
@@ -124,17 +128,16 @@ groups:
 |-----|---------|----------|-------------|
 | `LISTEN_ADDR` | `:8080` | no | HTTP listen address |
 | `SEARXNG_BACKEND_URL` | `http://searxng-primary:8080` | no | SearXNG instance URL |
-| `FALLBACK_PROVIDERS` | `brave` | no | Comma-separated list of fallback backends (brave, tavily, exa, jina, bing) |
+| `FALLBACK_PROVIDERS` | `brave` | no | Comma-separated list of fallback backends |
 | `BRAVE_API_KEY` | — | no | Brave Search API key |
-| (any `*_API_KEY`) | — | no | Any supported backend: `BRAVE_API_KEY`, `SERPER_API_KEY`, etc. |
 | `SUFFICIENT_MIN_RESULTS` | `1` | no | Minimum SearXNG results before triggering fallback |
-| `FALLBACK_MIN_RESULTS` | `5` | no | Minimum results from any single fallback backend |
-| `FALLBACK_MIN_ENGINES` | `2` | no | Minimum distinct engines in SearXNG response |
 | `FALLBACK_TIMEOUT_SECONDS` | `30` | no | Maximum time for the entire fallback chain |
 | `SEARXNG_TIMEOUT_SECONDS` | `25` | no | Per-request timeout for SearXNG |
-| `FALLBACK_TIMEOUT_SECONDS` | `30` | no | Per-request timeout for fallback backends |
 | `SEARXNG_FAIL_THRESHOLD` | `6` | no | Consecutive SearXNG failures before cooldown |
 | `SEARXNG_FAIL_COOLDOWN_SECONDS` | `180` | no | Cooldown duration for SearXNG (seconds) |
+| `BRAVE_FAIL_THRESHOLD` | `3` | no | Consecutive Brave failures before cooldown |
+| `BRAVE_FAIL_COOLDOWN_SECONDS` | `300` | no | Cooldown duration for Brave (seconds) |
+| `BRAVE_TIMEOUT_SECONDS` | `15` | no | Per-request timeout for Brave API |
 | `CACHE_SIZE` | `1000` | no | LRU cache entries (in-memory) |
 | `CACHE_TTL_SECONDS` | `3600` | no | Cache entry TTL (seconds) |
 | `LOG_LEVEL` | `info` | no | Log level (debug, info, warn, error) |
@@ -160,7 +163,7 @@ SERPER_API_KEY=xxx
 | Brave | `BRAVE_API_KEY` | $5 credit (1,000/mo) | Good web coverage |
 | Serper | `SERPER_API_KEY` | 2,500/mo | Google results via API |
 
-Additional backends from upstream (Tavily, Exa, Jina, Bing) are included but untested by us — configure them the same way via their `_API_KEY` env vars.
+Additional backends from upstream (Tavily, Exa, Jina, Bing) are included but not part of our production deployment — configure them the same way via their `_API_KEY` env vars.
 
 ### Adding a new provider
 
