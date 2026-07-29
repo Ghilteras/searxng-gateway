@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,7 @@ type Config struct {
 	LogLevel             string
 	MetricsPath          string
 	SufficientMinResults int // minimum SearXNG results before fallback is considered "sufficient"
+	FallbackProviders    []string // parsed from FALLBACK_PROVIDERS env var
 	// Community-aligned: binary fallback + cooldown circuit breaker
 	SearxngFailThreshold int           // consecutive failures before cooldown
 	SearxngFailCooldown  time.Duration // duration of cooldown period
@@ -31,6 +33,7 @@ func Load() (*Config, error) {
 		ListenAddr:            getEnv("LISTEN_ADDR", ":8080"),
 		SearxngBackendURL:     getEnv("SEARXNG_BACKEND_URL", "http://searxng-primary:8080"),
 		BraveAPIKey:           os.Getenv("BRAVE_API_KEY"),
+		FallbackProviders:     parseProviderList(getEnv("FALLBACK_PROVIDERS", "brave")),
 		FallbackTimeout:       time.Duration(getEnvInt("FALLBACK_TIMEOUT_SECONDS", 30)) * time.Second,
 		SearxngTimeout:        time.Duration(getEnvInt("SEARXNG_TIMEOUT_SECONDS", 25)) * time.Second,
 		BraveTimeout:          time.Duration(getEnvInt("BRAVE_TIMEOUT_SECONDS", 15)) * time.Second,
@@ -48,9 +51,6 @@ func Load() (*Config, error) {
 }
 
 func (c *Config) Validate() error {
-	if c.BraveAPIKey == "" {
-		return fmt.Errorf("BRAVE_API_KEY is required")
-	}
 	if c.SearxngFailThreshold < 1 {
 		return fmt.Errorf("SEARXNG_FAIL_THRESHOLD must be >= 1, got %d", c.SearxngFailThreshold)
 	}
@@ -83,4 +83,15 @@ func getEnvInt(k string, def int) int {
 		return def
 	}
 	return n
+}
+
+func parseProviderList(s string) []string {
+	parts := strings.Split(s, ",")
+	names := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			names = append(names, strings.ToLower(t))
+		}
+	}
+	return names
 }

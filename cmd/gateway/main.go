@@ -13,7 +13,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"sx/internal/brave"
+	"sx/backends"
 	"sx/internal/breaker"
 	"sx/internal/cache"
 	"sx/internal/config"
@@ -36,14 +36,31 @@ func main() {
 	}
 
 	sx := searxng.New(cfg.SearxngBackendURL, cfg.SearxngTimeout)
-	bv := brave.New(cfg.BraveAPIKey, cfg.BraveTimeout)
 	breakerMgr := breaker.New()
-	p := proxy.New(cfg, sx, bv, c, breakerMgr)
+
+	// Initialize fallback backends from FALLBACK_PROVIDERS env var
+	fallbackMgr := backends.NewManager()
+	for _, name := range cfg.FallbackProviders {
+		timeout := cfg.BraveTimeout // default, overridden per-provider in factory
+		backend, err := backends.NewFromEnv(name, timeout)
+		if err != nil {
+			log.Printf("warning: skipping fallback provider %q: %v", name, err)
+			continue
+		}
+		fallbackMgr.Register(backend)
+	}
+	if len(cfg.FallbackProviders) > 0 {
+		if err := fallbackMgr.SetFallbacks(cfg.FallbackProviders); err != nil {
+			log.Printf("warning: fallback chain setup: %v", err)
+		}
+	}
+
+	p := proxy.New(cfg, sx, c, breakerMgr, fallbackMgr)
 
 	// Start quota scraper (Brave + Serper API usage, every 5min).
 	scraperCtx, stopScraper := context.WithCancel(context.Background())
 	defer stopScraper()
-	quota.StartScraper(scraperCtx, cfg.BraveAPIKey, os.Getenv("SERPER_API_KEY"), 5*time.Minute)
+	go quota.StartScraper(scraperCtx, cfg.BraveAPIKey, os.Getenv("SERPER_API_KEY"), 5*time.Minute)
 
 	mux := newRouter(p, cfg)
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}

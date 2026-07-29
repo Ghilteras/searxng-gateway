@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"sx/internal/brave"
+	"sx/backends"
 	"sx/internal/breaker"
 	"sx/internal/cache"
 	"sx/internal/config"
@@ -23,23 +23,38 @@ func (f *fakeSearxng) Search(_ context.Context, _ string) (*searxng.Response, er
 	return f.resp, f.err
 }
 
-type fakeBrave struct {
-	resp *brave.Response
-	err  error
+// fakeBackend implements backends.SearchBackend for testing.
+type fakeBackend struct {
+	name    string
+	results []backends.SearchResult
+	err     error
+	avail   bool
 }
 
-func (f *fakeBrave) Search(_ context.Context, _ string) (*brave.Response, error) {
-	return f.resp, f.err
+func (f *fakeBackend) Name() string              { return f.name }
+func (f *fakeBackend) IsAvailable() bool         { return f.avail }
+func (f *fakeBackend) Search(backends.SearchOptions) ([]backends.SearchResult, error) {
+	return f.results, f.err
 }
 
 func newCfg() *config.Config {
 	return &config.Config{
-		SearxngBackendURL:    "http://searxng-primary:8080",
-		FallbackTimeout:      30 * time.Second,
-		CacheTTL:             time.Hour,
-		SearxngFailThreshold: 6,
-		SearxngFailCooldown:  180 * time.Second,
+		SearxngBackendURL:     "http://searxng-primary:8080",
+		FallbackTimeout:       30 * time.Second,
+		CacheTTL:              time.Hour,
+		SearxngFailThreshold:  6,
+		SearxngFailCooldown:   180 * time.Second,
+		SufficientMinResults:  1,
+		FallbackProviders:     []string{"brave"},
 	}
+}
+
+// newTestProxy creates a Proxy with a single "brave" fallback backend for testing.
+func newTestProxy(cfg *config.Config, sx searxng.Client, fb *fakeBackend, c *cache.Cache, breakerMgr *breaker.Manager) *Proxy {
+	mgr := backends.NewManager()
+	mgr.Register(fb)
+	_ = mgr.SetFallbacks(cfg.FallbackProviders)
+	return New(cfg, sx, c, breakerMgr, mgr)
 }
 
 // TestSearchSearxngOK — binary fallback: 1 result (1 engine) → sufficient → SearXNG
@@ -48,7 +63,7 @@ func TestSearchSearxngOK(t *testing.T) {
 		{Title: "single", Engine: "wikipedia"},
 	}}}
 	c, _ := cache.New(10)
-	p := New(newCfg(), sx, &fakeBrave{}, c, breaker.New())
+	p := newTestProxy(newCfg(), sx, &fakeBackend{name: "brave", avail: true}, c, breaker.New())
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
@@ -64,10 +79,15 @@ func TestSearchSearxngOK(t *testing.T) {
 // TestSearchFallbackBrave — SearXNG 0 results → insufficient → Brave fallback
 func TestSearchFallbackBrave(t *testing.T) {
 	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{}}}
-	bv := &fakeBrave{resp: &brave.Response{}}
-	bv.resp.Web.Results = append(bv.resp.Web.Results, brave.Result{Title: "T1", URL: "u1", Description: "d1", Age: "1d"})
+	fb := &fakeBackend{
+		name: "brave",
+		results: []backends.SearchResult{
+			{Title: "T1", URL: "u1", Content: "d1", Engine: "brave"},
+		},
+		avail: true,
+	}
 	c, _ := cache.New(10)
-	p := New(newCfg(), sx, bv, c, breaker.New())
+	p := newTestProxy(newCfg(), sx, fb, c, breaker.New())
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
@@ -75,18 +95,23 @@ func TestSearchFallbackBrave(t *testing.T) {
 	if len(out.Results) != 1 {
 		t.Errorf("len = %d, want 1 (Brave fallback)", len(out.Results))
 	}
-	if out.Results[0].Engine != "brave-api" {
-		t.Errorf("Engine = %q, want brave-api", out.Results[0].Engine)
+	if out.Results[0].Engine != "brave" {
+		t.Errorf("Engine = %q, want brave", out.Results[0].Engine)
 	}
 }
 
 // TestSearchFallbackTimeout — SearXNG timeout → Brave fallback
 func TestSearchFallbackTimeout(t *testing.T) {
 	sx := &fakeSearxng{err: context.DeadlineExceeded}
-	bv := &fakeBrave{resp: &brave.Response{}}
-	bv.resp.Web.Results = append(bv.resp.Web.Results, brave.Result{Title: "T", URL: "u", Description: "d"})
+	fb := &fakeBackend{
+		name: "brave",
+		results: []backends.SearchResult{
+			{Title: "T", URL: "u", Content: "d", Engine: "brave"},
+		},
+		avail: true,
+	}
 	c, _ := cache.New(10)
-	p := New(newCfg(), sx, bv, c, breaker.New())
+	p := newTestProxy(newCfg(), sx, fb, c, breaker.New())
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
@@ -101,7 +126,7 @@ func TestSearchCacheHit(t *testing.T) {
 	c, _ := cache.New(10)
 	c.Set("x", &searxng.Response{Results: []searxng.Result{{Title: "cached"}}})
 	sx := &fakeSearxng{} // must NOT be called
-	p := New(newCfg(), sx, &fakeBrave{}, c, breaker.New())
+	p := newTestProxy(newCfg(), sx, &fakeBackend{name: "brave", avail: true}, c, breaker.New())
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
@@ -114,9 +139,9 @@ func TestSearchCacheHit(t *testing.T) {
 // TestSearchFallbackBraveFails — SearXNG 0 results + Brave error → error
 func TestSearchFallbackBraveFails(t *testing.T) {
 	sx := &fakeSearxng{resp: &searxng.Response{Results: nil}}
-	bv := &fakeBrave{err: errors.New("upstream 500")}
+	fb := &fakeBackend{name: "brave", err: errors.New("upstream 500"), avail: true}
 	c, _ := cache.New(10)
-	p := New(newCfg(), sx, bv, c, breaker.New())
+	p := newTestProxy(newCfg(), sx, fb, c, breaker.New())
 	if _, err := p.Search(context.Background(), "x"); err == nil {
 		t.Error("Search expected error when both SearXNG and Brave fail")
 	}
@@ -130,7 +155,7 @@ func TestSearchSearxngBinaryOK(t *testing.T) {
 		{Title: "single", Engine: "wikipedia"},
 	}}}
 	c, _ := cache.New(10)
-	p := New(newCfg(), sx, &fakeBrave{}, c, breaker.New())
+	p := newTestProxy(newCfg(), sx, &fakeBackend{name: "brave", avail: true}, c, breaker.New())
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
@@ -147,11 +172,16 @@ func TestSearchSearxngBinaryOK(t *testing.T) {
 // SearXNG still tried before Brave fallback
 func TestSearchSearxngBinaryFailSkipsCooldown(t *testing.T) {
 	sx := &fakeSearxng{err: errors.New("upstream 500")}
-	bv := &fakeBrave{resp: &brave.Response{}}
-	bv.resp.Web.Results = append(bv.resp.Web.Results, brave.Result{Title: "T", URL: "u", Description: "d"})
+	fb := &fakeBackend{
+		name: "brave",
+		results: []backends.SearchResult{
+			{Title: "T", URL: "u", Content: "d", Engine: "brave"},
+		},
+		avail: true,
+	}
 	c, _ := cache.New(10)
 	cfg := newCfg()
-	p := New(cfg, sx, bv, c, breaker.New())
+	p := newTestProxy(cfg, sx, fb, c, breaker.New())
 
 	// 5 consecutive failures
 	for i := 0; i < 5; i++ {
@@ -178,12 +208,17 @@ func TestSearchSearxngBinaryFailSkipsCooldown(t *testing.T) {
 // During cooldown, SearXNG is skipped, goes directly to Brave
 func TestSearchSearxngCooldownActive(t *testing.T) {
 	sx := &fakeSearxng{err: errors.New("upstream 500")}
-	bv := &fakeBrave{resp: &brave.Response{}}
-	bv.resp.Web.Results = append(bv.resp.Web.Results, brave.Result{Title: "T", URL: "u", Description: "d"})
+	fb := &fakeBackend{
+		name: "brave",
+		results: []backends.SearchResult{
+			{Title: "T", URL: "u", Content: "d", Engine: "brave"},
+		},
+		avail: true,
+	}
 	c, _ := cache.New(10)
 	cfg := newCfg()
 	cfg.SearxngFailCooldown = 1 * time.Second // short for fast test
-	p := New(cfg, sx, bv, c, breaker.New())
+	p := newTestProxy(cfg, sx, fb, c, breaker.New())
 
 	// 6 warmup calls to trigger cooldown
 	for i := 0; i < 6; i++ {
@@ -192,7 +227,7 @@ func TestSearchSearxngCooldownActive(t *testing.T) {
 
 	// Cooldown active: new instance without cooldown checks isolation
 	sxTracked := &fakeSearxng{err: errors.New("CALLED!")}
-	p2 := New(cfg, sxTracked, bv, c, breaker.New())
+	p2 := newTestProxy(cfg, sxTracked, fb, c, breaker.New())
 	out, err := p2.Search(context.Background(), "different-key")
 	if err != nil {
 		t.Fatal(err)

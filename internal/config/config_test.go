@@ -109,8 +109,9 @@ func TestLoadRequiresBraveKey(t *testing.T) {
 	defer restoreEnv(prev)
 	os.Clearenv()
 
-	if _, err := Load(); err == nil {
-		t.Error("Load() expected error when BRAVE_API_KEY missing")
+	// BRAVE_API_KEY is no longer required; keyless mode works without it.
+	if _, err := Load(); err != nil {
+		t.Errorf("Load() expected success without BRAVE_API_KEY, got: %v", err)
 	}
 }
 

@@ -26,36 +26,33 @@ import (
 	"sync/atomic"
 	"time"
 
-	"sx/internal/brave"
+	"sx/backends"
 	"sx/internal/breaker"
 	"sx/internal/cache"
 	"sx/internal/config"
-	"sx/internal/mapper"
 	"sx/internal/metrics"
 	"sx/internal/searxng"
 )
 
-// Proxy orchestrates SearXNG-first search with a Brave fallback.
+// Proxy orchestrates SearXNG-first search with pluggable fallback providers.
 type Proxy struct {
-	cfg *config.Config
-	sx  searxng.Client
-	bv  brave.Client
-	c   *cache.Cache
+	cfg        *config.Config
+	sx         searxng.Client
+	c          *cache.Cache
 	breakerMgr *breaker.Manager
+
+	// Fallback chain: tried in order when SearXNG is insufficient.
+	fallbackMgr *backends.Manager
 
 	// Cooldown circuit breaker (community pattern: searxng-resilient-router)
 	sxFails       int64        // atomic counter of consecutive failures
 	sxCooldownTil atomic.Int64 // unix nano; 0 = no cooldown
 	mu            sync.Mutex   // guards sxFails/sxCooldownTil updates
-
-	// Brave circuit breaker (mirrors the SearXNG pattern)
-	bvFails       int64        // atomic counter of consecutive failures
-	bvCooldownTil atomic.Int64 // unix nano; 0 = no cooldown
 }
 
 // New creates a Proxy with the given config, backends and cache.
-func New(cfg *config.Config, sx searxng.Client, bv brave.Client, c *cache.Cache, breakerMgr *breaker.Manager) *Proxy {
-	return &Proxy{cfg: cfg, sx: sx, bv: bv, c: c, breakerMgr: breakerMgr}
+func New(cfg *config.Config, sx searxng.Client, c *cache.Cache, breakerMgr *breaker.Manager, fallbackMgr *backends.Manager) *Proxy {
+	return &Proxy{cfg: cfg, sx: sx, c: c, breakerMgr: breakerMgr, fallbackMgr: fallbackMgr}
 }
 
 // Search runs the full orchestration pipeline for a raw query string.
@@ -80,8 +77,8 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 
 	// 2. Check if SearXNG is in cooldown (binary fallback during outage).
 	if p.inCooldown() {
-		// Skip SearXNG entirely, go direct to Brave.
-		return p.braveOnlySearch(ctx, key)
+		// Skip SearXNG entirely, go direct to fallback chain.
+		return p.fallbackSearch(ctx, key, nil, fmt.Errorf("searxng in cooldown"))
 	}
 
 	// 3. SearXNG call with timeout and retry (exponential backoff: 1s, 2s, 4s).
@@ -153,8 +150,8 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		metrics.RequestsTotal.WithLabelValues("timeout").Inc()
 	}
 
-	// 6. Fallback to Brave (with the original ctx, not the expired timeoutCtx).
-	return p.braveSearch(ctx, key, sxResp, sxErr)
+	// 6. Fallback chain (with the original ctx, not the expired timeoutCtx).
+	return p.fallbackSearch(ctx, key, sxResp, sxErr)
 }
 
 // sufficient returns true when the SearXNG response has at least SufficientMinResults.
@@ -162,71 +159,66 @@ func (p *Proxy) sufficient(r *searxng.Response) bool {
 	return len(r.Results) >= p.cfg.SufficientMinResults
 }
 
-// braveOnlySearch is called when SearXNG is in cooldown — searches Brave only.
-// Uses context.Background() with BraveTimeout so the call survives upstream
-// client disconnections (which would cancel r.Context()).
-func (p *Proxy) braveOnlySearch(_ context.Context, key string) (*searxng.Response, error) {
-	if p.braveInCooldown() {
-		metrics.RequestsTotal.WithLabelValues("fallback_brave_fail").Inc()
-		return nil, fmt.Errorf("brave is in cooldown (previous failures)")
+// fallbackSearch tries each configured fallback provider in order when
+// SearXNG is unavailable or returned insufficient results.
+func (p *Proxy) fallbackSearch(ctx context.Context, key string, sxResp *searxng.Response, sxErr error) (*searxng.Response, error) {
+	for _, name := range p.cfg.FallbackProviders {
+		backend, ok := p.fallbackMgr.GetBackend(name)
+		if !ok {
+			continue
+		}
+		if !backend.IsAvailable() {
+			continue
+		}
+		// Check circuit breaker for this provider
+		if p.breakerMgr.IsOpen(name) {
+			continue
+		}
+
+		searchOpts := backends.SearchOptions{
+			Query:      key,
+			NumResults: 10,
+		}
+
+		start := time.Now()
+		results, fbErr := backend.Search(searchOpts)
+		metrics.RequestDuration.WithLabelValues(name, name).Observe(time.Since(start).Seconds())
+
+		if fbErr != nil {
+			p.breakerMgr.RecordClientError(name, fbErr.Error())
+			continue
+		}
+		if len(results) == 0 {
+			continue
+		}
+
+		// Success from this provider
+		p.breakerMgr.RecordSuccess(name)
+		metrics.RequestsTotal.WithLabelValues("fallback_" + name + "_ok").Inc()
+		metrics.EngineResultsTotal.WithLabelValues(name).Add(float64(len(results)))
+
+		// Map results to SearXNG shape
+		mapped := &searxng.Response{
+			Results: make([]searxng.Result, len(results)),
+		}
+		for i, r := range results {
+			mapped.Results[i] = searxng.Result{
+				Title:   r.Title,
+				URL:     r.URL,
+				Content: r.Content,
+				Engine:  r.Engine,
+				Engines: []string{r.Engine},
+			}
+		}
+
+		p.observe(mapped)
+		p.c.Set(key, mapped)
+		return mapped, nil
 	}
-	braveCtx, cancel := context.WithTimeout(context.Background(), p.cfg.BraveTimeout)
-	defer cancel()
 
-	start := time.Now()
-	bvResp, bvErr := p.bv.Search(braveCtx, key)
-	metrics.RequestDuration.WithLabelValues("brave", "brave").Observe(time.Since(start).Seconds())
-
-	if bvErr != nil {
-		metrics.RequestsTotal.WithLabelValues("fallback_brave_fail").Inc()
-		p.recordBraveFailure()
-		return nil, fmt.Errorf("searxng in cooldown, brave failed: %w", bvErr)
-	}
-
-	metrics.RequestsTotal.WithLabelValues("fallback_brave_ok").Inc()
-	p.recordBraveSuccess()
-	p.recordBraveCredits(bvResp.RateLimit)
-	if len(bvResp.Web.Results) > 0 {
-		metrics.EngineResultsTotal.WithLabelValues("brave-premium").Add(float64(len(bvResp.Web.Results)))
-	}
-	mapped := &searxng.Response{Results: mapper.ToSearxngResults(bvResp.Web.Results)}
-	p.observe(mapped)
-	p.c.Set(key, mapped)
-	return mapped, nil
-}
-
-// braveSearch is called when SearXNG was attempted but failed or was
-// insufficient — searches Brave as fallback.
-// Uses context.Background() with BraveTimeout so the call survives upstream
-// client disconnections (which would cancel r.Context()).
-func (p *Proxy) braveSearch(_ context.Context, key string, sxResp *searxng.Response, sxErr error) (*searxng.Response, error) {
-	if p.braveInCooldown() {
-		metrics.RequestsTotal.WithLabelValues("fallback_brave_fail").Inc()
-		return nil, fmt.Errorf("brave is in cooldown (previous failures); searxng=%v", sxErr)
-	}
-	braveCtx, cancel := context.WithTimeout(context.Background(), p.cfg.BraveTimeout)
-	defer cancel()
-
-	start := time.Now()
-	bvResp, bvErr := p.bv.Search(braveCtx, key)
-	metrics.RequestDuration.WithLabelValues("brave", "brave").Observe(time.Since(start).Seconds())
-
-	if bvErr != nil {
-		metrics.RequestsTotal.WithLabelValues("fallback_brave_fail").Inc()
-		p.recordBraveFailure()
-		return nil, fmt.Errorf("searxng insufficient (err=%v) and brave failed: %w", sxErr, bvErr)
-	}
-
-	metrics.RequestsTotal.WithLabelValues("fallback_brave_ok").Inc()
-	p.recordBraveSuccess()
-	p.recordBraveCredits(bvResp.RateLimit)
-	if len(bvResp.Web.Results) > 0 {
-		metrics.EngineResultsTotal.WithLabelValues("brave-premium").Add(float64(len(bvResp.Web.Results)))
-	}
-	mapped := &searxng.Response{Results: mapper.ToSearxngResults(bvResp.Web.Results)}
-	p.observe(mapped)
-	p.c.Set(key, mapped)
-	return mapped, nil
+	// All fallbacks failed
+	metrics.RequestsTotal.WithLabelValues("fallback_fail").Inc()
+	return nil, fmt.Errorf("all fallbacks failed; searxng=%v", sxErr)
 }
 
 // recordSearxngSuccess resets the failure counter and clears any active cooldown.
@@ -260,53 +252,6 @@ func (p *Proxy) inCooldown() bool {
 		// Cooldown expired — reset state.
 		p.sxCooldownTil.Store(0)
 		atomic.StoreInt64(&p.sxFails, 0)
-		return false
-	}
-	return true
-}
-
-// recordBraveSuccess resets the failure counter and clears any active cooldown.
-func (p *Proxy) recordBraveSuccess() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	atomic.StoreInt64(&p.bvFails, 0)
-	p.bvCooldownTil.Store(0)
-}
-
-// recordBraveCredits updates Prometheus gauges from Brave API rate limit
-// headers parsed by the Brave client. If rl is nil (no headers present),
-// this is a no-op.
-func (p *Proxy) recordBraveCredits(rl *brave.RateLimit) {
-	if rl == nil {
-		return
-	}
-	metrics.BraveCreditsRemaining.WithLabelValues("month").Set(rl.RemainingMonth)
-	metrics.BraveCreditsLimit.WithLabelValues("month").Set(rl.LimitMonth)
-}
-
-// recordBraveFailure increments the failure counter and starts a cooldown
-// if the threshold is reached.
-func (p *Proxy) recordBraveFailure() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	fails := atomic.AddInt64(&p.bvFails, 1)
-	if int(fails) >= p.cfg.BraveFailThreshold {
-		until := time.Now().Add(p.cfg.BraveFailCooldown).UnixNano()
-		p.bvCooldownTil.Store(until)
-	}
-}
-
-// braveInCooldown reports whether Brave is currently in cooldown. If the
-// cooldown period has expired, it is automatically cleared.
-func (p *Proxy) braveInCooldown() bool {
-	until := p.bvCooldownTil.Load()
-	if until == 0 {
-		return false
-	}
-	if time.Now().UnixNano() >= until {
-		// Cooldown expired — reset state.
-		p.bvCooldownTil.Store(0)
-		atomic.StoreInt64(&p.bvFails, 0)
 		return false
 	}
 	return true

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"sx/internal/brave"
+	"sx/backends"
 	"sx/internal/breaker"
 	"sx/internal/cache"
 	"sx/internal/config"
@@ -24,28 +24,46 @@ func (s *stubSearxng) Search(_ context.Context, _ string) (*searxng.Response, er
 	return s.resp, s.err
 }
 
-type stubBrave struct{ resp *brave.Response; err error }
+// stubBackend implements backends.SearchBackend for testing.
+type stubBackend struct {
+	name    string
+	results []backends.SearchResult
+	err     error
+	avail   bool
+}
 
-func (s *stubBrave) Search(_ context.Context, _ string) (*brave.Response, error) {
-	return s.resp, s.err
+func (s *stubBackend) Name() string                            { return s.name }
+func (s *stubBackend) IsAvailable() bool                       { return s.avail }
+func (s *stubBackend) Search(_ backends.SearchOptions) ([]backends.SearchResult, error) {
+	return s.results, s.err
 }
 
 func setupRouter(t *testing.T) http.Handler {
 	t.Helper()
 	cfg := &config.Config{
-		FallbackTimeout:      5 * time.Second,
-		MetricsPath:          "/metrics",
-		SearxngFailThreshold: 6,
-		SearxngFailCooldown:  180 * time.Second,
+		FallbackTimeout:       5 * time.Second,
+		MetricsPath:           "/metrics",
+		SearxngFailThreshold:  6,
+		SearxngFailCooldown:   180 * time.Second,
+		SufficientMinResults:  1,
+		FallbackProviders:     []string{"brave"},
 	}
 	c, _ := cache.New(10)
 	metrics.Init()
 
 	sx := &stubSearxng{resp: &searxng.Response{Results: []searxng.Result{{Engine: "wikipedia"}}}}
-	bv := &stubBrave{resp: &brave.Response{}}
-	bv.resp.Web.Results = append(bv.resp.Web.Results, brave.Result{Title: "T", URL: "u", Description: "d"})
+	fb := &stubBackend{
+		name: "brave",
+		results: []backends.SearchResult{
+			{Title: "T", URL: "u", Content: "d", Engine: "brave"},
+		},
+		avail: true,
+	}
+	mgr := backends.NewManager()
+	mgr.Register(fb)
+	_ = mgr.SetFallbacks(cfg.FallbackProviders)
 
-	return newRouter(proxy.New(cfg, sx, bv, c, breaker.New()), cfg)
+	return newRouter(proxy.New(cfg, sx, c, breaker.New(), mgr), cfg)
 }
 
 func TestHealthz(t *testing.T) {
