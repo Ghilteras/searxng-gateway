@@ -32,25 +32,38 @@ Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (Tier 1+2 engin
                     │                        │
                     │                        ├── Serper (Google via API)
                     │                        ├── Bing, Wikipedia, GitHub...
-                    │                        └── Circuit breaker tracks failures
+                    │                        └── Circuit breaker per engine
                     │
-                    └──▶ Premium fallback (e.g. Brave Search API)
+                    └──▶ Fallback chain (tried in order)
+                         ├── Brave Search API
+                         ├── Exa Search API
+                         └── Jina Search API
                          Triggered when SearXNG returns < SUFFICIENT_MIN_RESULTS
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the full design.
 
-## Multi-tier engine posture
+## Supported fallback providers
 
-| Tier | Source | Cost | Key required? |
-|------|--------|------|---------------|
-| T1 | Serper (Google) | Free 2,500/mo | Yes (optional)* |
-| T2 | Bing, Wikipedia, GitHub, StackOverflow, ArXiv, PyPI, Docker Hub, Mwmbl, Marginalia | Free | No |
-| T3 | Brave Search API | Free tier ($5 credit) | Yes (optional) |
+Set `FALLBACK_PROVIDERS` to a comma-separated list of backend names. Each provider needs its `_API_KEY` env var. They are tried in order until one returns sufficient results.
 
-*Tier 1 requires an API key but is optional — the gateway works with T2+T3 only.
+| Provider | Env var | Free tier | Production |
+|----------|---------|-----------|------------|
+| Brave | `BRAVE_API_KEY` | $5 credit (1,000/mo) | ✅ Yes |
+| Exa | `EXA_API_KEY` | $20 + $10/mo (~2,800 searches) | ✅ Yes |
+| Jina | `JINA_API_KEY` | 10M tokens, 500 RPM | ✅ Yes |
+| Tavily | `TAVILY_API_KEY` | 1,000 credits/mo | ❌ Not deployed |
+| Bing | (keyless) | Free | ❌ Not deployed |
 
-Keyless mode (T2 only) works out of the box. See [docs/keyless.md](docs/keyless.md).
+Example:
+```bash
+FALLBACK_PROVIDERS=brave,exa,jina
+BRAVE_API_KEY=xxx
+EXA_API_KEY=xxx
+JINA_API_KEY=xxx
+```
+
+Keyless mode (no API keys) works out of the box — only Bing will be available as fallback. See [docs/keyless.md](docs/keyless.md).
 
 ## Features
 
@@ -143,28 +156,6 @@ groups:
 | `LOG_LEVEL` | `info` | no | Log level (debug, info, warn, error) |
 | `METRICS_PATH` | `/metrics` | no | Prometheus metrics endpoint path |
 
-## Supported fallback providers
-
-Set `FALLBACK_PROVIDERS` to a comma-separated list:
-
-```bash
-# Brave only (default)
-FALLBACK_PROVIDERS=brave
-BRAVE_API_KEY=xxx
-
-# Multiple fallbacks: try Brave first, then Serper
-FALLBACK_PROVIDERS=brave,serper
-BRAVE_API_KEY=xxx
-SERPER_API_KEY=xxx
-```
-
-| Provider | Env var | Free tier | Notes |
-|----------|---------|-----------|-------|
-| Brave | `BRAVE_API_KEY` | $5 credit (1,000/mo) | Good web coverage |
-| Serper | `SERPER_API_KEY` | 2,500/mo | Google results via API |
-
-Additional backends from upstream (Tavily, Exa, Jina, Bing) are included but not part of our production deployment — configure them the same way via their `_API_KEY` env vars.
-
 ### Adding a new provider
 
 Implement the `SearchBackend` interface in `backends/`:
@@ -189,8 +180,15 @@ Then add a case to `backends/factory.go` and set `MYPROVIDER_API_KEY` in the env
 
 ## Build
 
+### GitHub Actions (recommended)
+
+Push to `main` or tag a `v*` release — GitHub Actions builds and pushes multi-arch images automatically. See [`.github/workflows/build.yml`](.github/workflows/build.yml).
+
+### Local build
+
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/Ghilteras/searxng-gateway:v0.10.0 \
   -t ghcr.io/Ghilteras/searxng-gateway:latest --push .
 ```
 
