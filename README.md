@@ -57,6 +57,56 @@ Keyless mode (T2 only) works out of the box. See [docs/keyless.md](docs/keyless.
 - **SearXNG config tuning** — reference `examples/searxng/` with engine selection, `suspended_times` tuning, custom User-Agent, and custom Python engines (Serper, Mojeek)
 - **Brave billing alert** — `engine_results_total{engine="brave-premium"}` tracks fallback usage
 
+## Observability
+
+The gateway exposes Prometheus metrics at `:8080/metrics`. A reference Grafana dashboard is included:
+
+![searxng-gateway dashboard](examples/grafana/screenshots/searxng-dashboard-full.png)
+
+### Key panels
+
+| Panel | What it shows |
+|-------|---------------|
+| **Circuit Breaker State** | Per-engine state timeline: 🟢 Closed → 🟡 Half-Open → 🔴 Open |
+| ![CB State Timeline](examples/grafana/screenshots/cb-state-timeline.png) | Each engine gets its own row. When an engine returns 4xx, the circuit opens (red) for 5 minutes, then auto-recovers. |
+| **Circuit Breaker Trips** | Cumulative trips per engine, colored by reason (rate_limited, access_denied, captcha) |
+| ![CB Trips](examples/grafana/screenshots/cb-trips.png) | Each trip means the gateway caught a 4xx and opened the circuit before the engine could degrade further queries. |
+| **Circuit Breaker Recoveries** | Auto-recovery events over time |
+| ![CB Recoveries](examples/grafana/screenshots/cb-recoveries.png) | The gateway probes the engine after 5 minutes. If it responds, the circuit closes and a recovery is recorded. |
+
+### Importing the dashboard
+
+1. Import `examples/grafana/searxng-gateway-dashboard.json` into Grafana
+2. Select your Prometheus datasource (the dashboard uses `${datasource}` variable)
+3. Ensure your Prometheus instance scrapes `:8080/metrics` from the gateway container
+
+### Alerting
+
+Example Prometheus alert rules (vmalert/Mimir compatible):
+
+```yaml
+groups:
+  - name: searxng-gateway
+    rules:
+      - alert: SearxngCBStuckOpen
+        expr: searxng_gateway_circuit_breaker_state == 2
+        for: 5m
+        annotations:
+          summary: "Circuit breaker stuck open for engine {{ $labels.engine }}"
+          
+      - alert: SearxngRetryExhausted
+        expr: rate(searxng_gateway_retry_exhausted_total[5m]) > 0.01
+        for: 5m
+        annotations:
+          summary: "Retry exhaustion rate elevated"
+          
+      - alert: BraveAPIBillSpike
+        expr: rate(searxng_gateway_engine_results_total{engine="brave-premium"}[1h]) * 3600 > 100
+        for: 10m
+        annotations:
+          summary: "Brave API usage > 100 calls/hour"
+```
+
 ## Endpoints
 
 - `GET /search?q=<query>&format=json` — proxy endpoint
