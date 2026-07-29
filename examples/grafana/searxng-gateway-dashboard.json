@@ -356,7 +356,7 @@
         }
       },
       {
-        "title": "Engine Uptime (%) \u2014 % di richieste andate a buon fine per motore, ultimo intervallo. Soglie: rosso<50%, giallo 50-90%, verde >90%",
+        "title": "Engine Uptime (%) \u2014 success rate per engine in the last interval. Thresholds: red < 50%, yellow 50-90%, green > 90%",
         "type": "row",
         "collapsed": false,
         "panels": [],
@@ -824,7 +824,7 @@
       {
         "title": "Requests per motore \u2014 success vs failures (rate/min)",
         "type": "timeseries",
-        "description": "Rate di successo vs fallimenti per motore. Stacked bars \u2014 verde=successi, rosso=fallimenti.",
+        "description": "Success vs failure rate per engine. Stacked bars \u2014 green = success, red = failures.",
         "datasource": null,
         "targets": [
           {
@@ -1374,7 +1374,7 @@
       {
         "title": "CB Activity Timeline (per engine)",
         "type": "state-timeline",
-        "description": "Timeline dello stato CB per engine. Closed=verde, Half-Open=giallo, Open=rosso",
+        "description": "CB state timeline per engine. Closed = green, Half-Open = yellow, Open = red",
         "datasource": null,
         "targets": [
           {
