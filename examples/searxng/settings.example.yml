@@ -1,0 +1,208 @@
+# Example SearXNG settings for use with searxng-gateway.
+# Copy to your SearXNG instance and replace secret_key above.
+# All engines are configured for a multi-tier posture:
+#   Tier 1: Serper (Google via API, free tier 2.5k/month)
+#   Tier 2: Keyless engines (Bing, Wikipedia, GitHub, StackOverflow, etc.)
+#   Tier 3: Brave Search API (fallback via gateway, keyless for SearXNG itself)
+
+use_default_settings: true
+
+server:
+  secret_key: "CHANGE_ME"  # generate with: openssl rand -base64 32
+  limiter: true
+  image_proxy: true
+  method: "GET"
+
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json
+
+  suspended_times:
+    SearxEngineCaptcha: 86400  # 1 day instead of upstream 15 days
+    SearxEngineTooManyRequests: 0  # disable 429 suspension for Wikimedia (Wikipedia, Wikidata)
+    SearxEngineAccessDenied: 0  # disable 403 suspension (Mojeek blocked by IP)
+
+# Uncomment if you run Valkey/Redis:
+#   url: valkey://valkey:6379/0
+
+outgoing:
+  pool_connections: 100
+  pool_maxsize: 20
+  # Timeout maggiorato per engine lenti (default 3.0s)
+  request_timeout: 60.0
+  # Cap anti-hang: SearXNG non aspetta mai più di 120s per una risposta
+  max_request_timeout: 120.0
+  # Keepalive esplicito (default 5.0s)
+  keepalive_expiry: 5.0
+  # Retry una volta su errori HTTP transitori (rate-limit, 503, ecc.)
+  retries: 1
+  # User-Agent Mozilla Firefox per engine che bloccano default searxng UA (Mojeek, ecc.)
+  user_agent: "Mozilla/5.0 (X11; Linux x86_64; rv:127.0) Gecko/20100101 Firefox/127.0"
+
+engines:
+  # === Engine primari ===
+  # ATTENZIONE: use_default_settings:true + engines:[] NON fa merge ma REPLACE.
+  # Tutti gli engine built-in vanno dichiarati esplicitamente qui sotto.
+  # Lista engine dichiarati: brave, startpage, google_cse, duckduckgo,
+  # marginalia (json_engine), mwmbl, mojeek, mojeek api, serper, qwant,
+  # bing, wikipedia, wikidata, github, stackoverflow (via stackexchange), arxiv,
+  # pypi, docker_hub  (mdn: engine file rimosso upstream, non presente)
+
+  - name: brave
+    engine: brave
+    shortcut: br
+    weight: 3
+    retry_on_http_error: [500, 502, 503, 504]  # only transient server errors, no 4xx retries
+
+  - name: startpage
+    engine: startpage
+    shortcut: sp
+    disabled: true
+    # Anubis PoW JavaScript CAPTCHA (303 → /sp/captcha/) - F9 2026-07-23
+    weight: 2
+    retry_on_http_error: [500, 502, 503, 504]  # only transient server errors, no 4xx retries
+
+  # === Google CSE disabilitato (whole-web deprecation Google) ===
+  - name: google cse
+    engine: google_cse
+    shortcut: gcs
+    disabled: true
+    # Google removed "Search the entire web" option on Jan 20, 2026.
+    # CSE non più utilizzabile per whole-web (engine deprecation 2026-07-23).
+
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: true
+    weight: 1
+    retry_on_http_error: [500, 502, 503, 504]  # only transient server errors, no 4xx retries
+
+  # === Engine alternativi indipendenti (no Cloudflare, no API key) ===
+  # === Marginalia via OLD public API (keyless) ===
+  # Native engine requires api_key (init returns False → never loaded → 0 results).
+  # OLD API still working without key, used by community as fallback.
+  # See https://www.marginalia.nu/ + explore report 2026-07-23.
+  - name: marginalia
+    engine: json_engine
+    shortcut: mg
+    disabled: false
+    weight: 1
+    categories: general
+    paging: false
+    search_url: https://api.marginalia.nu/public/search/{query}?index=4&count=20
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: description
+    timeout: 3.0
+    about:
+      website: https://marginalia-search.com/
+      use_official_api: true
+      require_api_key: false
+      results: JSON
+
+  - name: mwmbl
+    engine: mwmbl
+    shortcut: mw
+    disabled: false
+    weight: 1
+
+  # === Mojeek via API ufficiale (richiede MOJEEK_API_KEY) ===
+  # Native mojeek engine e HTML scraper, bloccato 403 da Mojeek (robots.txt + ToS).
+  # API ufficiale: https://api.mojeek.com/search - GBP 2 CPM (GBP 0.30/mese per 150 query)
+  # Per ottenerla: registrare su https://www.mojeek.com/support/api/search/quickstart.html
+  - name: mojeek api
+    engine: mojeek_api
+    shortcut: mjka
+    disabled: false
+    # Requires MOJEEK_API_KEY environment variable to be set.
+    # Get one at: https://www.mojeek.com/support/api/search/quickstart.html
+    weight: 1
+    timeout: 5.0
+    # api_key letto da os.environ['MOJEEK_API_KEY'] in mojeek_api.py
+
+  # === Engine disabilitati (CAPTCHA/ToS/fragili) ===
+  - name: mojeek
+    engine: mojeek
+    shortcut: mjk
+    disabled: false
+    # API key non gratuita (£2/CPM), scraping viola ToS 3.5(e) — resta disabled
+
+  # === Engine API Serper (Google accesso via API, 2.5k/mese free) ===
+  - name: serper
+    engine: serper
+    shortcut: sr
+    timeout: 5.0
+    weight: 2
+    api_key: '${SERPER_API_KEY}'
+    disabled: false
+
+  - name: qwant
+    engine: qwant
+    shortcut: qw
+    disabled: true
+    qwant_categ: web
+    categories:
+      - general
+      - web
+    # DataDome CAPTCHA permanentemente bloccato (SearXNG issue #3929)
+
+  # === Engine Tier 1 keyless built-in aggiunti 2026-07-23 ===
+  # Sono engine built-in che NON venivano caricati perche' use_default_settings:true
+  # + engines:[] custom fa REPLACE, non merge. Erano assenti dal runtime.
+
+  - name: bing
+    engine: bing
+    shortcut: bi
+    disabled: false
+    weight: 2
+    retry_on_http_error: [500, 502, 503, 504]
+
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    disabled: false
+    weight: 1
+    display_type: ["infobox", "list"]
+    # Default en.wikipedia.org. Multi-language via 'language:' parameter if needed.
+    # display_type forces Wikipedia to produce 'list' results visible in JSON API
+    # (default is just 'infobox' which SearXNG strips from format=json).
+
+  - name: wikidata
+    engine: wikidata
+    shortcut: wd
+    disabled: false
+    weight: 1
+
+  - name: github
+    engine: github
+    shortcut: gh
+    disabled: false
+    weight: 1
+
+  - name: stackoverflow
+    engine: stackexchange
+    shortcut: st
+    disabled: false
+    weight: 1
+    # engine=stackexchange ma api_site defaults to 'stackoverflow' — risultati SO come da nome.
+
+  - name: arxiv
+    engine: arxiv
+    shortcut: arx
+    disabled: false
+    weight: 1
+
+  - name: pypi
+    engine: pypi
+    shortcut: pp
+    disabled: false
+    weight: 1
+
+  - name: docker hub
+    engine: docker_hub
+    shortcut: dh
+    disabled: false
+    weight: 1

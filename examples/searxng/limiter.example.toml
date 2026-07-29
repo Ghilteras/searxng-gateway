@@ -1,0 +1,20 @@
+# Example bot detection config. Adjust IP ranges to your network.
+
+[botdetection]
+
+# Rete Docker caddy_net (172.20.0.0/16) dove vivono Traefik e SearXNG.
+# Necessaria affinché SearXNG estragga il reale IP del client
+# dall'header X-Forwarded-For impostato da Traefik.
+trusted_proxies = [
+  '127.0.0.0/8',
+  '::1',
+  '172.20.0.0/16  # Docker default bridge; replace with your container network',
+]
+
+[botdetection.ip_lists]
+
+# LAN homelab — accesso illimitato
+pass_ip = [
+  '192.168.1.0/24  # your LAN subnet',
+  '172.20.0.0/16  # Docker default bridge; replace with your container network',
+]

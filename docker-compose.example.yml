@@ -1,0 +1,51 @@
+# searxng-gateway — reference deployment
+# Starts SearXNG + gateway. Exposes gateway on :8080, SearXNG on :8081 (localhost only).
+#
+# Required env vars (set in .env or shell):
+#   BRAVE_API_KEY   — Brave Search API key (free tier: $5 credit = 1000 queries/month)
+#   SERPER_API_KEY  — Serper.dev API key (free tier: 2,500 queries/month, optional)
+#
+# Keyless mode: omitting both keys works — the gateway falls back to Tier 2 engines only.
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    volumes:
+      - ./examples/searxng:/etc/searxng:ro
+      - ./examples/searxng-engines/serper.py:/usr/local/searxng/searx/engines/serper.py:ro
+      - ./examples/searxng-engines/mojeek_api.py:/usr/local/searxng/searx/engines/mojeek_api.py:ro
+    environment:
+      - SERPER_API_KEY=${SERPER_API_KEY:-}
+    ports:
+      - "127.0.0.1:8081:8080"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 384M
+
+  searxng-gateway:
+    image: ghcr.io/ghilteras/searxng-gateway:latest
+    container_name: searxng-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - SEARXNG_BACKEND_URL=http://searxng:8080
+      - BRAVE_API_KEY=${BRAVE_API_KEY:-}
+      - SERPER_API_KEY=${SERPER_API_KEY:-}
+      - LISTEN_ADDR=:8080
+      - SUFFICIENT_MIN_RESULTS=25
+      - CACHE_SIZE=1000
+      - CACHE_TTL_SECONDS=3600
+      - LOG_LEVEL=info
+      - METRICS_PATH=/metrics
+    depends_on:
+      - searxng
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 96M
