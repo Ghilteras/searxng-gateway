@@ -32,8 +32,7 @@ Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (Tier 1+2 engin
                     │                        ├── Bing, Wikipedia, GitHub...
                     │                        └── Circuit breaker tracks failures
                     │
-                    └──▶ Fallback chain (Tier 3)
-                         Brave → Tavily → Exa → ...
+                    └──▶ Premium fallback (e.g. Brave, Tavily, Exa...)
                          Triggered when SearXNG returns < SUFFICIENT_MIN_RESULTS
 ```
 
@@ -60,26 +59,31 @@ Keyless mode (T2 only) works out of the box. See [docs/keyless.md](docs/keyless.
 
 ## Observability
 
-The gateway exposes Prometheus metrics at `:8080/metrics`. A reference Grafana dashboard is included:
+The gateway exposes Prometheus metrics at `:8080/metrics`.
 
-![searxng-gateway dashboard](examples/grafana/screenshots/searxng-dashboard-full.png)
+### Grafana dashboard
 
-### Key panels
+![Full dashboard](examples/grafana/screenshots/searxng-dashboard-full.png)
 
-| Panel | What it shows |
-|-------|---------------|
-| **Circuit Breaker State** | Per-engine state timeline: 🟢 Closed → 🟡 Half-Open → 🔴 Open |
-| ![CB State Timeline](examples/grafana/screenshots/cb-state-timeline.png) | Each engine gets its own row. When an engine returns 4xx, the circuit opens (red) for 5 minutes, then auto-recovers. |
-| **Circuit Breaker Trips** | Cumulative trips per engine, colored by reason (rate_limited, access_denied, captcha) |
-| ![CB Trips](examples/grafana/screenshots/cb-trips.png) | Each trip means the gateway caught a 4xx and opened the circuit before the engine could degrade further queries. |
-| **Circuit Breaker Recoveries** | Auto-recovery events over time |
-| ![CB Recoveries](examples/grafana/screenshots/cb-recoveries.png) | The gateway probes the engine after 5 minutes. If it responds, the circuit closes and a recovery is recorded. |
+*A reference dashboard is included at `examples/grafana/searxng-gateway-dashboard.json`. Import it into Grafana, select your Prometheus datasource, and you'll see:*
 
-### Importing the dashboard
+#### Circuit Breaker State (per engine)
 
-1. Import `examples/grafana/searxng-gateway-dashboard.json` into Grafana
-2. Select your Prometheus datasource (the dashboard uses `${datasource}` variable)
-3. Ensure your Prometheus instance scrapes `:8080/metrics` from the gateway container
+![CB State Timeline](examples/grafana/screenshots/cb-state-timeline.png)
+
+*Each engine gets its own row. 🟢 Closed → 🟡 Half-Open → 🔴 Open. When an engine returns 4xx, the circuit opens for 5 minutes, then auto-recovers.*
+
+#### Circuit Breaker Trips (cumulative)
+
+![CB Trips](examples/grafana/screenshots/cb-trips.png)
+
+*Each trip means the gateway caught a 4xx and opened the circuit before the engine could degrade further queries. Colored by reason: `rate_limited`, `access_denied`, `captcha`.*
+
+#### Circuit Breaker Recoveries (auto-healing)
+
+![CB Recoveries](examples/grafana/screenshots/cb-recoveries.png)
+
+*After 5 minutes of cooldown, the gateway probes the engine. If it responds, the circuit closes and a recovery is recorded.*
 
 ### Alerting
 
@@ -101,11 +105,11 @@ groups:
         annotations:
           summary: "Retry exhaustion rate elevated"
           
-      - alert: BraveAPIBillSpike
-        expr: rate(searxng_gateway_engine_results_total{engine="brave-premium"}[1h]) * 3600 > 100
+      - alert: FallbackBillSpike
+        expr: rate(searxng_gateway_engine_results_total[1h]) * 3600 > 100
         for: 10m
         annotations:
-          summary: "Brave API usage > 100 calls/hour"
+          summary: "Fallback API usage > 100 calls/hour — check billing"
 ```
 
 ## Endpoints
