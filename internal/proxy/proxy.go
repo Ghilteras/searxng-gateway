@@ -111,9 +111,42 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		close(sxCh)
 	}
 
-	// 4. Premium round-robin loop — runs in parallel with SearXNG goroutine.
-	allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs =
-		p.premiumLoop(timeoutCtx, key, deadline, allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs)
+	// 4. T1 premium: if T1_PREMIUM_PROVIDERS is configured, pick 1 provider
+	// via round-robin and call it. Runs in parallel with the SearXNG goroutine.
+	if len(p.cfg.T1PremiumProviders) > 0 && time.Now().Before(deadline) {
+		t1Premium := p.fallbackMgr.NextFromPool(p.cfg.T1PremiumProviders, usedPremiums)
+		if t1Premium != nil && t1Premium.IsAvailable() && !p.breakerMgr.IsOpen(t1Premium.Name()) {
+			usedPremiums[t1Premium.Name()] = true
+			start := time.Now()
+			results, err := t1Premium.Search(backends.SearchOptions{
+				Query:      key,
+				NumResults: 10,
+			})
+			elapsed := time.Since(start)
+			metrics.RequestDuration.WithLabelValues(t1Premium.Name(), t1Premium.Name()).Observe(elapsed.Seconds())
+
+			if err != nil {
+				p.breakerMgr.RecordClientError(t1Premium.Name(), err.Error())
+				premiumErrMsgs = append(premiumErrMsgs, fmt.Sprintf("%s: %v", t1Premium.Name(), err))
+			} else if len(results) > 0 {
+				p.breakerMgr.RecordSuccess(t1Premium.Name())
+				metrics.EngineResultsTotal.WithLabelValues(t1Premium.Name()).Add(float64(len(results)))
+				premiumHadResults = true
+				for _, r := range results {
+					if !seenURLs[r.URL] {
+						seenURLs[r.URL] = true
+						allResults = append(allResults, searxng.Result{
+							Title:   r.Title,
+							URL:     r.URL,
+							Content: r.Content,
+							Engine:  r.Engine,
+							Engines: []string{r.Engine},
+						})
+					}
+				}
+			}
+		}
+	}
 
 	// 5. Collect SearXNG result.
 	if sxResult, ok := <-sxCh; ok {
@@ -177,8 +210,7 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		}
 	}
 
-	// 6. If after both phases we're still below threshold, continue premium loop
-	// (more premiums may have become available or timeout may still be valid).
+	// 6. Fallback loop: all remaining FALLBACK_PROVIDERS (skips already-used).
 	if len(allResults) < p.cfg.SufficientMinResults {
 		allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs =
 			p.premiumLoop(timeoutCtx, key, deadline, allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs)

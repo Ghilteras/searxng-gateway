@@ -49,6 +49,7 @@ func newCfg() *config.Config {
 		SearxngFailCooldown:   180 * time.Second,
 		SufficientMinResults:  10,
 		FallbackProviders:     []string{"brave", "exa"},
+		T1PremiumProviders:    []string{},
 	}
 }
 
@@ -221,5 +222,64 @@ func TestSearchAllFail(t *testing.T) {
 	p := newTestProxy(newCfg(), sx, c, breaker.New(), fb)
 	if _, err := p.Search(context.Background(), "x"); err == nil {
 		t.Error("Search expected error when both SearXNG and all premiums fail")
+	}
+}
+
+// TestSearchT1Premium — T1_PREMIUM_PROVIDERS=["brave"], brave called in parallel.
+func TestSearchT1Premium(t *testing.T) {
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
+		{Title: "SX", URL: "https://sx1.com", Engine: "wikipedia"},
+	}}}
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "BR", URL: "https://br.com", Content: "d", Engine: "brave"},
+	}}
+	c, _ := cache.New(100)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 5
+	cfg.T1PremiumProviders = []string{"brave"}
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+	out, err := p.Search(context.Background(), "x")
+	if err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+	// Should have both SearXNG + brave results
+	hasSX := false
+	hasBR := false
+	for _, r := range out.Results {
+		if r.Engine == "wikipedia" {
+			hasSX = true
+		}
+		if r.Engine == "brave" {
+			hasBR = true
+		}
+	}
+	if !hasSX || !hasBR {
+		t.Errorf("expected both SearXNG and brave results, got: hasSX=%v hasBR=%v", hasSX, hasBR)
+	}
+}
+
+// TestSearchT1PremiumNone — T1_PREMIUM_PROVIDERS empty → no premium in hot path.
+func TestSearchT1PremiumNone(t *testing.T) {
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
+		{Title: "SX", URL: "https://sx1.com", Engine: "wikipedia"},
+	}}}
+	// brave exists but T1_PREMIUM_PROVIDERS is empty → should NOT be called
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "SHOULD NOT APPEAR", URL: "https://nope.com", Engine: "brave"},
+	}}
+	c, _ := cache.New(100)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 1 // SearXNG returns 1 result — sufficient, no fallback loop
+	cfg.T1PremiumProviders = []string{} // empty = no T1 premium
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+	out, err := p.Search(context.Background(), "x")
+	if err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+	// Should only have SearXNG results
+	for _, r := range out.Results {
+		if r.Engine == "brave" {
+			t.Errorf("brave should NOT be called when T1_PREMIUM_PROVIDERS is empty")
+		}
 	}
 }

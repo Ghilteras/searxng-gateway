@@ -183,6 +183,36 @@ func (m *Manager) NextAvailable(exclude map[string]bool) SearchBackend {
 	return available[idx]
 }
 
+// NextFromPool returns the next available backend from a named pool, selected
+// via round-robin. Only backends whose name appears in the pool AND
+// IsAvailable() == true are considered. Backends in the exclude set are
+// skipped. Unknown names (not in the registry) are silently ignored.
+// Returns nil when no candidate remains.
+// Uses the same atomic round-robin index as NextAvailable for even distribution.
+func (m *Manager) NextFromPool(pool []string, exclude map[string]bool) SearchBackend {
+	type named struct {
+		name    string
+		backend SearchBackend
+	}
+	available := make([]named, 0, len(pool))
+	for _, name := range pool {
+		if exclude[name] {
+			continue
+		}
+		if b, ok := m.registry[name]; ok && b.IsAvailable() {
+			available = append(available, named{name: name, backend: b})
+		}
+	}
+	if len(available) == 0 {
+		return nil
+	}
+	sort.Slice(available, func(i, j int) bool {
+		return available[i].name < available[j].name
+	})
+	idx := int(m.rrIdx.Add(1)-1) % len(available)
+	return available[idx].backend
+}
+
 func (m *Manager) availableNames() string {
 	return strings.Join(m.AvailableBackends(), ", ")
 }
