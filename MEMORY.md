@@ -27,3 +27,24 @@ Vedi: `backends/manager.go`, `internal/proxy/proxy.go`
 ### Risultati
 
 117 test passano: 7 nel package `proxy`, 110 nei `backends`.
+
+---
+
+## 2026-07-29 — T1 Premium Provider: pool ristretto in path caldo
+
+### Modifiche strutturali
+
+- **`internal/config/config.go`**: nuovo campo `T1PremiumProviders []string` nella struct `Config`, parsato da env var `T1_PREMIUM_PROVIDERS` (comma-separated, default vuoto). Valori sconosciuti ignorati silenziosamente.
+- **`backends/manager.go`**: nuovo metodo `NextFromPool(pool []string, exclude map[string]bool) SearchBackend` — round-robin atomico ristretto a un subset nominale di backend. Ignora nomi non nel registry e backend non disponibili. Condivide lo stesso `rrIdx atomic.Uint64` di `NextAvailable` per distribuzione uniforme.
+- **`internal/proxy/proxy.go`**: step 4 di `Search()` ora chiama UN solo premium se `T1_PREMIUM_PROVIDERS` è impostato, via `NextFromPool`. Se vuoto, nessun premium nel path caldo. Step 6 (fallback) usa `premiumLoop` su TUTTI i `FALLBACK_PROVIDERS`, saltando quelli già usati. Logica outcome label invariata.
+
+### Decisioni di processo
+
+- **Default vuoto**: `T1_PREMIUM_PROVIDERS=""` significa T1 = solo SearXNG. L'utente attiva esplicitamente i premium in T1.
+- **Nessuna validazione**: provider sconosciuti nella lista vengono ignorati, non causano errori — flessibilità per config dinamiche.
+- **Round-robin condiviso**: `NextFromPool` e `NextAvailable` condividono lo stesso contatore atomico `rrIdx`, evitando che una pool sbilanci le altre.
+- **Pool T1 indipendente dai fallback**: i provider nel pool T1 vengono sorteggiati SOLO per il path caldo. I fallback usano `NextAvailable` su tutto il registry (saltando `usedPremiums`).
+
+### Risultati
+
+133 test passano (3 nuovi manager pool + 1 nuovo config parse + 2 nuovi proxy T1).
