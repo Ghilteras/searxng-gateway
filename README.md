@@ -4,7 +4,7 @@ Decision proxy in front of SearXNG: **speculative execution** — calls SearXNG 
 
 🚀 **Works with zero API keys in keyless mode.** See [docs/keyless.md](docs/keyless.md).
 
-Forked from [byteowlz/sx](https://github.com/byteowlz/sx) for the fallback orchestration logic; this repo adds the HTTP server, per-engine circuit breaker, Prometheus metrics, cache, and Docker packaging.
+Originally derived from [sx](https://github.com/byteowlz/sx); adds HTTP server, per-engine circuit breaker, Prometheus metrics, cache, and Docker packaging.
 
 ## Quick Start
 
@@ -60,7 +60,7 @@ Set `FALLBACK_PROVIDERS` to a comma-separated list of premium backend names. Eac
 | Brave | `BRAVE_API_KEY` | $5 credit (1,000/mo) | ✅ Yes |
 | Exa | `EXA_API_KEY` | $20 + $10/mo (~2,800 searches) | ✅ Yes |
 | Jina | `JINA_API_KEY` | 10M tokens, 500 RPM | ✅ Yes |
-| Tavily | `TAVILY_API_KEY` | 1,000 credits/mo | ❌ Not deployed |
+| Tavily | `TAVILY_API_KEY` | 1,000 credits/mo | ✅ Yes |
 | Bing | (keyless) | Free | ❌ Not deployed |
 
 Example:
@@ -71,7 +71,7 @@ EXA_API_KEY=xxx
 JINA_API_KEY=xxx
 ```
 
-Keyless mode (no API keys) works out of the box — only Bing will be available as fallback. See [docs/keyless.md](docs/keyless.md).
+Keyless mode (no API keys) works out of the box using SearXNG's free engines (Bing, Wikipedia, GitHub, etc.). Premium providers require their respective API keys.
 
 ## Features
 
@@ -198,4 +198,4 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Forked from [byteowlz/sx](https://github.com/byteowlz/sx).
+MIT — see [LICENSE](LICENSE).
