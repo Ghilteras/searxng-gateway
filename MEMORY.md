@@ -48,3 +48,32 @@ Vedi: `backends/manager.go`, `internal/proxy/proxy.go`
 ### Risultati
 
 131 test passano.
+
+---
+
+## 2026-07-30 — CB: solo 4xx aprono il breaker; premiumLoop; deploy v0.11.0
+
+### Modifiche strutturali
+
+- `internal/breaker/breaker.go`: aggiunto `isClientError()` gate — solo errori 4xx aprono il CB per i premium. Prima ogni errore (timeout, 5xx) apriva il breaker.
+- `internal/proxy/proxy.go`: `premiumLoop()` sostituisce `fallbackSearch()`:
+  - T1: SearXNG + 1 premium (round-robin) in parallelo, merge + dedup URL
+  - T2: se merged < SUFFICIENT_MIN_RESULTS (10), loop round-robin su premium rimanenti
+  - Circuit breaker rispettato (`IsOpen()` → skip)
+  - `FALLBACK_TIMEOUT` globale per T1 + T2
+- `backends/manager.go`: `GetAvailable()` e `NextAvailable()` con round-robin atomico (`atomic.Uint64`)
+
+### Dashboard Grafana
+- Rimosso "Retry Exhaustion Rate" (inutile)
+- Rimosso "Engine last-seen" (poco chiaro)
+- "Brave fallback" → "Premium results per provider" (stacked bars, tutti 4 premium)
+
+### Lezioni
+
+- **`git add -A` senza review del diff**: abbiamo committato la rimozione di T1_PREMIUM_COUNT per sbaglio, poi revertito. Vedi anche `verify-before-completion` (AGENTS.md globale): il post-patch grep vale anche per i commit.
+- **Portainer Env wipe da file obsoleto**: il PUT sovrascrive l'intero array Env. Pattern 1 della skill `portainer-redeploy` (GET/pre-PUT) è l'unico safe path.
+- **git-crypt locked non recuperabile**: un backup storico era locked → irrecuperabile. Prima di fare affidamento su file criptati, verificare con `head -c 9 <file>`.
+
+### Risultati
+
+132 test passano. Tag `v0.11.0` su `df81245`. T1_PREMIUM_COUNT=1 in produzione.
