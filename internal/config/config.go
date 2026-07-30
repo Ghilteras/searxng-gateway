@@ -21,7 +21,7 @@ type Config struct {
 	MetricsPath          string
 	SufficientMinResults int // minimum SearXNG results before fallback is considered "sufficient"
 	FallbackProviders    []string // parsed from FALLBACK_PROVIDERS env var
-	T1PremiumProviders   []string // subset of FallbackProviders promoted to T1 hot path (parsed from T1_PREMIUM_PROVIDERS env var, default empty)
+	T1PremiumCount int // how many different FallbackProviders to call in T1 hot path (parsed from T1_PREMIUM_COUNT, default 0)
 	// Community-aligned: binary fallback + cooldown circuit breaker
 	SearxngFailThreshold int           // consecutive failures before cooldown
 	SearxngFailCooldown  time.Duration // duration of cooldown period
@@ -35,7 +35,7 @@ func Load() (*Config, error) {
 		SearxngBackendURL:     getEnv("SEARXNG_BACKEND_URL", "http://searxng-primary:8080"),
 		BraveAPIKey:           os.Getenv("BRAVE_API_KEY"),
 		FallbackProviders:     parseProviderList(getEnv("FALLBACK_PROVIDERS", "brave")),
-		T1PremiumProviders:    parseProviderList(getEnv("T1_PREMIUM_PROVIDERS", "")),
+		T1PremiumCount:      getEnvInt("T1_PREMIUM_COUNT", 0),
 		FallbackTimeout:       time.Duration(getEnvInt("FALLBACK_TIMEOUT_SECONDS", 30)) * time.Second,
 		SearxngTimeout:        time.Duration(getEnvInt("SEARXNG_TIMEOUT_SECONDS", 25)) * time.Second,
 		BraveTimeout:          time.Duration(getEnvInt("BRAVE_TIMEOUT_SECONDS", 15)) * time.Second,
@@ -64,6 +64,9 @@ func (c *Config) Validate() error {
 	}
 	if c.BraveFailCooldown < time.Second {
 		return fmt.Errorf("BRAVE_FAIL_COOLDOWN_SECONDS must be >= 1, got %v", c.BraveFailCooldown)
+	}
+	if c.T1PremiumCount < 0 {
+		return fmt.Errorf("T1_PREMIUM_COUNT must be >= 0, got %d", c.T1PremiumCount)
 	}
 	return nil
 }

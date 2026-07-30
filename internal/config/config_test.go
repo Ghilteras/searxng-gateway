@@ -127,40 +127,6 @@ func TestLoadInvalidThreshold(t *testing.T) {
 	}
 }
 
-func TestConfig_ParseT1PremiumProviders(t *testing.T) {
-	tests := []struct {
-		name     string
-		envValue string
-		want     []string
-	}{
-		{"empty", "", nil},
-		{"single", "brave", []string{"brave"}},
-		{"multiple", "brave, exa, jina", []string{"brave", "exa", "jina"}},
-		{"whitespace", " brave , exa ", []string{"brave", "exa"}},
-		{"uppercase", "Brave,EXA", []string{"brave", "exa"}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("T1_PREMIUM_PROVIDERS", tt.envValue)
-			cfg, err := Load()
-			if err != nil {
-				t.Fatalf("Load() error: %v", err)
-			}
-			if len(cfg.T1PremiumProviders) != len(tt.want) {
-				t.Errorf("T1PremiumProviders len = %d, want %d; got %v",
-					len(cfg.T1PremiumProviders), len(tt.want), cfg.T1PremiumProviders)
-				return
-			}
-			for i, want := range tt.want {
-				if cfg.T1PremiumProviders[i] != want {
-					t.Errorf("T1PremiumProviders[%d] = %q, want %q", i, cfg.T1PremiumProviders[i], want)
-				}
-			}
-		})
-	}
-}
-
 func TestLoadInvalidCooldown(t *testing.T) {
 	prev := saveEnv()
 	defer restoreEnv(prev)
@@ -170,5 +136,32 @@ func TestLoadInvalidCooldown(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Error("Load() expected error when SEARXNG_FAIL_COOLDOWN_SECONDS is 0")
+	}
+}
+
+func TestConfig_T1PremiumCount(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		want     int
+	}{
+		{"zero", "0", 0},
+		{"one", "1", 1},
+		{"three", "3", 3},
+		{"empty", "", 0},
+		{"invalid", "notanumber", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("T1_PREMIUM_COUNT", tt.envValue)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() error: %v", err)
+			}
+			if cfg.T1PremiumCount != tt.want {
+				t.Errorf("T1PremiumCount = %d, want %d", cfg.T1PremiumCount, tt.want)
+			}
+		})
 	}
 }

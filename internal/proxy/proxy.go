@@ -111,38 +111,42 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		close(sxCh)
 	}
 
-	// 4. T1 premium: if T1_PREMIUM_PROVIDERS is configured, pick 1 provider
-	// via round-robin and call it. Runs in parallel with the SearXNG goroutine.
-	if len(p.cfg.T1PremiumProviders) > 0 && time.Now().Before(deadline) {
-		t1Premium := p.fallbackMgr.NextFromPool(p.cfg.T1PremiumProviders, usedPremiums)
-		if t1Premium != nil && t1Premium.IsAvailable() && !p.breakerMgr.IsOpen(t1Premium.Name()) {
-			usedPremiums[t1Premium.Name()] = true
-			start := time.Now()
-			results, err := t1Premium.Search(backends.SearchOptions{
-				Query:      key,
-				NumResults: 10,
-			})
-			elapsed := time.Since(start)
-			metrics.RequestDuration.WithLabelValues(t1Premium.Name(), t1Premium.Name()).Observe(elapsed.Seconds())
+	// 4. T1 premium: if T1_PREMIUM_COUNT > 0, pick that many distinct providers
+	// via round-robin and call each one. Runs in parallel with the SearXNG goroutine.
+	for i := 0; i < p.cfg.T1PremiumCount; i++ {
+		if time.Now().After(deadline) {
+			break
+		}
+		premium := p.fallbackMgr.NextAvailable(usedPremiums)
+		if premium == nil || !premium.IsAvailable() || p.breakerMgr.IsOpen(premium.Name()) {
+			continue
+		}
+		usedPremiums[premium.Name()] = true
+		start := time.Now()
+		results, err := premium.Search(backends.SearchOptions{
+			Query:      key,
+			NumResults: 10,
+		})
+		elapsed := time.Since(start)
+		metrics.RequestDuration.WithLabelValues(premium.Name(), premium.Name()).Observe(elapsed.Seconds())
 
-			if err != nil {
-				p.breakerMgr.RecordClientError(t1Premium.Name(), err.Error())
-				premiumErrMsgs = append(premiumErrMsgs, fmt.Sprintf("%s: %v", t1Premium.Name(), err))
-			} else if len(results) > 0 {
-				p.breakerMgr.RecordSuccess(t1Premium.Name())
-				metrics.EngineResultsTotal.WithLabelValues(t1Premium.Name()).Add(float64(len(results)))
-				premiumHadResults = true
-				for _, r := range results {
-					if !seenURLs[r.URL] {
-						seenURLs[r.URL] = true
-						allResults = append(allResults, searxng.Result{
-							Title:   r.Title,
-							URL:     r.URL,
-							Content: r.Content,
-							Engine:  r.Engine,
-							Engines: []string{r.Engine},
-						})
-					}
+		if err != nil {
+			p.breakerMgr.RecordClientError(premium.Name(), err.Error())
+			premiumErrMsgs = append(premiumErrMsgs, fmt.Sprintf("%s: %v", premium.Name(), err))
+		} else if len(results) > 0 {
+			p.breakerMgr.RecordSuccess(premium.Name())
+			metrics.EngineResultsTotal.WithLabelValues(premium.Name()).Add(float64(len(results)))
+			premiumHadResults = true
+			for _, r := range results {
+				if !seenURLs[r.URL] {
+					seenURLs[r.URL] = true
+					allResults = append(allResults, searxng.Result{
+						Title:   r.Title,
+						URL:     r.URL,
+						Content: r.Content,
+						Engine:  r.Engine,
+						Engines: []string{r.Engine},
+					})
 				}
 			}
 		}
