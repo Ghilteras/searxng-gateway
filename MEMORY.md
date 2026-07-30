@@ -30,21 +30,21 @@ Vedi: `backends/manager.go`, `internal/proxy/proxy.go`
 
 ---
 
-## 2026-07-29 — T1 Premium Provider: pool ristretto in path caldo
+## 2026-07-29 — T1 Premium Provider:  → T1_PREMIUM_COUNT (simplificato)
 
 ### Modifiche strutturali
 
-- **`internal/config/config.go`**: nuovo campo `T1PremiumProviders []string` nella struct `Config`, parsato da env var `T1_PREMIUM_PROVIDERS` (comma-separated, default vuoto). Valori sconosciuti ignorati silenziosamente.
-- **`backends/manager.go`**: nuovo metodo `NextFromPool(pool []string, exclude map[string]bool) SearchBackend` — round-robin atomico ristretto a un subset nominale di backend. Ignora nomi non nel registry e backend non disponibili. Condivide lo stesso `rrIdx atomic.Uint64` di `NextAvailable` per distribuzione uniforme.
-- **`internal/proxy/proxy.go`**: step 4 di `Search()` ora chiama UN solo premium se `T1_PREMIUM_PROVIDERS` è impostato, via `NextFromPool`. Se vuoto, nessun premium nel path caldo. Step 6 (fallback) usa `premiumLoop` su TUTTI i `FALLBACK_PROVIDERS`, saltando quelli già usati. Logica outcome label invariata.
+- **`T1_PREMIUM_PROVIDERS` (lista di nomi, es. "brave,exa")** → **`T1_PREMIUM_COUNT`** (intero, es. 2).
+- **`NextFromPool` rimosso** — era dead code dopo il refactor.
+- **Ora il T1** usa un semplice loop (`for i := 0; i < p.cfg.T1PremiumCount; i++`) che chiama `NextAvailable(usedPremiums)` su TUTTI i `FallbackProviders`.
+- **Niente pool separato**: stesso round-robin di `NextAvailable`.
 
 ### Decisioni di processo
 
-- **Default vuoto**: `T1_PREMIUM_PROVIDERS=""` significa T1 = solo SearXNG. L'utente attiva esplicitamente i premium in T1.
-- **Nessuna validazione**: provider sconosciuti nella lista vengono ignorati, non causano errori — flessibilità per config dinamiche.
-- **Round-robin condiviso**: `NextFromPool` e `NextAvailable` condividono lo stesso contatore atomico `rrIdx`, evitando che una pool sbilanci le altre.
-- **Pool T1 indipendente dai fallback**: i provider nel pool T1 vengono sorteggiati SOLO per il path caldo. I fallback usano `NextAvailable` su tutto il registry (saltando `usedPremiums`).
+- **`T1_PREMIUM_COUNT=0`** = nessun premium in T1 (default).
+- **`T1_PREMIUM_COUNT=2`** = 2 premium diversi via round-robin in parallelo con SearXNG.
+- **Più semplice**: una sola env var intera, nessun parsing di liste, nessun metodo dedicato, nessuna validazione di nomi. `NextAvailable` fa già tutto.
 
 ### Risultati
 
-133 test passano (3 nuovi manager pool + 1 nuovo config parse + 2 nuovi proxy T1).
+131 test passano.
