@@ -1,20 +1,24 @@
-// Package proxy implements the core gateway fallback logic:
-// cache check → SearXNG call → fallback decision → Brave fallback → metrics.
+// Package proxy implements the core gateway orchestration:
+// cache check → parallel SearXNG + premium → round-robin premium loop until threshold.
 //
-// The Proxy.Search method orchestrates the four stages:
+// The Proxy.Search method orchestrates the stages:
 //  1. Normalise the query and check the LRU cache.
-//  2. Call SearXNG with a FallbackTimeout context.
-//  3. If the response is insufficient (len(Results)==0), call Brave.
-//  4. Map Brave results to the SearXNG shape and cache them.
+//  2. Check SearXNG cooldown (binary fallback circuit breaker).
+//  3. Call SearXNG (with retry+backoff) AND first premium (round-robin) in parallel.
+//  4. Merge SearXNG + premium results, deduplicating by URL.
+//  5. If merged results < SufficientMinResults:
+//     call additional premiums (round-robin, non-repeating) until threshold met,
+//     all premiums exhausted, or FallbackTimeout expires.
+//  6. Circuit breaker: premiums where breakerMgr.IsOpen(name) are skipped.
+//     After success: RecordSuccess. After failure: RecordClientError.
 //
 // Community-aligned behaviour (2026):
-//   - Binary fallback: a SearXNG response is sufficient if it has ≥1 result.
-//   - Cooldown circuit breaker: after SEARXNG_FAIL_THRESHOLD consecutive
-//     failures, SearXNG is skipped entirely for SEARXNG_FAIL_COOLDOWN_SECONDS,
-//     going directly to Brave.
-//   - Retry with exponential backoff (v0.7.0+): on SearXNG errors, retry up to
-//     3 times with 1s/2s/4s backoff. No circuit breaker, no cooldown, no
-//     engine skipping — just transient-fault resilience.
+//   - Always call at least one premium alongside SearXNG (not just on failure).
+//   - Round-robin premium selection distributes load evenly.
+//   - Cooldown circuit breaker for SearXNG: after SEARXNG_FAIL_THRESHOLD
+//     consecutive failures, SearXNG is skipped entirely until cooldown expires.
+//   - Retry with exponential backoff (3 attempts: 1s/2s/4s) for SearXNG errors.
+//   - URL deduplication across SearXNG and all premium providers.
 package proxy
 
 import (
@@ -75,83 +79,135 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	timeoutCtx, cancel := context.WithTimeout(ctx, p.cfg.FallbackTimeout)
 	defer cancel()
 
-	// 2. Check if SearXNG is in cooldown (binary fallback during outage).
-	if p.inCooldown() {
-		// Skip SearXNG entirely, go direct to fallback chain.
-		return p.fallbackSearch(ctx, key, nil, fmt.Errorf("searxng in cooldown"))
+	// 2. Check if SearXNG is in cooldown (skip SearXNG, go premium-only).
+	sxSkipped := p.inCooldown()
+	deadline := time.Now().Add(p.cfg.FallbackTimeout)
+
+	// Per-call state
+	allResults := make([]searxng.Result, 0)
+	seenURLs := make(map[string]bool)
+	usedPremiums := make(map[string]bool)
+	premiumHadResults := false
+	var premiumErrMsgs []string
+
+	// 3. Channel to collect SearXNG result from goroutine.
+	type sxResult struct {
+		resp *searxng.Response
+		err  error
+		elapsed time.Duration
+	}
+	sxCh := make(chan sxResult, 1)
+
+	if !sxSkipped {
+		go func() {
+			start := time.Now()
+			resp, err := p.retryWithBackoff(timeoutCtx, func() (*searxng.Response, error) {
+				return p.sx.Search(timeoutCtx, key)
+			})
+			sxCh <- sxResult{resp: resp, err: err, elapsed: time.Since(start)}
+		}()
+	} else {
+		// Cooldown active: signal SearXNG skipped.
+		close(sxCh)
 	}
 
-	// 3. SearXNG call with timeout and retry (exponential backoff: 1s, 2s, 4s).
-	start := time.Now()
-	sxResp, sxErr := p.retryWithBackoff(timeoutCtx, func() (*searxng.Response, error) {
-		return p.sx.Search(timeoutCtx, key)
-	})
-	sxElapsed := time.Since(start)
+	// 4. Premium round-robin loop — runs in parallel with SearXNG goroutine.
+	allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs =
+		p.premiumLoop(timeoutCtx, key, deadline, allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs)
 
-	// 4. If SearXNG succeeded and response is sufficient → done.
-	if sxErr == nil && p.sufficient(sxResp) {
-		// Per-engine metrics from SearXNG response.
-		seenEngines := make(map[string]struct{})
-		for _, result := range sxResp.Results {
-			if result.Engine != "" {
-				metrics.EngineResultsTotal.WithLabelValues(result.Engine).Inc()
-				metrics.EngineStatus.WithLabelValues(result.Engine).Set(1)
-				seenEngines[result.Engine] = struct{}{}
-			}
-			for _, eng := range result.Engines {
-				if eng != "" {
-					metrics.EngineResultsTotal.WithLabelValues(eng).Inc()
-					metrics.EngineStatus.WithLabelValues(eng).Set(1)
-					seenEngines[eng] = struct{}{}
+	// 5. Collect SearXNG result.
+	if sxResult, ok := <-sxCh; ok {
+		if sxResult.err == nil && sxResult.resp != nil {
+			// Per-engine metrics from SearXNG response.
+			seenEngines := make(map[string]struct{})
+			for _, result := range sxResult.resp.Results {
+				if result.Engine != "" {
+					metrics.EngineResultsTotal.WithLabelValues(result.Engine).Inc()
+					metrics.EngineStatus.WithLabelValues(result.Engine).Set(1)
+					seenEngines[result.Engine] = struct{}{}
+				}
+				for _, eng := range result.Engines {
+					if eng != "" {
+						metrics.EngineResultsTotal.WithLabelValues(eng).Inc()
+						metrics.EngineStatus.WithLabelValues(eng).Set(1)
+						seenEngines[eng] = struct{}{}
+					}
 				}
 			}
-		}
-		// Record duration per distinct engine contributing results.
-		for eng := range seenEngines {
-			metrics.RequestDuration.WithLabelValues("searxng", eng).Observe(sxElapsed.Seconds())
-		}
+			for eng := range seenEngines {
+				metrics.RequestDuration.WithLabelValues("searxng", eng).Observe(sxResult.elapsed.Seconds())
+				p.breakerMgr.RecordEngineSeen(eng)
+				p.breakerMgr.RecordSuccess(eng)
+			}
+			// Handle unresponsive engines.
+			unresponsiveSet := make(map[string]string)
+			for _, ue := range sxResult.resp.UnresponsiveEngines {
+				if len(ue) >= 2 {
+					unresponsiveSet[ue[0]] = ue[1]
+				}
+			}
+			for engine, reason := range unresponsiveSet {
+				metrics.EngineUnresponsiveTotal.WithLabelValues(engine, reason).Inc()
+				metrics.EngineStatus.WithLabelValues(engine).Set(0)
+				p.breakerMgr.RecordEngineSeen(engine)
+				if isClientError(reason) {
+					p.breakerMgr.RecordClientError(engine, reason)
+				}
+			}
 
-		// Record circuit breaker state for engines that produced results
-		// (RecordEngineSeen ensures the gauge series exists; RecordSuccess
-		// closes half-open probes, keeps the breaker closed).
-		for eng := range seenEngines {
-			p.breakerMgr.RecordEngineSeen(eng)
-			p.breakerMgr.RecordSuccess(eng)
-		}
-		unresponsiveSet := make(map[string]string)
-		for _, ue := range sxResp.UnresponsiveEngines {
-			if len(ue) >= 2 {
-				unresponsiveSet[ue[0]] = ue[1]
+			p.recordSearxngSuccess()
+
+			// Merge SearXNG results into allResults (dedup by URL).
+			// Outcome label is set once at the end (step 7).
+			for _, r := range sxResult.resp.Results {
+				if !seenURLs[r.URL] {
+					seenURLs[r.URL] = true
+					allResults = append(allResults, r)
+				}
+			}
+		} else {
+			// SearXNG failed.
+			p.recordSearxngFailure()
+			if errors.Is(sxResult.err, context.DeadlineExceeded) {
+				metrics.RequestsTotal.WithLabelValues("timeout").Inc()
+			}
+			if sxResult.err != nil {
+				premiumErrMsgs = append(premiumErrMsgs, fmt.Sprintf("searxng: %v", sxResult.err))
 			}
 		}
-		for engine, reason := range unresponsiveSet {
-			metrics.EngineUnresponsiveTotal.WithLabelValues(engine, reason).Inc()
-			metrics.EngineStatus.WithLabelValues(engine).Set(0)
-			// Ensure CB state gauge exists for this engine (closed unless tripped).
-			// Lesson MEMORY 2026-07-24 L1: promauto doesn't emit until .Set().
-			p.breakerMgr.RecordEngineSeen(engine)
-			// 4xx: circuit breaker (skip engine for 5min).
-			// 5xx/timeout: already retried via retryWithBackoff, no breaker action.
-			if isClientError(reason) {
-				p.breakerMgr.RecordClientError(engine, reason)
-			}
+	}
+
+	// 6. If after both phases we're still below threshold, continue premium loop
+	// (more premiums may have become available or timeout may still be valid).
+	if len(allResults) < p.cfg.SufficientMinResults {
+		allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs =
+			p.premiumLoop(timeoutCtx, key, deadline, allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs)
+	}
+
+	// 7. Outcome.
+	if len(allResults) == 0 {
+		metrics.RequestsTotal.WithLabelValues("fallback_fail").Inc()
+		errDetail := "all fallbacks failed"
+		if len(premiumErrMsgs) > 0 {
+			errDetail = strings.Join(premiumErrMsgs, "; ")
 		}
-
-		p.recordSearxngSuccess()
-		metrics.RequestsTotal.WithLabelValues("searxng_ok").Inc()
-		p.observe(sxResp)
-		p.c.Set(key, sxResp)
-		return sxResp, nil
+		return nil, fmt.Errorf("%s", errDetail)
 	}
 
-	// 5. Record failure (timeout counts as a consecutive failure).
-	p.recordSearxngFailure()
-	if errors.Is(sxErr, context.DeadlineExceeded) {
-		metrics.RequestsTotal.WithLabelValues("timeout").Inc()
+	outcome := "searxng_ok"
+	if premiumHadResults {
+		outcome = "premium_ok"
+		// Check if SearXNG also contributed.
+		if !sxSkipped {
+			outcome = "searxng_plus_premium_ok"
+		}
 	}
+	metrics.RequestsTotal.WithLabelValues(outcome).Inc()
 
-	// 6. Fallback chain (with the original ctx, not the expired timeoutCtx).
-	return p.fallbackSearch(ctx, key, sxResp, sxErr)
+	mapped := &searxng.Response{Results: allResults}
+	p.observe(mapped)
+	p.c.Set(key, mapped)
+	return mapped, nil
 }
 
 // sufficient returns true when the SearXNG response has at least SufficientMinResults.
@@ -159,66 +215,83 @@ func (p *Proxy) sufficient(r *searxng.Response) bool {
 	return len(r.Results) >= p.cfg.SufficientMinResults
 }
 
-// fallbackSearch tries each configured fallback provider in order when
-// SearXNG is unavailable or returned insufficient results.
-func (p *Proxy) fallbackSearch(ctx context.Context, key string, sxResp *searxng.Response, sxErr error) (*searxng.Response, error) {
-	for _, name := range p.cfg.FallbackProviders {
-		backend, ok := p.fallbackMgr.GetBackend(name)
-		if !ok {
+// premiumLoop iterates through premium backends via round-robin until:
+//   - merged results reach SufficientMinResults, OR
+//   - all available premiums have been tried, OR
+//   - the deadline expires.
+// Each premium is called at most once per request (tracked via usedPremiums).
+// Premiums where the circuit breaker is open are skipped.
+// Returns the updated accumulators.
+func (p *Proxy) premiumLoop(
+	ctx context.Context,
+	key string,
+	deadline time.Time,
+	allResults []searxng.Result,
+	seenURLs map[string]bool,
+	usedPremiums map[string]bool,
+	premiumHadResults bool,
+	errMsgs []string,
+) ([]searxng.Result, map[string]bool, map[string]bool, bool, []string) {
+	for {
+		// Stop conditions.
+		if len(allResults) >= p.cfg.SufficientMinResults {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+
+		premium := p.fallbackMgr.NextAvailable(usedPremiums)
+		if premium == nil {
+			break // all tried or none available
+		}
+		usedPremiums[premium.Name()] = true
+
+		if !premium.IsAvailable() {
 			continue
 		}
-		if !backend.IsAvailable() {
-			continue
-		}
-		// Check circuit breaker for this provider
-		if p.breakerMgr.IsOpen(name) {
+		if p.breakerMgr.IsOpen(premium.Name()) {
 			continue
 		}
 
-		searchOpts := backends.SearchOptions{
+		// Call the premium backend.
+		start := time.Now()
+		results, err := premium.Search(backends.SearchOptions{
 			Query:      key,
 			NumResults: 10,
-		}
+		})
+		elapsed := time.Since(start)
+		metrics.RequestDuration.WithLabelValues(premium.Name(), premium.Name()).Observe(elapsed.Seconds())
 
-		start := time.Now()
-		results, fbErr := backend.Search(searchOpts)
-		metrics.RequestDuration.WithLabelValues(name, name).Observe(time.Since(start).Seconds())
-
-		if fbErr != nil {
-			p.breakerMgr.RecordClientError(name, fbErr.Error())
+		if err != nil {
+			p.breakerMgr.RecordClientError(premium.Name(), err.Error())
+			errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", premium.Name(), err))
 			continue
 		}
 		if len(results) == 0 {
 			continue
 		}
 
-		// Success from this provider
-		p.breakerMgr.RecordSuccess(name)
-		metrics.RequestsTotal.WithLabelValues("fallback_" + name + "_ok").Inc()
-		metrics.EngineResultsTotal.WithLabelValues(name).Add(float64(len(results)))
+		p.breakerMgr.RecordSuccess(premium.Name())
+		metrics.EngineResultsTotal.WithLabelValues(premium.Name()).Add(float64(len(results)))
+		premiumHadResults = true
 
-		// Map results to SearXNG shape
-		mapped := &searxng.Response{
-			Results: make([]searxng.Result, len(results)),
-		}
-		for i, r := range results {
-			mapped.Results[i] = searxng.Result{
-				Title:   r.Title,
-				URL:     r.URL,
-				Content: r.Content,
-				Engine:  r.Engine,
-				Engines: []string{r.Engine},
+		// Merge and deduplicate by URL.
+		for _, r := range results {
+			if !seenURLs[r.URL] {
+				seenURLs[r.URL] = true
+				allResults = append(allResults, searxng.Result{
+					Title:   r.Title,
+					URL:     r.URL,
+					Content: r.Content,
+					Engine:  r.Engine,
+					Engines: []string{r.Engine},
+				})
 			}
 		}
-
-		p.observe(mapped)
-		p.c.Set(key, mapped)
-		return mapped, nil
 	}
 
-	// All fallbacks failed
-	metrics.RequestsTotal.WithLabelValues("fallback_fail").Inc()
-	return nil, fmt.Errorf("all fallbacks failed; searxng=%v", sxErr)
+	return allResults, seenURLs, usedPremiums, premiumHadResults, errMsgs
 }
 
 // recordSearxngSuccess resets the failure counter and clears any active cooldown.

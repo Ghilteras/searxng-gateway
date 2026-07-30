@@ -2,7 +2,9 @@ package backends
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"sync/atomic"
 )
 
 // Manager coordinates search across multiple backends with fallback support
@@ -10,6 +12,8 @@ type Manager struct {
 	primary   SearchBackend
 	fallbacks []SearchBackend
 	registry  map[string]SearchBackend
+	// Round-robin index for NextAvailable — advances atomically across calls.
+	rrIdx atomic.Uint64
 }
 
 // NewManager creates a new backend manager
@@ -143,6 +147,40 @@ func (m *Manager) ConfiguredBackends() []string {
 		}
 	}
 	return names
+}
+
+// GetAvailable returns all registered backends that report IsAvailable() == true.
+// It does NOT check the circuit breaker — only configuration-level availability.
+func (m *Manager) GetAvailable() []SearchBackend {
+	result := make([]SearchBackend, 0, len(m.registry))
+	for _, b := range m.registry {
+		if b.IsAvailable() {
+			result = append(result, b)
+		}
+	}
+	return result
+}
+
+// NextAvailable returns the next available backend selected via round-robin.
+// Backends in the exclude set are skipped. Backends where IsAvailable()
+// returns false are also skipped. Returns nil when no candidate remains.
+// The atomic round-robin index advances on every call, distributing load
+// evenly across backends over multiple requests.
+func (m *Manager) NextAvailable(exclude map[string]bool) SearchBackend {
+	available := make([]SearchBackend, 0, len(m.registry))
+	for _, b := range m.registry {
+		if b.IsAvailable() && !exclude[b.Name()] {
+			available = append(available, b)
+		}
+	}
+	if len(available) == 0 {
+		return nil
+	}
+	sort.Slice(available, func(i, j int) bool {
+		return available[i].Name() < available[j].Name()
+	})
+	idx := int(m.rrIdx.Add(1)-1) % len(available)
+	return available[idx]
 }
 
 func (m *Manager) availableNames() string {

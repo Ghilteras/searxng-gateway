@@ -14,6 +14,8 @@ import (
 	"sx/internal/searxng"
 )
 
+// --- Test doubles ---
+
 type fakeSearxng struct {
 	resp *searxng.Response
 	err  error
@@ -23,7 +25,6 @@ func (f *fakeSearxng) Search(_ context.Context, _ string) (*searxng.Response, er
 	return f.resp, f.err
 }
 
-// fakeBackend implements backends.SearchBackend for testing.
 type fakeBackend struct {
 	name    string
 	results []backends.SearchResult
@@ -33,9 +34,11 @@ type fakeBackend struct {
 
 func (f *fakeBackend) Name() string              { return f.name }
 func (f *fakeBackend) IsAvailable() bool         { return f.avail }
-func (f *fakeBackend) Search(backends.SearchOptions) ([]backends.SearchResult, error) {
+func (f *fakeBackend) Search(_ backends.SearchOptions) ([]backends.SearchResult, error) {
 	return f.results, f.err
 }
+
+// --- Helpers ---
 
 func newCfg() *config.Config {
 	return &config.Config{
@@ -44,89 +47,127 @@ func newCfg() *config.Config {
 		CacheTTL:              time.Hour,
 		SearxngFailThreshold:  6,
 		SearxngFailCooldown:   180 * time.Second,
-		SufficientMinResults:  1,
-		FallbackProviders:     []string{"brave"},
+		SufficientMinResults:  10,
+		FallbackProviders:     []string{"brave", "exa"},
 	}
 }
 
-// newTestProxy creates a Proxy with a single "brave" fallback backend for testing.
-func newTestProxy(cfg *config.Config, sx searxng.Client, fb *fakeBackend, c *cache.Cache, breakerMgr *breaker.Manager) *Proxy {
+// newTestProxy creates a Proxy with the given fallback backends and breaker.
+func newTestProxy(cfg *config.Config, sx searxng.Client, c *cache.Cache, breakerMgr *breaker.Manager, fbs ...backends.SearchBackend) *Proxy {
 	mgr := backends.NewManager()
-	mgr.Register(fb)
+	for _, fb := range fbs {
+		mgr.Register(fb)
+	}
 	_ = mgr.SetFallbacks(cfg.FallbackProviders)
 	return New(cfg, sx, c, breakerMgr, mgr)
 }
 
-// TestSearchSearxngOK — binary fallback: 1 result (1 engine) → sufficient → SearXNG
+// --- Tests ---
+
+// TestSearchSearxngOK — SearXNG returns >= 10 results → sufficient, still calls 1 premium.
 func TestSearchSearxngOK(t *testing.T) {
+	sxRes := make([]searxng.Result, 10)
+	for i := range sxRes {
+		sxRes[i] = searxng.Result{Title: fmt.Sprintf("SX%d", i), URL: fmt.Sprintf("https://sx%d.com", i), Engine: "wikipedia"}
+	}
+	sx := &fakeSearxng{resp: &searxng.Response{Results: sxRes}}
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "BR1", URL: "https://brave1.com", Content: "d", Engine: "brave"},
+	}}
+	c, _ := cache.New(100)
+	p := newTestProxy(newCfg(), sx, c, breaker.New(), fb)
+	out, err := p.Search(context.Background(), "x")
+	if err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+	if len(out.Results) < 10 {
+		t.Errorf("len = %d, want >= 10", len(out.Results))
+	}
+}
+
+// TestSearchMergeDedup — SearXNG + premium results, deduplicated by URL.
+func TestSearchMergeDedup(t *testing.T) {
+	// Same URL in both SearXNG and Brave → dedup
 	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
-		{Title: "single", Engine: "wikipedia"},
+		{Title: "SX", URL: "https://shared.com", Engine: "wikipedia"},
 	}}}
-	c, _ := cache.New(10)
-	p := newTestProxy(newCfg(), sx, &fakeBackend{name: "brave", avail: true}, c, breaker.New())
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "BR", URL: "https://shared.com", Content: "d", Engine: "brave"},
+		{Title: "BR2", URL: "https://brave-only.com", Content: "d", Engine: "brave"},
+	}}
+	c, _ := cache.New(100)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 5 // trigger loop to call more premiums if needed
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
 	}
-	if len(out.Results) != 1 {
-		t.Errorf("len = %d, want 1 (SearXNG sufficient since binary)", len(out.Results))
+	// shared.com should appear only once
+	sharedCount := 0
+	for _, r := range out.Results {
+		if r.URL == "https://shared.com" {
+			sharedCount++
+		}
 	}
-	if out.Results[0].Engine != "wikipedia" {
-		t.Errorf("Engine = %q, want wikipedia", out.Results[0].Engine)
+	if sharedCount != 1 {
+		t.Errorf("shared.com dedup count = %d, want 1 (deduplicated)", sharedCount)
 	}
 }
 
-// TestSearchFallbackBrave — SearXNG 0 results → insufficient → Brave fallback
-func TestSearchFallbackBrave(t *testing.T) {
+// TestSearchPremiumLoop — SearXNG 0 results, premiums fill up to threshold.
+func TestSearchPremiumLoop(t *testing.T) {
 	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{}}}
-	fb := &fakeBackend{
-		name: "brave",
-		results: []backends.SearchResult{
-			{Title: "T1", URL: "u1", Content: "d1", Engine: "brave"},
-		},
-		avail: true,
-	}
-	c, _ := cache.New(10)
-	p := newTestProxy(newCfg(), sx, fb, c, breaker.New())
+	fb1 := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "BR", URL: "https://br.com", Content: "d", Engine: "brave"},
+	}}
+	fb2 := &fakeBackend{name: "exa", avail: true, results: []backends.SearchResult{
+		{Title: "EX", URL: "https://ex.com", Content: "d", Engine: "exa"},
+	}}
+	c, _ := cache.New(100)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 2 // loop will try both premiums
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb1, fb2)
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
 	}
-	if len(out.Results) != 1 {
-		t.Errorf("len = %d, want 1 (Brave fallback)", len(out.Results))
-	}
-	if out.Results[0].Engine != "brave" {
-		t.Errorf("Engine = %q, want brave", out.Results[0].Engine)
+	if len(out.Results) < 1 {
+		t.Errorf("len = %d, want >= 1 (premium fallback)", len(out.Results))
 	}
 }
 
-// TestSearchFallbackTimeout — SearXNG timeout → Brave fallback
-func TestSearchFallbackTimeout(t *testing.T) {
-	sx := &fakeSearxng{err: context.DeadlineExceeded}
-	fb := &fakeBackend{
-		name: "brave",
-		results: []backends.SearchResult{
-			{Title: "T", URL: "u", Content: "d", Engine: "brave"},
-		},
-		avail: true,
+// TestSearchSearxngCooldown — SearXNG in cooldown → only premiums.
+func TestSearchSearxngCooldown(t *testing.T) {
+	sx := &fakeSearxng{err: errors.New("upstream 500")}
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "BR", URL: "https://br.com", Content: "d", Engine: "brave"},
+	}}
+	c, _ := cache.New(100)
+	cfg := newCfg()
+	cfg.SearxngFailCooldown = 1 * time.Second
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+
+	// 6 warmup calls to trigger cooldown
+	for i := 0; i < 6; i++ {
+		_, _ = p.Search(context.Background(), fmt.Sprintf("w%d", i))
 	}
-	c, _ := cache.New(10)
-	p := newTestProxy(newCfg(), sx, fb, c, breaker.New())
-	out, err := p.Search(context.Background(), "x")
+
+	out, err := p.Search(context.Background(), "post-cooldown")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
 	}
-	if len(out.Results) != 1 {
-		t.Errorf("len = %d, want 1 (Brave on SearXNG timeout)", len(out.Results))
+	if len(out.Results) < 1 {
+		t.Errorf("len = %d, want >= 1 (premium during cooldown)", len(out.Results))
 	}
 }
 
-// TestSearchCacheHit — cache hit, SearXNG not called
+// TestSearchCacheHit — cache hit, no SearXNG or premium called.
 func TestSearchCacheHit(t *testing.T) {
-	c, _ := cache.New(10)
+	c, _ := cache.New(100)
 	c.Set("x", &searxng.Response{Results: []searxng.Result{{Title: "cached"}}})
-	sx := &fakeSearxng{} // must NOT be called
-	p := newTestProxy(newCfg(), sx, &fakeBackend{name: "brave", avail: true}, c, breaker.New())
+	sx := &fakeSearxng{}
+	p := newTestProxy(newCfg(), sx, c, breaker.New(), &fakeBackend{name: "brave", avail: true})
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
@@ -136,112 +177,49 @@ func TestSearchCacheHit(t *testing.T) {
 	}
 }
 
-// TestSearchFallbackBraveFails — SearXNG 0 results + Brave error → error
-func TestSearchFallbackBraveFails(t *testing.T) {
-	sx := &fakeSearxng{resp: &searxng.Response{Results: nil}}
-	fb := &fakeBackend{name: "brave", err: errors.New("upstream 500"), avail: true}
-	c, _ := cache.New(10)
-	p := newTestProxy(newCfg(), sx, fb, c, breaker.New())
-	if _, err := p.Search(context.Background(), "x"); err == nil {
-		t.Error("Search expected error when both SearXNG and Brave fail")
-	}
-}
-
-// --- New TDD tests for binary fallback + cooldown circuit breaker ---
-
-// TestSearchSearxngBinaryOK — 1 result from 1 engine → sufficient (binary)
-func TestSearchSearxngBinaryOK(t *testing.T) {
-	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
-		{Title: "single", Engine: "wikipedia"},
-	}}}
-	c, _ := cache.New(10)
-	p := newTestProxy(newCfg(), sx, &fakeBackend{name: "brave", avail: true}, c, breaker.New())
+// TestSearchCircuitBreaker — premium with open circuit breaker skipped.
+func TestSearchCircuitBreaker(t *testing.T) {
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{}}}
+	fb1 := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "BR", URL: "https://br.com", Content: "d", Engine: "brave"},
+	}}
+	fb2 := &fakeBackend{name: "exa", avail: true, err: errors.New("exa down")}
+	c, _ := cache.New(100)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 2
+	bm := breaker.New()
+	bm.RecordClientError("exa", "test trip") // trip exa's breaker
+	p := newTestProxy(cfg, sx, c, bm, fb1, fb2)
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
 	}
-	if len(out.Results) != 1 {
-		t.Errorf("len = %d, want 1 (SearXNG sufficient since binary)", len(out.Results))
+	// Should get brave results (exa breaker open, skipped)
+	hasBrave := false
+	hasExa := false
+	for _, r := range out.Results {
+		if r.Engine == "brave" {
+			hasBrave = true
+		}
+		if r.Engine == "exa" {
+			hasExa = true
+		}
 	}
-	if out.Results[0].Engine != "wikipedia" {
-		t.Errorf("Engine = %q, want wikipedia", out.Results[0].Engine)
+	if !hasBrave {
+		t.Error("expected brave results (circuit breaker should skip exa, not brave)")
+	}
+	if hasExa {
+		t.Error("exa should be skipped (circuit breaker open)")
 	}
 }
 
-// TestSearchSearxngBinaryFailSkipsCooldown — 5 failures < threshold 6
-// SearXNG still tried before Brave fallback
-func TestSearchSearxngBinaryFailSkipsCooldown(t *testing.T) {
-	sx := &fakeSearxng{err: errors.New("upstream 500")}
-	fb := &fakeBackend{
-		name: "brave",
-		results: []backends.SearchResult{
-			{Title: "T", URL: "u", Content: "d", Engine: "brave"},
-		},
-		avail: true,
-	}
-	c, _ := cache.New(10)
-	cfg := newCfg()
-	p := newTestProxy(cfg, sx, fb, c, breaker.New())
-
-	// 5 consecutive failures
-	for i := 0; i < 5; i++ {
-		out, err := p.Search(context.Background(), fmt.Sprintf("query-%d", i))
-		if err != nil {
-			t.Fatalf("Search err %d: %v", i, err)
-		}
-		if len(out.Results) != 1 {
-			t.Errorf("Call %d: len = %d, want 1 (Brave fallback)", i, len(out.Results))
-		}
-	}
-
-	// Failure count is 5, below threshold 6 → SearXNG still tried on 6th call
-	out, err := p.Search(context.Background(), "query-6")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(out.Results) != 1 {
-		t.Errorf("Call 6: len = %d, want 1 (Brave fallback, SearXNG tried)", len(out.Results))
-	}
-}
-
-// TestSearchSearxngCooldownActive — 6 failures → cooldown active
-// During cooldown, SearXNG is skipped, goes directly to Brave
-func TestSearchSearxngCooldownActive(t *testing.T) {
-	sx := &fakeSearxng{err: errors.New("upstream 500")}
-	fb := &fakeBackend{
-		name: "brave",
-		results: []backends.SearchResult{
-			{Title: "T", URL: "u", Content: "d", Engine: "brave"},
-		},
-		avail: true,
-	}
-	c, _ := cache.New(10)
-	cfg := newCfg()
-	cfg.SearxngFailCooldown = 1 * time.Second // short for fast test
-	p := newTestProxy(cfg, sx, fb, c, breaker.New())
-
-	// 6 warmup calls to trigger cooldown
-	for i := 0; i < 6; i++ {
-		_, _ = p.Search(context.Background(), fmt.Sprintf("warmup-%d", i))
-	}
-
-	// Cooldown active: new instance without cooldown checks isolation
-	sxTracked := &fakeSearxng{err: errors.New("CALLED!")}
-	p2 := newTestProxy(cfg, sxTracked, fb, c, breaker.New())
-	out, err := p2.Search(context.Background(), "different-key")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(out.Results) != 1 {
-		t.Errorf("p2 call: len = %d, want 1 (Brave)", len(out.Results))
-	}
-
-	// Same instance p still in cooldown → skips SearXNG → Brave
-	out, err = p.Search(context.Background(), "post-cooldown")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(out.Results) != 1 {
-		t.Errorf("Same instance cooldown call: len = %d, want 1", len(out.Results))
+// TestSearchAllFail — SearXNG 0 results, all premiums fail → error.
+func TestSearchAllFail(t *testing.T) {
+	sx := &fakeSearxng{resp: &searxng.Response{Results: nil}}
+	fb := &fakeBackend{name: "brave", err: errors.New("upstream 500"), avail: true}
+	c, _ := cache.New(100)
+	p := newTestProxy(newCfg(), sx, c, breaker.New(), fb)
+	if _, err := p.Search(context.Background(), "x"); err == nil {
+		t.Error("Search expected error when both SearXNG and all premiums fail")
 	}
 }

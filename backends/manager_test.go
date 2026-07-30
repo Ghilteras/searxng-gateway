@@ -368,3 +368,105 @@ func TestManager_FallbackOrder(t *testing.T) {
 		t.Errorf("unexpected results: %v", results)
 	}
 }
+
+func TestManager_GetAvailable(t *testing.T) {
+	mgr := NewManager()
+	mgr.Register(&mockBackend{name: "available1", available: true})
+	mgr.Register(&mockBackend{name: "unavailable", available: false})
+	mgr.Register(&mockBackend{name: "available2", available: true})
+
+	got := mgr.GetAvailable()
+	if len(got) != 2 {
+		t.Errorf("GetAvailable len = %d, want 2", len(got))
+	}
+	names := make([]string, len(got))
+	for i, b := range got {
+		names[i] = b.Name()
+	}
+	// Should contain both available backends
+	hasAvailable1 := false
+	hasAvailable2 := false
+	for _, n := range names {
+		if n == "available1" {
+			hasAvailable1 = true
+		}
+		if n == "available2" {
+			hasAvailable2 = true
+		}
+	}
+	if !hasAvailable1 || !hasAvailable2 {
+		t.Errorf("GetAvailable names = %v, want both 'available1' and 'available2'", names)
+	}
+}
+
+func TestManager_GetAvailable_None(t *testing.T) {
+	mgr := NewManager()
+	mgr.Register(&mockBackend{name: "unavailable", available: false})
+
+	got := mgr.GetAvailable()
+	if len(got) != 0 {
+		t.Errorf("GetAvailable len = %d, want 0", len(got))
+	}
+}
+
+func TestManager_NextAvailable_RoundRobin(t *testing.T) {
+	mgr := NewManager()
+	mgr.Register(&mockBackend{name: "brave", available: true})
+	mgr.Register(&mockBackend{name: "exa", available: true})
+	mgr.Register(&mockBackend{name: "jina", available: true})
+	mgr.Register(&mockBackend{name: "tavily", available: true})
+
+	// Call NextAvailable multiple times and verify cycling
+	counts := make(map[string]int)
+	for i := 0; i < 24; i++ {
+		b := mgr.NextAvailable(map[string]bool{})
+		if b == nil {
+			t.Fatalf("NextAvailable returned nil on call %d", i)
+		}
+		counts[b.Name()]++
+	}
+
+	// Each of 4 backends should have been selected 6 times (24/4)
+	for _, name := range []string{"brave", "exa", "jina", "tavily"} {
+		if counts[name] != 6 {
+			t.Errorf("counts[%s] = %d, want 6", name, counts[name])
+		}
+	}
+}
+
+func TestManager_NextAvailable_Exclude(t *testing.T) {
+	mgr := NewManager()
+	mgr.Register(&mockBackend{name: "brave", available: true})
+	mgr.Register(&mockBackend{name: "exa", available: true})
+
+	// Exclude brave → should get exa every time
+	for i := 0; i < 5; i++ {
+		b := mgr.NextAvailable(map[string]bool{"brave": true})
+		if b == nil {
+			t.Fatalf("NextAvailable returned nil when exa should be available")
+		}
+		if b.Name() != "exa" {
+			t.Errorf("got %q, want exa (brave excluded)", b.Name())
+		}
+	}
+}
+
+func TestManager_NextAvailable_AllExcluded(t *testing.T) {
+	mgr := NewManager()
+	mgr.Register(&mockBackend{name: "brave", available: true})
+
+	b := mgr.NextAvailable(map[string]bool{"brave": true})
+	if b != nil {
+		t.Errorf("NextAvailable with all excluded should return nil, got %q", b.Name())
+	}
+}
+
+func TestManager_NextAvailable_UnavailableSkipped(t *testing.T) {
+	mgr := NewManager()
+	mgr.Register(&mockBackend{name: "unavailable", available: false})
+
+	b := mgr.NextAvailable(map[string]bool{})
+	if b != nil {
+		t.Errorf("NextAvailable with only unavailable backends should return nil, got %q", b.Name())
+	}
+}
