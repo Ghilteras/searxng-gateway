@@ -61,12 +61,21 @@ func New(cfg *config.Config, sx searxng.Client, c *cache.Cache, breakerMgr *brea
 
 // Search runs the full orchestration pipeline for a raw query string.
 //
+//  1. Cache check → cache_hit
+//  2. SearXNG cooldown check → skip SearXNG if in cooldown
+//  3. T1: SearXNG + 1 premium (round-robin) in parallel
+//  4. Merge results, dedup by URL
+//  5. T2: if < SufficientMinResults (10): loop — call another premium
+//     (non-repeating) until threshold met, all premiums exhausted, or timeout.
+//
 // Outcome counters (all via RequestsTotal):
-//   - cache_hit:           entry found in cache, SearXNG not called.
-//   - searxng_ok:          SearXNG returned a sufficient response.
-//   - timeout:             SearXNG returned context.DeadlineExceeded.
-//   - fallback_brave_ok:   SearXNG insufficient/failed/cooldown, Brave OK.
-//   - fallback_brave_fail: SearXNG insufficient/failed/cooldown, Brave also failed.
+//   - cache_hit:             entry found in cache, no upstream calls.
+//   - searxng_ok:            SearXNG returned sufficient results (>= threshold),
+//                            no premium needed after T1.
+//   - premium_ok:            SearXNG failed/skipped, premiums provided results.
+//   - searxng_plus_premium_ok: both SearXNG and premiums contributed.
+//   - timeout:               SearXNG returned context.DeadlineExceeded.
+//   - fallback_fail:         all backends failed or returned nothing.
 func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, error) {
 	key := normalize(raw)
 
@@ -90,10 +99,10 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	premiumHadResults := false
 	var premiumErrMsgs []string
 
-	// 3. Channel to collect SearXNG result from goroutine.
+	// 3. T1: launch SearXNG (if not in cooldown) and 1 round-robin premium in parallel.
 	type sxResult struct {
-		resp *searxng.Response
-		err  error
+		resp    *searxng.Response
+		err     error
 		elapsed time.Duration
 	}
 	sxCh := make(chan sxResult, 1)
@@ -107,37 +116,29 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 			sxCh <- sxResult{resp: resp, err: err, elapsed: time.Since(start)}
 		}()
 	} else {
-		// Cooldown active: signal SearXNG skipped.
 		close(sxCh)
 	}
 
-	// 4. T1 premium: if T1_PREMIUM_COUNT > 0, pick that many distinct providers
-	// via round-robin and call each one. Runs in parallel with the SearXNG goroutine.
-	for i := 0; i < p.cfg.T1PremiumCount; i++ {
-		if time.Now().After(deadline) {
-			break
-		}
-		premium := p.fallbackMgr.NextAvailable(usedPremiums)
-		if premium == nil || !premium.IsAvailable() || p.breakerMgr.IsOpen(premium.Name()) {
-			continue
-		}
-		usedPremiums[premium.Name()] = true
+	// T1 premium: pick 1 premium via round-robin and call it.
+	firstPremium := p.fallbackMgr.NextAvailable(usedPremiums)
+	if firstPremium != nil && firstPremium.IsAvailable() && !p.breakerMgr.IsOpen(firstPremium.Name()) {
+		usedPremiums[firstPremium.Name()] = true
 		start := time.Now()
-		results, err := premium.Search(backends.SearchOptions{
+		results, err := firstPremium.Search(backends.SearchOptions{
 			Query:      key,
 			NumResults: 10,
 		})
 		elapsed := time.Since(start)
-		metrics.RequestDuration.WithLabelValues(premium.Name(), premium.Name()).Observe(elapsed.Seconds())
+		metrics.RequestDuration.WithLabelValues(firstPremium.Name(), firstPremium.Name()).Observe(elapsed.Seconds())
 
 		if err != nil {
 			if isClientError(err.Error()) {
-				p.breakerMgr.RecordClientError(premium.Name(), err.Error())
+				p.breakerMgr.RecordClientError(firstPremium.Name(), err.Error())
 			}
-			premiumErrMsgs = append(premiumErrMsgs, fmt.Sprintf("%s: %v", premium.Name(), err))
+			premiumErrMsgs = append(premiumErrMsgs, fmt.Sprintf("%s: %v", firstPremium.Name(), err))
 		} else if len(results) > 0 {
-			p.breakerMgr.RecordSuccess(premium.Name())
-			metrics.EngineResultsTotal.WithLabelValues(premium.Name()).Add(float64(len(results)))
+			p.breakerMgr.RecordSuccess(firstPremium.Name())
+			metrics.EngineResultsTotal.WithLabelValues(firstPremium.Name()).Add(float64(len(results)))
 			premiumHadResults = true
 			for _, r := range results {
 				if !seenURLs[r.URL] {
@@ -154,7 +155,7 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		}
 	}
 
-	// 5. Collect SearXNG result.
+	// 4. Collect SearXNG result (may arrive before or after premium).
 	if sxResult, ok := <-sxCh; ok {
 		if sxResult.err == nil && sxResult.resp != nil {
 			// Per-engine metrics from SearXNG response.
@@ -197,7 +198,6 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 			p.recordSearxngSuccess()
 
 			// Merge SearXNG results into allResults (dedup by URL).
-			// Outcome label is set once at the end (step 7).
 			for _, r := range sxResult.resp.Results {
 				if !seenURLs[r.URL] {
 					seenURLs[r.URL] = true
@@ -216,7 +216,8 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		}
 	}
 
-	// 6. Fallback loop: all remaining FALLBACK_PROVIDERS (skips already-used).
+	// 5. T2 loop: if still below threshold, call additional premiums (non-repeating)
+	// until threshold met, all exhausted, or deadline expires.
 	if len(allResults) < p.cfg.SufficientMinResults {
 		allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs =
 			p.premiumLoop(timeoutCtx, key, deadline, allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs)

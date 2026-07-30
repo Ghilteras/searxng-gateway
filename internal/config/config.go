@@ -19,9 +19,8 @@ type Config struct {
 	CacheTTL           time.Duration
 	LogLevel             string
 	MetricsPath          string
-	SufficientMinResults int // minimum SearXNG results before fallback is considered "sufficient"
+	SufficientMinResults int // minimum results before T2 loop stops (default 10)
 	FallbackProviders    []string // parsed from FALLBACK_PROVIDERS env var
-	T1PremiumCount int // how many different FallbackProviders to call in T1 hot path (parsed from T1_PREMIUM_COUNT, default 0)
 	// Community-aligned: binary fallback + cooldown circuit breaker
 	SearxngFailThreshold int           // consecutive failures before cooldown
 	SearxngFailCooldown  time.Duration // duration of cooldown period
@@ -35,7 +34,6 @@ func Load() (*Config, error) {
 		SearxngBackendURL:     getEnv("SEARXNG_BACKEND_URL", "http://searxng-primary:8080"),
 		BraveAPIKey:           os.Getenv("BRAVE_API_KEY"),
 		FallbackProviders:     parseProviderList(getEnv("FALLBACK_PROVIDERS", "brave")),
-		T1PremiumCount:      getEnvInt("T1_PREMIUM_COUNT", 0),
 		FallbackTimeout:       time.Duration(getEnvInt("FALLBACK_TIMEOUT_SECONDS", 30)) * time.Second,
 		SearxngTimeout:        time.Duration(getEnvInt("SEARXNG_TIMEOUT_SECONDS", 25)) * time.Second,
 		BraveTimeout:          time.Duration(getEnvInt("BRAVE_TIMEOUT_SECONDS", 15)) * time.Second,
@@ -43,7 +41,7 @@ func Load() (*Config, error) {
 		CacheTTL:              time.Duration(getEnvInt("CACHE_TTL_SECONDS", 3600)) * time.Second,
 		LogLevel:              getEnv("LOG_LEVEL", "info"),
 		MetricsPath:           getEnv("METRICS_PATH", "/metrics"),
-		SufficientMinResults:  getEnvInt("SUFFICIENT_MIN_RESULTS", 1),
+		SufficientMinResults:  getEnvInt("SUFFICIENT_MIN_RESULTS", 10),
 		SearxngFailThreshold:  getEnvInt("SEARXNG_FAIL_THRESHOLD", 6),
 		SearxngFailCooldown:   time.Duration(getEnvInt("SEARXNG_FAIL_COOLDOWN_SECONDS", 180)) * time.Second,
 		BraveFailThreshold:    getEnvInt("BRAVE_FAIL_THRESHOLD", 3),
@@ -64,9 +62,6 @@ func (c *Config) Validate() error {
 	}
 	if c.BraveFailCooldown < time.Second {
 		return fmt.Errorf("BRAVE_FAIL_COOLDOWN_SECONDS must be >= 1, got %v", c.BraveFailCooldown)
-	}
-	if c.T1PremiumCount < 0 {
-		return fmt.Errorf("T1_PREMIUM_COUNT must be >= 0, got %d", c.T1PremiumCount)
 	}
 	return nil
 }
