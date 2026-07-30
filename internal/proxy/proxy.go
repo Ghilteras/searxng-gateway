@@ -131,7 +131,9 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		metrics.RequestDuration.WithLabelValues(premium.Name(), premium.Name()).Observe(elapsed.Seconds())
 
 		if err != nil {
-			p.breakerMgr.RecordClientError(premium.Name(), err.Error())
+			if isClientError(err.Error()) {
+				p.breakerMgr.RecordClientError(premium.Name(), err.Error())
+			}
 			premiumErrMsgs = append(premiumErrMsgs, fmt.Sprintf("%s: %v", premium.Name(), err))
 		} else if len(results) > 0 {
 			p.breakerMgr.RecordSuccess(premium.Name())
@@ -300,7 +302,9 @@ func (p *Proxy) premiumLoop(
 		metrics.RequestDuration.WithLabelValues(premium.Name(), premium.Name()).Observe(elapsed.Seconds())
 
 		if err != nil {
-			p.breakerMgr.RecordClientError(premium.Name(), err.Error())
+			if isClientError(err.Error()) {
+				p.breakerMgr.RecordClientError(premium.Name(), err.Error())
+			}
 			errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", premium.Name(), err))
 			continue
 		}
