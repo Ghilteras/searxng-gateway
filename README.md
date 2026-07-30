@@ -1,6 +1,6 @@
 # searxng-gateway
 
-Decision proxy in front of SearXNG: forwards queries to SearXNG, falls back to configurable freemium providers (e.g. Brave Search API) when results are too few or engine diversity is too low. Same JSON shape as SearXNG, Prometheus /metrics, in-memory LRU cache.
+Decision proxy in front of SearXNG: **speculative execution** — calls SearXNG and N premium providers (Brave, Exa, Jina, Tavily) in parallel via round-robin, merges results with URL dedup, and loops through remaining providers until a configurable threshold is met or timeout expires. Same JSON shape as SearXNG, Prometheus /metrics, in-memory LRU cache.
 
 🚀 **Works with zero API keys in keyless mode.** See [docs/keyless.md](docs/keyless.md).
 
@@ -28,24 +28,32 @@ curl 'http://localhost:8080/metrics'
 ## Architecture
 
 ```
-Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (Tier 1+2 engines)
+Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (Tier 1 free engines)
                     │                        │
+                    │  ┌─────────────────────┤
+                    │  │ Speculative execution│
+                    │  │ (parallel round-robin)│
+                    │  └─────────────────────┤
                     │                        ├── Serper (Google via API)
                     │                        ├── Bing, Wikipedia, GitHub...
                     │                        └── Circuit breaker per engine
                     │
-                    └──▶ Fallback chain (tried in order)
-                         ├── Brave Search API
-                         ├── Exa Search API
-                         └── Jina Search API
-                         Triggered when SearXNG returns < SUFFICIENT_MIN_RESULTS
+                    └──▶ Tier 2 hot path (T1_PREMIUM_COUNT providers)
+                    │    ├── Brave ──┐
+                    │    ├── Exa     ├── round-robin, run in parallel
+                    │    ├── Jina    │   with SearXNG. Dedup URL.
+                    │    └── Tavily ─┘
+                    │
+                    └──▶ Fallback loop (if merged < SUFFICIENT_MIN_RESULTS)
+                         Round-robin through remaining Tier 2 providers
+                         until threshold, exhaustion, or FALLBACK_TIMEOUT
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the full design.
 
 ## Supported fallback providers
 
-Set `FALLBACK_PROVIDERS` to a comma-separated list of backend names. Each provider needs its `_API_KEY` env var. They are tried in order until one returns sufficient results.
+Set `FALLBACK_PROVIDERS` to a comma-separated list of premium backend names. Each needs its `_API_KEY` env var. **`T1_PREMIUM_COUNT` controls how many of them run alongside SearXNG in every request** (round-robin selection); the rest are used in the fallback loop when the merged result count is below `SUFFICIENT_MIN_RESULTS`.
 
 | Provider | Env var | Free tier | Production |
 |----------|---------|-----------|------------|
@@ -67,12 +75,14 @@ Keyless mode (no API keys) works out of the box — only Bing will be available 
 
 ## Features
 
+- **Speculative execution** — `T1_PREMIUM_COUNT` premium providers called in parallel with SearXNG every request, via atomic round-robin. Results merged and deduplicated by URL.
+- **Bounded fallback loop** — if merged results < `SUFFICIENT_MIN_RESULTS`, remaining Tier 2 providers are tried via round-robin until threshold, exhaustion, or `FALLBACK_TIMEOUT_SECONDS`.
 - **Circuit breaker per engine** — 4xx on an engine opens the circuit for 5 min; auto-recovers
 - **Exponential backoff retry** — 3 retries with 1s/2s/4s backoff on 5xx/timeout
-- **Prometheus /metrics** — 10+ gauges and counters prefixed `searxng_gateway_`
+- **Prometheus /metrics** — 15+ gauges and counters prefixed `searxng_gateway_`
 - **LRU cache** — 1000 entries, 1h TTL, in-memory
 - **SearXNG config tuning** — reference `examples/searxng/` with engine selection, `suspended_times` tuning, custom User-Agent, and custom Python engines (Serper, Mojeek)
-- **Fallback billing alert** — `engine_results_total` tracks fallback API usage so you can alert before hitting quota limits
+- **Fallback billing alert** — `engine_results_total` tracks premium API usage so you can alert before hitting quota limits
 
 ## Observability
 
@@ -141,10 +151,11 @@ groups:
 |-----|---------|----------|-------------|
 | `LISTEN_ADDR` | `:8080` | no | HTTP listen address |
 | `SEARXNG_BACKEND_URL` | `http://searxng-primary:8080` | no | SearXNG instance URL |
-| `FALLBACK_PROVIDERS` | `brave` | no | Comma-separated list of fallback backends |
+| `FALLBACK_PROVIDERS` | `brave` | no | Comma-separated list of premium provider names |
 | `BRAVE_API_KEY` | — | no | Brave Search API key |
-| `SUFFICIENT_MIN_RESULTS` | `1` | no | Minimum SearXNG results before triggering fallback |
-| `FALLBACK_TIMEOUT_SECONDS` | `30` | no | Maximum time for the entire fallback chain |
+| `SUFFICIENT_MIN_RESULTS` | `1` | no | Target merged result count; loop stops when reached (recommend 10 with premiums) |
+| `T1_PREMIUM_COUNT` | `0` | no | Number of premium providers to call in parallel with SearXNG (0 = none) |
+| `FALLBACK_TIMEOUT_SECONDS` | `30` | no | Maximum time for speculative execution + fallback loop |
 | `SEARXNG_TIMEOUT_SECONDS` | `25` | no | Per-request timeout for SearXNG |
 | `SEARXNG_FAIL_THRESHOLD` | `6` | no | Consecutive SearXNG failures before cooldown |
 | `SEARXNG_FAIL_COOLDOWN_SECONDS` | `180` | no | Cooldown duration for SearXNG (seconds) |
@@ -180,16 +191,9 @@ Then add a case to `backends/factory.go` and set `MYPROVIDER_API_KEY` in the env
 
 ## Build
 
-### GitHub Actions (recommended)
-
-Push to `main` or tag a `v*` release — GitHub Actions builds and pushes multi-arch images automatically. See [`.github/workflows/build.yml`](.github/workflows/build.yml).
-
-### Local build
-
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -t ghcr.io/Ghilteras/searxng-gateway:v0.10.0 \
-  -t ghcr.io/Ghilteras/searxng-gateway:latest --push .
+  -t ghcr.io/ghilteras/searxng-gateway:latest --push .
 ```
 
 ## License
