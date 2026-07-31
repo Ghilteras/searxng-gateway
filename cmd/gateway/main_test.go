@@ -18,7 +18,10 @@ import (
 	"sx/internal/searxng"
 )
 
-type stubSearxng struct{ resp *searxng.Response; err error }
+type stubSearxng struct {
+	resp *searxng.Response
+	err  error
+}
 
 func (s *stubSearxng) Search(_ context.Context, _ string) (*searxng.Response, error) {
 	return s.resp, s.err
@@ -32,8 +35,8 @@ type stubBackend struct {
 	avail   bool
 }
 
-func (s *stubBackend) Name() string                            { return s.name }
-func (s *stubBackend) IsAvailable() bool                       { return s.avail }
+func (s *stubBackend) Name() string      { return s.name }
+func (s *stubBackend) IsAvailable() bool { return s.avail }
 func (s *stubBackend) Search(_ backends.SearchOptions) ([]backends.SearchResult, error) {
 	return s.results, s.err
 }
@@ -41,14 +44,14 @@ func (s *stubBackend) Search(_ backends.SearchOptions) ([]backends.SearchResult,
 func setupRouter(t *testing.T) http.Handler {
 	t.Helper()
 	cfg := &config.Config{
-		FallbackTimeout:       5 * time.Second,
-		MetricsPath:           "/metrics",
-		SearxngFailThreshold:  6,
-		SearxngFailCooldown:   180 * time.Second,
-		SufficientMinResults:  1,
-		FallbackProviders:     []string{"brave"},
+		FallbackTimeout:      5 * time.Second,
+		MetricsPath:          "/metrics",
+		SearxngFailThreshold: 6,
+		SearxngFailCooldown:  180 * time.Second,
+		SufficientMinResults: 1,
+		FallbackProviders:    []string{"brave"},
 	}
-	c, _ := cache.New(10)
+	c, _ := cache.New(10, 0)
 	metrics.Init()
 
 	sx := &stubSearxng{resp: &searxng.Response{Results: []searxng.Result{{Engine: "wikipedia"}}}}

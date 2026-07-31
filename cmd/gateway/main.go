@@ -30,7 +30,7 @@ func main() {
 	}
 	metrics.Init()
 
-	c, err := cache.New(cfg.CacheSize)
+	c, err := cache.New(cfg.CacheSize, cfg.CacheTTL)
 	if err != nil {
 		log.Fatalf("cache: %v", err)
 	}

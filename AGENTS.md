@@ -15,7 +15,7 @@ main.go → cmd/serve.go → internal/proxy/proxy.go (forward SearXNG + premiumL
                         → internal/quota/ (Brave quota tracking)
                         → backends/manager.go (GetAvailable, NextAvailable — round-robin atomico)
                         → backends/ (provider esterni: brave.go, exa.go, tavily.go, jina.go)
-                        → history.go, search.go, cache (Ristretto)
+                        → history.go, search.go, cache (golang-lru/v2 in-memory, TTL da CACHE_TTL_SECONDS)
 ```
 
 ## Aggiungere un nuovo backend

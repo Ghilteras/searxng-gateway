@@ -32,8 +32,8 @@ type fakeBackend struct {
 	avail   bool
 }
 
-func (f *fakeBackend) Name() string              { return f.name }
-func (f *fakeBackend) IsAvailable() bool         { return f.avail }
+func (f *fakeBackend) Name() string      { return f.name }
+func (f *fakeBackend) IsAvailable() bool { return f.avail }
 func (f *fakeBackend) Search(_ backends.SearchOptions) ([]backends.SearchResult, error) {
 	return f.results, f.err
 }
@@ -42,14 +42,14 @@ func (f *fakeBackend) Search(_ backends.SearchOptions) ([]backends.SearchResult,
 
 func newCfg() *config.Config {
 	return &config.Config{
-		SearxngBackendURL:     "http://searxng-primary:8080",
-		FallbackTimeout:       30 * time.Second,
-		CacheTTL:              time.Hour,
-		SearxngFailThreshold:  6,
-		SearxngFailCooldown:   180 * time.Second,
-		SufficientMinResults:  10,
-		FallbackProviders:     []string{"brave", "exa"},
-		T1PremiumCount:        0,
+		SearxngBackendURL:    "http://searxng-primary:8080",
+		FallbackTimeout:      30 * time.Second,
+		CacheTTL:             time.Hour,
+		SearxngFailThreshold: 6,
+		SearxngFailCooldown:  180 * time.Second,
+		SufficientMinResults: 10,
+		FallbackProviders:    []string{"brave", "exa"},
+		T1PremiumCount:       0,
 	}
 }
 
@@ -75,7 +75,7 @@ func TestSearchSearxngOK(t *testing.T) {
 	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
 		{Title: "BR1", URL: "https://brave1.com", Content: "d", Engine: "brave"},
 	}}
-	c, _ := cache.New(100)
+	c, _ := cache.New(100, 0)
 	p := newTestProxy(newCfg(), sx, c, breaker.New(), fb)
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
@@ -96,7 +96,7 @@ func TestSearchMergeDedup(t *testing.T) {
 		{Title: "BR", URL: "https://shared.com", Content: "d", Engine: "brave"},
 		{Title: "BR2", URL: "https://brave-only.com", Content: "d", Engine: "brave"},
 	}}
-	c, _ := cache.New(100)
+	c, _ := cache.New(100, 0)
 	cfg := newCfg()
 	cfg.SufficientMinResults = 5 // trigger loop to call more premiums if needed
 	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
@@ -125,7 +125,7 @@ func TestSearchPremiumLoop(t *testing.T) {
 	fb2 := &fakeBackend{name: "exa", avail: true, results: []backends.SearchResult{
 		{Title: "EX", URL: "https://ex.com", Content: "d", Engine: "exa"},
 	}}
-	c, _ := cache.New(100)
+	c, _ := cache.New(100, 0)
 	cfg := newCfg()
 	cfg.SufficientMinResults = 2 // loop will try both premiums
 	p := newTestProxy(cfg, sx, c, breaker.New(), fb1, fb2)
@@ -144,7 +144,7 @@ func TestSearchSearxngCooldown(t *testing.T) {
 	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
 		{Title: "BR", URL: "https://br.com", Content: "d", Engine: "brave"},
 	}}
-	c, _ := cache.New(100)
+	c, _ := cache.New(100, 0)
 	cfg := newCfg()
 	cfg.SearxngFailCooldown = 1 * time.Second
 	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
@@ -165,7 +165,7 @@ func TestSearchSearxngCooldown(t *testing.T) {
 
 // TestSearchCacheHit — cache hit, no SearXNG or premium called.
 func TestSearchCacheHit(t *testing.T) {
-	c, _ := cache.New(100)
+	c, _ := cache.New(100, 0)
 	c.Set("x", &searxng.Response{Results: []searxng.Result{{Title: "cached"}}})
 	sx := &fakeSearxng{}
 	p := newTestProxy(newCfg(), sx, c, breaker.New(), &fakeBackend{name: "brave", avail: true})
@@ -185,7 +185,7 @@ func TestSearchCircuitBreaker(t *testing.T) {
 		{Title: "BR", URL: "https://br.com", Content: "d", Engine: "brave"},
 	}}
 	fb2 := &fakeBackend{name: "exa", avail: true, err: errors.New("exa down")}
-	c, _ := cache.New(100)
+	c, _ := cache.New(100, 0)
 	cfg := newCfg()
 	cfg.SufficientMinResults = 2
 	bm := breaker.New()
@@ -218,7 +218,7 @@ func TestSearchCircuitBreaker(t *testing.T) {
 func TestSearchAllFail(t *testing.T) {
 	sx := &fakeSearxng{resp: &searxng.Response{Results: nil}}
 	fb := &fakeBackend{name: "brave", err: errors.New("upstream 500"), avail: true}
-	c, _ := cache.New(100)
+	c, _ := cache.New(100, 0)
 	p := newTestProxy(newCfg(), sx, c, breaker.New(), fb)
 	if _, err := p.Search(context.Background(), "x"); err == nil {
 		t.Error("Search expected error when both SearXNG and all premiums fail")
@@ -233,7 +233,7 @@ func TestSearchT1Premium(t *testing.T) {
 	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
 		{Title: "BR", URL: "https://br.com", Content: "d", Engine: "brave"},
 	}}
-	c, _ := cache.New(100)
+	c, _ := cache.New(100, 0)
 	cfg := newCfg()
 	cfg.SufficientMinResults = 5
 	cfg.T1PremiumCount = 1
@@ -268,7 +268,7 @@ func TestSearchT1PremiumTwo(t *testing.T) {
 	fb2 := &fakeBackend{name: "exa", avail: true, results: []backends.SearchResult{
 		{Title: "EX", URL: "https://ex.com", Content: "d", Engine: "exa"},
 	}}
-	c, _ := cache.New(100)
+	c, _ := cache.New(100, 0)
 	cfg := newCfg()
 	cfg.SufficientMinResults = 5
 	cfg.FallbackProviders = []string{"brave", "exa"}
@@ -305,7 +305,7 @@ func TestSearchT1PremiumNone(t *testing.T) {
 	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
 		{Title: "SHOULD NOT APPEAR", URL: "https://nope.com", Engine: "brave"},
 	}}
-	c, _ := cache.New(100)
+	c, _ := cache.New(100, 0)
 	cfg := newCfg()
 	cfg.SufficientMinResults = 1
 	cfg.T1PremiumCount = 0
