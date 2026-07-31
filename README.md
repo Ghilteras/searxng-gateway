@@ -158,6 +158,9 @@ groups:
 | `SEARXNG_BACKEND_URL` | `http://searxng-primary:8080` | no | SearXNG instance URL |
 | `FALLBACK_PROVIDERS` | `brave` | no | Comma-separated list of premium provider names |
 | `BRAVE_API_KEY` | — | no | Brave Search API key |
+| `EXA_API_KEY` | — | no | Exa Search API key |
+| `JINA_API_KEY` | — | no | Jina Search API key |
+| `TAVILY_API_KEY` | — | no | Tavily Search API key |
 | `SUFFICIENT_MIN_RESULTS` | `1` | no | Target merged result count; loop stops when reached (recommend 10 with premiums) |
 | `T1_PREMIUM_COUNT` | `0` | no | Number of premium providers to call in parallel with SearXNG (0 = none) |
 | `FALLBACK_TIMEOUT_SECONDS` | `30` | no | Maximum time for speculative execution + fallback loop |
