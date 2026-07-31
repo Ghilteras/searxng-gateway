@@ -61,7 +61,6 @@ Set `FALLBACK_PROVIDERS` to a comma-separated list of premium backend names. Eac
 | Exa | `EXA_API_KEY` | $20 + $10/mo (~2,800 searches) | ✅ Yes |
 | Jina | `JINA_API_KEY` | 10M tokens, 500 RPM | ✅ Yes |
 | Tavily | `TAVILY_API_KEY` | 1,000 credits/mo | ✅ Yes |
-| Bing | (keyless) | Free | ❌ Not deployed |
 
 Example:
 ```bash
