@@ -132,7 +132,7 @@ engines:
   - name: mojeek
     engine: mojeek
     shortcut: mjk
-    disabled: false
+    disabled: true
     # API key non gratuita (£2/CPM), scraping viola ToS 3.5(e) — resta disabled
 
   # === Engine API Serper (Google accesso via API, 2.5k/mese free) ===
