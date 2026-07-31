@@ -4,6 +4,19 @@ Lessons, incidenti, decisioni di processo. Datato, non sovrascritto.
 
 ---
 
+## 2026-07-31 — README: Bing fuori dai fallback, chiavi provider documentate
+
+### Decisioni di processo
+
+- **Bing rimosso dalla tabella "Supported fallback providers"** del README (commit `efabb55`): il Bing engine keyless gira già dentro SearXNG sull'hot path; il Bing scraper gateway non è deployato e non è un provider premium (è un engine, non un fallback). **Rimozione secca, senza nota a piè di pagina** — scelta esplicita di Angelo, non aggiungere rimando.
+- **Env var del gateway: documentate per tutti e 4 i provider** (commit `cd940cd`): aggiunte le righe EXA_API_KEY / JINA_API_KEY / TAVILY_API_KEY. Prima era documentata solo BRAVE_API_KEY benché tutti e 4 fossero deployati.
+
+### Nota aperta
+
+- **`examples/searxng/settings.example.yml`: blocco "mojeek api" resta `disabled: false`** mentre il config deployato (`home/searxng/settings.yml`) è `disabled: true` da commit `b1dc472` (homelab-config) — scraping HTML viola ToS Mojeek 3.5(e), engine 403-blocked. Probabilmente intenzionale (l'esempio mostra come abilitarlo con la chiave `mojeek_api.py`): **non toccarlo senza conferma di Angelo**.
+
+---
+
 ## 2026-07-31 — Cache TTL attivo; Valkey non serve; limiter SearXNG
 
 ### Modifiche strutturali
