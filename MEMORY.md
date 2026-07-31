@@ -4,6 +4,24 @@ Lessons, incidenti, decisioni di processo. Datato, non sovrascritto.
 
 ---
 
+## 2026-07-31 — Cache TTL attivo; Valkey non serve; limiter SearXNG
+
+### Modifiche strutturali
+
+- `internal/cache/cache.go`: applicato il TTL alla LRU in-memory (era configurato con `CACHE_TTL_SECONDS` ma mai usato). `New(size, ttl)`, entry con timestamp, scadenza verificata in `Get` (ttl<=0 = nessuna scadenza). `cmd/gateway/main.go` cabla `cfg.CacheTTL`.
+- `examples/searxng/settings.example.yml`: `limiter: true` → `limiter: false` (il limiter di SearXNG richiede Valkey/Redis; senza backend logga `ERROR:searx.limiter: The limiter requires Valkey` a ogni riavvio).
+
+### Decisioni di processo
+
+- **Il gateway non ha bisogno di Valkey**: la cache è per-processo (LRU in-memory, ~1000 entry), singola istanza. Valkey aggiungerebbe un container e latenza di rete per zero guadagno. Rivalutare SOLO se il gateway va in multi-replica dietro LB (cache condivisa) o serve invalidazione cross-servizio. Valkey rimosso dal homelab (2026-07-31).
+- **AGENTS.md del progetto era obsoleto**: diceva "cache (Ristretto)" ma il codice usa `hashicorp/golang-lru/v2`. Corretto. Lezione: la sezione architettura di AGENTS.md va allineata al codice quando cambia.
+
+### Risultati
+
+144 test passano (11 package). Commit `b161fa0`.
+
+---
+
 ## 2026-07-29 — Refactor orchestrazione proxy: fallbackSearch → premiumLoop
 
 ### Modifiche strutturali

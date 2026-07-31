@@ -9,7 +9,10 @@ use_default_settings: true
 
 server:
   secret_key: "CHANGE_ME"  # generate with: openssl rand -base64 32
-  limiter: true
+  # Il limiter di SearXNG richiede Valkey/Redis (vedi blocco commentato sotto).
+  # Senza backend, a ogni riavvio logga "ERROR:searx.limiter: The limiter requires Valkey".
+  # Il limiter era comunque inerte senza backend: disabilitato (limiter: false).
+  limiter: false
   image_proxy: true
   method: "GET"
 
@@ -24,7 +27,9 @@ search:
     SearxEngineTooManyRequests: 0  # disable 429 suspension for Wikimedia (Wikipedia, Wikidata)
     SearxEngineAccessDenied: 0  # disable 403 suspension (Mojeek blocked by IP)
 
-# Uncomment if you run Valkey/Redis:
+# Per attivare il limiter serve Valkey/Redis: scommentare la riga qui sotto
+# e impostare limiter: true qui sopra. Senza backend il limiter non parte
+# (ERROR:searx.limiter: The limiter requires Valkey a ogni riavvio).
 #   url: valkey://valkey:6379/0
 
 outgoing:
