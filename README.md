@@ -112,6 +112,12 @@ The gateway exposes Prometheus metrics at `:8080/metrics`.
 
 *After 5 minutes of cooldown, the gateway probes the engine. If it responds, the circuit closes and a recovery is recorded.*
 
+#### Cache hit rate & Cache size
+
+![Cache panels](examples/grafana/screenshots/cache-hit-rate.png)
+
+*Repeated queries are served from the in-memory LRU cache (1000 entries, 1h TTL). "Cache hit rate" is the percentage of requests answered from cache (`100 * rate(cache_hit) / rate(total)`); "Cache size" tracks the current entry count. A low hit rate means every query is hitting SearXNG and premium providers — tune `CACHE_SIZE`/`CACHE_TTL_SECONDS` accordingly.*
+
 ### Alerting
 
 Example Prometheus alert rules (vmalert/Mimir compatible):
