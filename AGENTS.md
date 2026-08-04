@@ -3,7 +3,7 @@
 Proxy HTTP davanti a SearXNG: forward a SearXNG, fallback a provider esterni (Brave, Exa, Tavily, Jina) quando i risultati sono insufficienti. Circuit breaker per engine bloccati, metriche Prometheus, cache, quota tracking.
 
 - **Linguaggio**: Go 1.23+
-- **Build**: `docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/ghilteras/searxng-gateway:latest --push .`
+- **Build**: automatica via GitHub Actions su push main e tag `v*` — `.github/workflows/build.yml` (`docker/build-push-action@v6`, platforms `linux/amd64,linux/arm64`, cache gha, push su GHCR). NIENTE build locale multi-arch: il builder buildx `multiarch` è stato rimosso dal homelab (2026-08-04).
 - **Test**: `go test ./...`
 - **Lint**: `golangci-lint run`
 

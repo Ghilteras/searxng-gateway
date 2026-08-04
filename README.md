@@ -199,10 +199,7 @@ Then add a case to `backends/factory.go` and set `MYPROVIDER_API_KEY` in the env
 
 ## Build
 
-```bash
-docker buildx build --platform linux/amd64,linux/arm64 \
-  -t ghcr.io/ghilteras/searxng-gateway:latest --push .
-```
+The image is built and pushed automatically by **GitHub Actions** on every push to `main` and on `v*` tags: see [`.github/workflows/build.yml`](.github/workflows/build.yml) (`docker/build-push-action@v6`, platforms `linux/amd64,linux/arm64`, gha cache, push to GHCR). No local multi-arch build needed — the local `multiarch` buildx builder was removed from the homelab (2026-08-04).
 
 ## License
 

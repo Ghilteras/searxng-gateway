@@ -4,6 +4,20 @@ Lessons, incidenti, decisioni di processo. Datato, non sovrascritto.
 
 ---
 
+## 2026-08-04 — Build migrata a GitHub Actions, builder buildx locale rimosso
+
+### Modifiche strutturali
+
+- **Le direttive di build locale sono state rimosse** da `AGENTS.md` (riga Build) e `README.md` (sezione Build): dicevano `docker buildx build --platform linux/amd64,linux/arm64 ... --push`, un comando ormai rotto.
+- **Il builder buildx `multiarch` (docker-container) è stato rimosso dal homelab** (2026-08-04, da homelab-config): il container `buildx_buildkit_multiarch0` non esiste più. L'unico builder rimasto è `default` (docker driver), che NON supporta build multi-platform con `--push`.
+
+### Decisioni di processo
+
+- **Build = GitHub Actions, punto.** `.github/workflows/build.yml` fa tutto: build amd64+arm64, cache gha, push su GHCR, su push a `main` e tag `v*`. Non ripristinare il build locale multi-arch sulla N97 (era ~334s per arm64 e ora il builder non c'è più).
+- Se in futuro servisse un build locale multi-arch di emergenza: ricreare il builder con `docker buildx create --use --name=multiarch` PRIMA di usare il comando locale — e aggiornare di nuovo queste doc.
+
+---
+
 ## 2026-07-31 — README: Bing fuori dai fallback, chiavi provider documentate
 
 ### Decisioni di processo
