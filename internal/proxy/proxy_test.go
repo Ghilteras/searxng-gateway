@@ -320,3 +320,29 @@ func TestSearchT1PremiumNone(t *testing.T) {
 		}
 	}
 }
+
+func TestIsClientError(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		want   bool
+	}{
+		{"402 jina", "jina backend: HTTP 402: InsufficientBalanceError: Account balance not enough", true},
+		{"429 rate limit", "brave backend: HTTP 429: too many requests", true},
+		{"403 forbidden", "bing backend: HTTP 403: Forbidden", true},
+		{"payment required lowercase", "account balance not enough, payment required", true},
+		{"payment required capitalized", "Account balance not enough, Payment Required", true},
+		{"500 server error", "backend: HTTP 500: internal server error", false},
+		{"timeout", "context deadline exceeded", false},
+		{"connection refused", "dial tcp: connection refused", false},
+		{"empty", "", false},
+		{"generic", "some random message", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isClientError(tt.reason); got != tt.want {
+				t.Errorf("isClientError(%q) = %v, want %v", tt.reason, got, tt.want)
+			}
+		})
+	}
+}

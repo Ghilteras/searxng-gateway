@@ -493,13 +493,14 @@ func normalize(q string) string {
 }
 
 // isClientError returns true if reason indicates a 4xx client error
-// (server is blocking us: 403, 429, access denied, forbidden, etc.)
+// (server is blocking us: 402, 403, 429, access denied, forbidden, etc.)
 //
 // Pattern coverage:
-//   4xx HTTP codes:           "HTTP error 4"
+//   4xx HTTP codes:           "HTTP error 4", "HTTP 402", "HTTP 403", "HTTP 429"
 //   Cloudflare-style blocks:  "blocked", "blocked by"
 //   Rate limiting:            "too many requests", "rate limited"
 //   Auth/access:              "access denied", "forbidden", "unauthorized", "not found"
+//   Billing/quota:            "payment required"
 //   Bot detection:            "captcha"
 //
 // 5xx, timeout, HTTP error (5xx), connection refused = server error (retry).
@@ -523,6 +524,18 @@ func isClientError(reason string) bool {
 		return true
 	}
 	if strings.Contains(reason, "HTTP error 4") {
+		return true
+	}
+	if strings.Contains(reason, "HTTP 402") {
+		return true
+	}
+	if strings.Contains(reason, "HTTP 403") {
+		return true
+	}
+	if strings.Contains(reason, "HTTP 429") {
+		return true
+	}
+	if strings.Contains(strings.ToLower(reason), "payment required") {
 		return true
 	}
 	if strings.Contains(reason, "blocked by") {
