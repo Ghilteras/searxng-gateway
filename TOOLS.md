@@ -24,3 +24,10 @@ Only Brave sends `X-RateLimit-Remaining/Limit/Reset` in search responses (→ `s
 - Jina: HTTP 402 InsufficientBalanceError (binary)
 
 Remaining-credits alarm is structurally Brave-only. Other providers need separate polling/body mechanisms.
+
+## Alerting snapshot (2026-08-28)
+
+Source of truth is `homelab-config:configs/grafana/provisioning/alerting/rules.yml` (not this repo) — this is a cached snapshot:
+
+- 4 base + 4 per-engine premium-spike rules. UIDs: `searxng-bravespikeburst` (renamed to PremiumFallbackSpike 2026-08-28; UID preserved — renaming without `deleteRules:` orphans), `searxng-premiumspike-brave/exa/tavily/jina` (thresholds 3/8/3/5, `for: 10m`, `alert_type: billing`), `searxng-cbstuckopen`, `searxng-cbrecovered`, `searxng-retryexhausted`.
+- BraveSpikeBurst was premium-wide, not Brave-only (corrected 2026-08-28). Jina rule is RPM/token proxy, not quota countdown.
