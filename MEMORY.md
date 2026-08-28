@@ -122,3 +122,9 @@ Vedi: `backends/manager.go`, `internal/proxy/proxy.go`
 ### Risultati
 
 132 test passano. Tag `v0.11.0` su `df81245`. T1_PREMIUM_COUNT=1 in produzione.
+
+---
+
+## 2026-08-28 — Premium engine alerting + dashboard diagnostic
+
+Journal: 20260828-170000-*.md (5 entries) — deploy bypass, false sops alarm, worktree reap, dashboard panel 28, deploy script friction. Premium metric inventory now in TOOLS.md (2026-08-28 live probe: Tavily/Exa/Jina no X-RateLimit headers, Brave-only quota).
