@@ -1,5 +1,8 @@
 # MEMORY — homelab-gateway
 
+## 2026-08-28
+- Premium metric inventory and provider rate-limit asymmetry → journal: search "Premium provider metric inventory"
+
 Lessons, incidenti, decisioni di processo. Datato, non sovrascritto.
 
 ---
