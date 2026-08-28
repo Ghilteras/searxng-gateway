@@ -2,6 +2,10 @@
 
 Lessons, incidenti, decisioni di processo. Datato, non sovrascritto.
 
+## 2026-08-28
+
+→ journal: search "Harness worktree read-only incident"
+
 ---
 
 ## 2026-08-04 — Build migrata a GitHub Actions, builder buildx locale rimosso
