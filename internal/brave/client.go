@@ -28,6 +28,10 @@ type RateLimit struct {
 	LimitMonth     float64 // X-RateLimit-Limit second value (monthly request-window cap)
 	RemainingMonth float64 // X-RateLimit-Remaining second value (monthly request-window allowance)
 	ResetSeconds   float64 // X-RateLimit-Reset second value (seconds until monthly window reset)
+
+	HasLimitMonth     bool // true when X-RateLimit-Limit monthly value was parsed
+	HasRemainingMonth bool // true when X-RateLimit-Remaining monthly value was parsed
+	HasResetSeconds   bool // true when X-RateLimit-Reset monthly value was parsed
 }
 
 // Response is the top-level API response from Brave Search.
@@ -119,6 +123,7 @@ func parseRateLimitHeaders(h http.Header) *RateLimit {
 		if len(parts) >= 2 {
 			if val, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64); err == nil {
 				rl.RemainingMonth = val
+				rl.HasRemainingMonth = true
 				found = true
 			}
 		}
@@ -129,6 +134,7 @@ func parseRateLimitHeaders(h http.Header) *RateLimit {
 		if len(parts) >= 2 {
 			if val, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64); err == nil {
 				rl.LimitMonth = val
+				rl.HasLimitMonth = true
 				found = true
 			}
 		}
@@ -139,6 +145,7 @@ func parseRateLimitHeaders(h http.Header) *RateLimit {
 		if len(parts) >= 2 {
 			if val, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64); err == nil {
 				rl.ResetSeconds = val
+				rl.HasResetSeconds = true
 				found = true
 			}
 		}
@@ -158,7 +165,13 @@ func ObserveRateLimitHeaders(h http.Header) {
 	if rl == nil {
 		return
 	}
-	metrics.BraveRateLimitRemaining.WithLabelValues("month").Set(rl.RemainingMonth)
-	metrics.BraveRateLimitLimit.WithLabelValues("month").Set(rl.LimitMonth)
-	metrics.BraveRateLimitResetSeconds.WithLabelValues("month").Set(rl.ResetSeconds)
+	if rl.HasRemainingMonth {
+		metrics.BraveRateLimitRemaining.WithLabelValues("month").Set(rl.RemainingMonth)
+	}
+	if rl.HasLimitMonth {
+		metrics.BraveRateLimitLimit.WithLabelValues("month").Set(rl.LimitMonth)
+	}
+	if rl.HasResetSeconds {
+		metrics.BraveRateLimitResetSeconds.WithLabelValues("month").Set(rl.ResetSeconds)
+	}
 }
