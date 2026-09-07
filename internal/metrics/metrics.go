@@ -104,21 +104,36 @@ var (
 		[]string{"engine"},
 	)
 
-	// BraveCreditsRemaining tracks the remaining Brave API credits parsed from
-	// X-RateLimit-Remaining response header. Period label: "second" or "month".
-	BraveCreditsRemaining = prometheus.NewGaugeVec(
+	// BraveRateLimitRemaining exposes the per-period remaining request count
+	// parsed from the Brave X-RateLimit-Remaining response header.
+	// This reflects the request-window allowance, not account credits or
+	// dollar balance.
+	BraveRateLimitRemaining = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "searxng_gateway_brave_credits_remaining",
-			Help: "Brave API credits remaining per period (parsed from X-RateLimit-Remaining header)",
+			Name: "searxng_gateway_brave_rate_limit_remaining",
+			Help: "Remaining Brave API requests in the current window, parsed from X-RateLimit-Remaining header",
 		},
 		[]string{"period"},
 	)
 
-	// BraveCreditsLimit tracks the Brave API rate limit per period.
-	BraveCreditsLimit = prometheus.NewGaugeVec(
+	// BraveRateLimitLimit exposes the per-period maximum request count
+	// parsed from the Brave X-RateLimit-Limit response header.
+	// This reflects the request-window allowance, not account credits or
+	// dollar balance.
+	BraveRateLimitLimit = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "searxng_gateway_brave_credits_limit",
-			Help: "Brave API credits limit per period (parsed from X-RateLimit-Limit header)",
+			Name: "searxng_gateway_brave_rate_limit_limit",
+			Help: "Maximum Brave API requests allowed in the current window, parsed from X-RateLimit-Limit header",
+		},
+		[]string{"period"},
+	)
+
+	// BraveRateLimitResetSeconds exposes seconds until the Brave API
+	// request window resets, parsed from the X-RateLimit-Reset header.
+	BraveRateLimitResetSeconds = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "searxng_gateway_brave_rate_limit_reset_seconds",
+			Help: "Seconds until the Brave API request window resets, parsed from X-RateLimit-Reset header",
 		},
 		[]string{"period"},
 	)
@@ -148,6 +163,6 @@ var initOnce sync.Once
 // It is safe to call multiple times — subsequent calls are no-ops.
 func Init() {
 	initOnce.Do(func() {
-		prometheus.MustRegister(RequestsTotal, RequestDuration, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveCreditsRemaining, BraveCreditsLimit, SerperSearchesRemaining, SerperSearchesLimit)
+		prometheus.MustRegister(RequestsTotal, RequestDuration, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveRateLimitRemaining, BraveRateLimitLimit, BraveRateLimitResetSeconds, SerperSearchesRemaining, SerperSearchesLimit)
 	})
 }
