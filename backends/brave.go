@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	brave "sx/internal/brave"
 )
 
 // BraveBackend implements SearchBackend for Brave Search API
@@ -161,6 +163,9 @@ func (b *BraveBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 			}
 		}
 	}
+
+	// Emit rate-limit Prometheus gauges from response headers.
+	brave.ObserveRateLimitHeaders(resp.Header)
 
 	var braveResp braveSearchResponse
 	if err := json.Unmarshal(body, &braveResp); err != nil {
