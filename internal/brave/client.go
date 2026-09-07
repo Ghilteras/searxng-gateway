@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"sx/internal/metrics"
 )
 
 const defaultBaseURL = "https://api.search.brave.com"
@@ -23,9 +25,9 @@ type Result struct {
 
 // RateLimit holds the parsed X-RateLimit-* headers from Brave API responses.
 type RateLimit struct {
-	LimitMonth     float64 // X-RateLimit-Limit second value (monthly cap)
-	RemainingMonth float64 // X-RateLimit-Remaining second value (credits left)
-	ResetSeconds   float64 // X-RateLimit-Reset second value (seconds until monthly reset)
+	LimitMonth     float64 // X-RateLimit-Limit second value (monthly request-window cap)
+	RemainingMonth float64 // X-RateLimit-Remaining second value (monthly request-window allowance)
+	ResetSeconds   float64 // X-RateLimit-Reset second value (seconds until monthly window reset)
 }
 
 // Response is the top-level API response from Brave Search.
@@ -92,6 +94,7 @@ func (c *httpClient) Search(ctx context.Context, query string) (*Response, error
 
 	// Parse X-RateLimit-* headers for quota monitoring.
 	out.RateLimit = parseRateLimitHeaders(resp.Header)
+	ObserveRateLimitHeaders(resp.Header)
 
 	return &out, nil
 }
@@ -100,10 +103,11 @@ func (c *httpClient) Search(ctx context.Context, query string) (*Response, error
 // and returns a RateLimit struct. Returns nil if no headers are present.
 //
 // Brave API response headers:
-//   X-RateLimit-Limit:      "1, 15000"     (per-second, per-month)
-//   X-RateLimit-Remaining:  "1, 1000"      (per-second, per-month)
-//   X-RateLimit-Reset:      "1, 1419704"   (per-second seconds, monthly seconds)
-//   X-RateLimit-Policy:     "1;w=1, 15000;w=2592000"
+//
+//	X-RateLimit-Limit:      "1, 15000"     (per-second, per-month)
+//	X-RateLimit-Remaining:  "1, 1000"      (per-second, per-month)
+//	X-RateLimit-Reset:      "1, 1419704"   (per-second seconds, monthly seconds)
+//	X-RateLimit-Policy:     "1;w=1, 15000;w=2592000"
 //
 // We only extract the second (monthly) value from each multi-value header.
 func parseRateLimitHeaders(h http.Header) *RateLimit {
@@ -144,4 +148,17 @@ func parseRateLimitHeaders(h http.Header) *RateLimit {
 		return nil
 	}
 	return rl
+}
+
+// ObserveRateLimitHeaders publishes the parsed monthly X-RateLimit-*
+// header values to Prometheus gauges. It is a no-op when no parseable
+// values are present.
+func ObserveRateLimitHeaders(h http.Header) {
+	rl := parseRateLimitHeaders(h)
+	if rl == nil {
+		return
+	}
+	metrics.BraveRateLimitRemaining.WithLabelValues("month").Set(rl.RemainingMonth)
+	metrics.BraveRateLimitLimit.WithLabelValues("month").Set(rl.LimitMonth)
+	metrics.BraveRateLimitResetSeconds.WithLabelValues("month").Set(rl.ResetSeconds)
 }
