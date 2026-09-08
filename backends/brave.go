@@ -132,6 +132,9 @@ func (b *BraveBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	}
 	defer resp.Body.Close()
 
+	// Emit rate-limit Prometheus gauges from response headers.
+	brave.ObserveRateLimitHeaders(resp.Header)
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, &BackendError{
@@ -163,9 +166,6 @@ func (b *BraveBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 			}
 		}
 	}
-
-	// Emit rate-limit Prometheus gauges from response headers.
-	brave.ObserveRateLimitHeaders(resp.Header)
 
 	var braveResp braveSearchResponse
 	if err := json.Unmarshal(body, &braveResp); err != nil {

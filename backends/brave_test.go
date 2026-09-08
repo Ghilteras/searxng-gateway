@@ -294,7 +294,7 @@ func TestBraveBackend_Search_Success_RateLimitHeaders(t *testing.T) {
 				},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -329,11 +329,10 @@ func TestBraveBackend_Search_Success_RateLimitHeaders(t *testing.T) {
 	}
 }
 
-// TestBraveBackend_Search_Non200_NoRateLimitGaugeUpdate verifies that a
-// non-200 response (429) carrying X-RateLimit-* headers does NOT update
-// the Prometheus gauges, because the backend returns an error before
-// reaching the observation call.
-func TestBraveBackend_Search_Non200_NoRateLimitGaugeUpdate(t *testing.T) {
+// TestBraveBackend_Search_RateLimit_UpdatesGauges verifies that a 429 response
+// carrying X-RateLimit-* headers still returns the rate-limit error AND updates
+// all three month gauges from the response headers.
+func TestBraveBackend_Search_RateLimit_UpdatesGauges(t *testing.T) {
 	metrics.Init()
 	resetBraveRateLimitGauges()
 	defer resetBraveRateLimitGauges()
@@ -343,7 +342,7 @@ func TestBraveBackend_Search_Non200_NoRateLimitGaugeUpdate(t *testing.T) {
 		w.Header().Set("X-RateLimit-Remaining", "1, 1000")
 		w.Header().Set("X-RateLimit-Reset", "1, 1419704")
 		w.WriteHeader(http.StatusTooManyRequests)
-		w.Write([]byte(`{"error": "rate limited"}`))
+		_, _ = w.Write([]byte(`{"error": "rate limited"}`))
 	}))
 	defer server.Close()
 
@@ -353,14 +352,33 @@ func TestBraveBackend_Search_Non200_NoRateLimitGaugeUpdate(t *testing.T) {
 		t.Fatal("expected error for 429 response")
 	}
 
-	// Non-200 responses must NOT update rate-limit gauges.
-	for _, metric := range []string{
-		"searxng_gateway_brave_rate_limit_limit",
-		"searxng_gateway_brave_rate_limit_remaining",
-		"searxng_gateway_brave_rate_limit_reset_seconds",
+	// Must still return ErrCodeRateLimit.
+	backendErr, ok := err.(*BackendError)
+	if !ok {
+		t.Fatalf("expected BackendError, got %T", err)
+	}
+	if backendErr.Code != ErrCodeRateLimit {
+		t.Errorf("expected ErrCodeRateLimit, got %d", backendErr.Code)
+	}
+
+	// The 429 headers must update all three rate-limit gauges.
+	for _, tt := range []struct {
+		name   string
+		metric string
+		want   float64
+	}{
+		{"limit", "searxng_gateway_brave_rate_limit_limit", 15000},
+		{"remaining", "searxng_gateway_brave_rate_limit_remaining", 1000},
+		{"reset", "searxng_gateway_brave_rate_limit_reset_seconds", 1419704},
 	} {
-		if _, found := gaugeValue(t, metric); found {
-			t.Errorf("metric %s must NOT be present after non-200 response", metric)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			got, found := gaugeValue(t, tt.metric)
+			if !found {
+				t.Fatalf("metric %s not found after 429 response with rate-limit headers", tt.metric)
+			}
+			if got != tt.want {
+				t.Errorf("metric %s = %v, want %v", tt.metric, got, tt.want)
+			}
+		})
 	}
 }
