@@ -1,8 +1,9 @@
 // Package quota provides Brave and Serper API quota visibility.
 //
-// Brave quota gauges are updated in real-time from X-RateLimit-* response
-// headers on every Brave fallback call (see proxy.recordBraveCredits).
-// No separate API scraping is needed — the gauges reflect live state.
+// Brave rate-limit gauges (searxng_gateway_brave_rate_limit_remaining,
+// _limit, _reset_seconds) are updated from X-RateLimit-* response headers
+// by brave.ObserveRateLimitHeaders on every Brave API call.  The values
+// represent the current request-window snapshot, not account-level credits.
 //
 // Serper does not expose a public usage API at this time. The gauges
 // (SerperSearchesRemaining, SerperSearchesLimit) are defined but will
