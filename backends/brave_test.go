@@ -6,6 +6,10 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+
+	"sx/internal/metrics"
 )
 
 func TestBraveBackend_Name(t *testing.T) {
@@ -224,5 +228,139 @@ func TestBraveBackend_Search_Pagination(t *testing.T) {
 	b.Search(SearchOptions{Query: "test", PageNo: 3, NumResults: 10})
 	if capturedOffset != "20" {
 		t.Errorf("expected offset=20 for page 3, got %q", capturedOffset)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Rate-limit gauge helpers (mirrored from internal/brave/client_test.go)
+// ---------------------------------------------------------------------------
+
+// resetBraveRateLimitGauges removes the "month" label from all three Brave
+// rate-limit GaugeVecs so tests don't leak state to each other via global
+// Prometheus collectors.
+func resetBraveRateLimitGauges() {
+	metrics.BraveRateLimitRemaining.DeleteLabelValues("month")
+	metrics.BraveRateLimitLimit.DeleteLabelValues("month")
+	metrics.BraveRateLimitResetSeconds.DeleteLabelValues("month")
+}
+
+// gaugeValue gathers the Prometheus default gatherer and returns the Gauge
+// value for metric <name> with label period="month".  Returns (value, true)
+// when found, (0, false) when the label combination is absent.
+func gaugeValue(t *testing.T, name string) (float64, bool) {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("Gather failed: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "period" && l.GetValue() == "month" {
+					return m.GetGauge().GetValue(), true
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+// ---------------------------------------------------------------------------
+// Active-backend rate-limit observation tests
+// ---------------------------------------------------------------------------
+
+// TestBraveBackend_Search_Success_RateLimitHeaders verifies that a successful
+// Brave search response carrying a complete set of X-RateLimit-* headers
+// updates the three metrics.BraveRateLimit* gauges with the expected monthly
+// values.
+func TestBraveBackend_Search_Success_RateLimitHeaders(t *testing.T) {
+	metrics.Init()
+	resetBraveRateLimitGauges()
+	defer resetBraveRateLimitGauges()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-RateLimit-Limit", "1, 15000")
+		w.Header().Set("X-RateLimit-Remaining", "1, 1000")
+		w.Header().Set("X-RateLimit-Reset", "1, 1419704")
+		resp := braveSearchResponse{
+			Query: braveQuery{Original: "test"},
+			Web: braveWebResults{
+				Results: []braveResult{
+					{Title: "Result", URL: "https://example.com", Description: "Desc"},
+				},
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	b := newTestBraveBackend(server.URL, "key")
+	results, err := b.Search(SearchOptions{Query: "test"})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	// Verify all three rate-limit gauges were updated with monthly values.
+	for _, tt := range []struct {
+		name   string
+		metric string
+		want   float64
+	}{
+		{"limit", "searxng_gateway_brave_rate_limit_limit", 15000},
+		{"remaining", "searxng_gateway_brave_rate_limit_remaining", 1000},
+		{"reset", "searxng_gateway_brave_rate_limit_reset_seconds", 1419704},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, found := gaugeValue(t, tt.metric)
+			if !found {
+				t.Fatalf("metric %s not found after successful Search with rate-limit headers", tt.metric)
+			}
+			if got != tt.want {
+				t.Errorf("metric %s = %v, want %v", tt.metric, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBraveBackend_Search_Non200_NoRateLimitGaugeUpdate verifies that a
+// non-200 response (429) carrying X-RateLimit-* headers does NOT update
+// the Prometheus gauges, because the backend returns an error before
+// reaching the observation call.
+func TestBraveBackend_Search_Non200_NoRateLimitGaugeUpdate(t *testing.T) {
+	metrics.Init()
+	resetBraveRateLimitGauges()
+	defer resetBraveRateLimitGauges()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", "1, 15000")
+		w.Header().Set("X-RateLimit-Remaining", "1, 1000")
+		w.Header().Set("X-RateLimit-Reset", "1, 1419704")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error": "rate limited"}`))
+	}))
+	defer server.Close()
+
+	b := newTestBraveBackend(server.URL, "key")
+	_, err := b.Search(SearchOptions{Query: "test"})
+	if err == nil {
+		t.Fatal("expected error for 429 response")
+	}
+
+	// Non-200 responses must NOT update rate-limit gauges.
+	for _, metric := range []string{
+		"searxng_gateway_brave_rate_limit_limit",
+		"searxng_gateway_brave_rate_limit_remaining",
+		"searxng_gateway_brave_rate_limit_reset_seconds",
+	} {
+		if _, found := gaugeValue(t, metric); found {
+			t.Errorf("metric %s must NOT be present after non-200 response", metric)
+		}
 	}
 }
