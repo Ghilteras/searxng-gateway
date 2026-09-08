@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -121,7 +122,7 @@ func parseRateLimitHeaders(h http.Header) *RateLimit {
 	if v := h.Get("X-RateLimit-Remaining"); v != "" {
 		parts := strings.Split(v, ",")
 		if len(parts) >= 2 {
-			if val, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64); err == nil {
+			if val, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64); err == nil && !math.IsNaN(val) && !math.IsInf(val, 0) && val >= 0 {
 				rl.RemainingMonth = val
 				rl.HasRemainingMonth = true
 				found = true
@@ -132,7 +133,7 @@ func parseRateLimitHeaders(h http.Header) *RateLimit {
 	if v := h.Get("X-RateLimit-Limit"); v != "" {
 		parts := strings.Split(v, ",")
 		if len(parts) >= 2 {
-			if val, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64); err == nil {
+			if val, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64); err == nil && !math.IsNaN(val) && !math.IsInf(val, 0) && val >= 0 {
 				rl.LimitMonth = val
 				rl.HasLimitMonth = true
 				found = true
@@ -143,7 +144,7 @@ func parseRateLimitHeaders(h http.Header) *RateLimit {
 	if v := h.Get("X-RateLimit-Reset"); v != "" {
 		parts := strings.Split(v, ",")
 		if len(parts) >= 2 {
-			if val, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64); err == nil {
+			if val, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64); err == nil && !math.IsNaN(val) && !math.IsInf(val, 0) && val >= 0 {
 				rl.ResetSeconds = val
 				rl.HasResetSeconds = true
 				found = true
@@ -158,20 +159,33 @@ func parseRateLimitHeaders(h http.Header) *RateLimit {
 }
 
 // ObserveRateLimitHeaders publishes the parsed monthly X-RateLimit-*
-// header values to Prometheus gauges. It is a no-op when no parseable
-// values are present.
+// header values to Prometheus gauges. When a header is absent or its
+// value is invalid, the corresponding gauge is cleared so that stale
+// values from a prior response are never reported as current.
 func ObserveRateLimitHeaders(h http.Header) {
 	rl := parseRateLimitHeaders(h)
+
 	if rl == nil {
+		// No parseable header at all — clear all three month gauges.
+		metrics.BraveRateLimitRemaining.DeleteLabelValues("month")
+		metrics.BraveRateLimitLimit.DeleteLabelValues("month")
+		metrics.BraveRateLimitResetSeconds.DeleteLabelValues("month")
 		return
 	}
+
 	if rl.HasRemainingMonth {
 		metrics.BraveRateLimitRemaining.WithLabelValues("month").Set(rl.RemainingMonth)
+	} else {
+		metrics.BraveRateLimitRemaining.DeleteLabelValues("month")
 	}
 	if rl.HasLimitMonth {
 		metrics.BraveRateLimitLimit.WithLabelValues("month").Set(rl.LimitMonth)
+	} else {
+		metrics.BraveRateLimitLimit.DeleteLabelValues("month")
 	}
 	if rl.HasResetSeconds {
 		metrics.BraveRateLimitResetSeconds.WithLabelValues("month").Set(rl.ResetSeconds)
+	} else {
+		metrics.BraveRateLimitResetSeconds.DeleteLabelValues("month")
 	}
 }
