@@ -17,13 +17,13 @@ Source pointers: `internal/brave/client.go` (X-RateLimit parsing), `internal/quo
 
 ## Premium quota caveat (2026-08-28 live probe)
 
-Only Brave sends `X-RateLimit-Remaining/Limit/Reset` in search responses (→ `searxng_gateway_brave_credits_remaining{period}`). Tavily/Exa/Jina throw away 429 headers:
+Only Brave sends `X-RateLimit-Remaining/Limit/Reset` in search responses; the gateway exposes these as `searxng_gateway_brave_rate_limit_remaining`, `searxng_gateway_brave_rate_limit_limit`, and `searxng_gateway_brave_rate_limit_reset_seconds` (request-window metrics, not account credits). Tavily/Exa/Jina throw away 429 headers:
 
 - Tavily: GET /usage (Bearer) → {key:{usage,limit}, account:{plan_usage,plan_limit}}
 - Exa: costDollars in body + PAYMENT-REQUIRED header (binary, not countdown)
 - Jina: HTTP 402 InsufficientBalanceError (binary)
 
-Remaining-credits alarm is structurally Brave-only. Other providers need separate polling/body mechanisms.
+Request-window rate-limit alarm is structurally Brave-only. Other providers need separate polling/body mechanisms.
 
 ## Alerting snapshot (2026-08-28)
 
