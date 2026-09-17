@@ -140,10 +140,10 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		} else if len(results) > 0 {
 			p.breakerMgr.RecordSuccess(premium.Name())
 			metrics.EngineResultsTotal.WithLabelValues(premium.Name()).Add(float64(len(results)))
-			premiumHadResults = true
 			for _, r := range results {
 				if !seenURLs[r.URL] {
 					seenURLs[r.URL] = true
+					premiumHadResults = true
 					allResults = append(allResults, searxng.Result{
 						Title:   r.Title,
 						URL:     r.URL,
@@ -316,12 +316,12 @@ func (p *Proxy) premiumLoop(
 
 		p.breakerMgr.RecordSuccess(premium.Name())
 		metrics.EngineResultsTotal.WithLabelValues(premium.Name()).Add(float64(len(results)))
-		premiumHadResults = true
 
 		// Merge and deduplicate by URL.
 		for _, r := range results {
 			if !seenURLs[r.URL] {
 				seenURLs[r.URL] = true
+				premiumHadResults = true
 				allResults = append(allResults, searxng.Result{
 					Title:   r.Title,
 					URL:     r.URL,

@@ -470,3 +470,94 @@ func TestOutcomeLabels_SearxngSufficientOnly(t *testing.T) {
 		t.Errorf("searxng_ok delta = %v, want 1", delta)
 	}
 }
+
+// TestOutcomeLabels_PremiumDuplicatesSearxng — SearXNG returns results;
+// the premium backend returns ONLY URLs that SearXNG already returned (pure
+// duplicates). Premium contributed nothing new → outcome must be "searxng_ok".
+func TestOutcomeLabels_PremiumDuplicatesSearxng(t *testing.T) {
+	metrics.Init()
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
+		{Title: "SX_D1", URL: "https://dup-shared-a.com", Engine: "wikipedia"},
+		{Title: "SX_D2", URL: "https://dup-shared-b.com", Engine: "wikipedia"},
+		{Title: "SX_D3", URL: "https://dup-shared-c.com", Engine: "wikipedia"},
+	}}}
+	// Premium returns ONLY URLs that SearXNG already has.
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "BR_D1", URL: "https://dup-shared-a.com", Content: "d", Engine: "brave"},
+		{Title: "BR_D2", URL: "https://dup-shared-b.com", Content: "d", Engine: "brave"},
+		{Title: "BR_D3", URL: "https://dup-shared-c.com", Content: "d", Engine: "brave"},
+	}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 10 // force fallback loop to run
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+
+	beforeSxOk := outcomeCounter(t, "searxng_ok")
+	beforeSxPlus := outcomeCounter(t, "searxng_plus_premium_ok")
+	beforePremOk := outcomeCounter(t, "premium_ok")
+
+	_, err := p.Search(context.Background(), "outcome_dup_sx")
+	if err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+
+	afterSxOk := outcomeCounter(t, "searxng_ok")
+	afterSxPlus := outcomeCounter(t, "searxng_plus_premium_ok")
+	afterPremOk := outcomeCounter(t, "premium_ok")
+
+	if delta := afterSxOk - beforeSxOk; delta != 1 {
+		t.Errorf("searxng_ok delta = %v, want 1 (only SearXNG contributed)", delta)
+	}
+	if delta := afterSxPlus - beforeSxPlus; delta != 0 {
+		t.Errorf("searxng_plus_premium_ok delta = %v, want 0 (premium contributed nothing new)", delta)
+	}
+	if delta := afterPremOk - beforePremOk; delta != 0 {
+		t.Errorf("premium_ok delta = %v, want 0", delta)
+	}
+}
+
+// TestOutcomeLabels_SearxngDuplicatesPremium — the premium backend returns
+// results and SearXNG returns ONLY those same URLs. Premium appended them
+// first (T1 path); SearXNG added nothing new → outcome must be "premium_ok".
+func TestOutcomeLabels_SearxngDuplicatesPremium(t *testing.T) {
+	metrics.Init()
+	// SearXNG returns URLs that are all duplicates of premium results.
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
+		{Title: "SX_DUP1", URL: "https://dup-prem-a.com", Engine: "wikipedia"},
+		{Title: "SX_DUP2", URL: "https://dup-prem-b.com", Engine: "wikipedia"},
+		{Title: "SX_DUP3", URL: "https://dup-prem-c.com", Engine: "wikipedia"},
+	}}}
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "BR_DUP1", URL: "https://dup-prem-a.com", Content: "d", Engine: "brave"},
+		{Title: "BR_DUP2", URL: "https://dup-prem-b.com", Content: "d", Engine: "brave"},
+		{Title: "BR_DUP3", URL: "https://dup-prem-c.com", Content: "d", Engine: "brave"},
+	}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 10 // force fallback loop
+	cfg.T1PremiumCount = 1        // premium runs in T1, before SearXNG collection
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+
+	beforePremOk := outcomeCounter(t, "premium_ok")
+	beforeSxPlus := outcomeCounter(t, "searxng_plus_premium_ok")
+	beforeSxOk := outcomeCounter(t, "searxng_ok")
+
+	_, err := p.Search(context.Background(), "outcome_dup_prem")
+	if err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+
+	afterPremOk := outcomeCounter(t, "premium_ok")
+	afterSxPlus := outcomeCounter(t, "searxng_plus_premium_ok")
+	afterSxOk := outcomeCounter(t, "searxng_ok")
+
+	if delta := afterPremOk - beforePremOk; delta != 1 {
+		t.Errorf("premium_ok delta = %v, want 1 (premium contributed)", delta)
+	}
+	if delta := afterSxPlus - beforeSxPlus; delta != 0 {
+		t.Errorf("searxng_plus_premium_ok delta = %v, want 0 (SearXNG added nothing new)", delta)
+	}
+	if delta := afterSxOk - beforeSxOk; delta != 0 {
+		t.Errorf("searxng_ok delta = %v, want 0", delta)
+	}
+}
