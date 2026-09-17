@@ -62,11 +62,12 @@ func New(cfg *config.Config, sx searxng.Client, c *cache.Cache, breakerMgr *brea
 // Search runs the full orchestration pipeline for a raw query string.
 //
 // Outcome counters (all via RequestsTotal):
-//   - cache_hit:           entry found in cache, SearXNG not called.
-//   - searxng_ok:          SearXNG returned a sufficient response.
-//   - timeout:             SearXNG returned context.DeadlineExceeded.
-//   - fallback_brave_ok:   SearXNG insufficient/failed/cooldown, Brave OK.
-//   - fallback_brave_fail: SearXNG insufficient/failed/cooldown, Brave also failed.
+//   - cache_hit:                  entry found in cache, SearXNG not called.
+//   - searxng_ok:                 SearXNG returned a sufficient response (no premium results).
+//   - premium_ok:                 premium providers contributed results (SearXNG skipped or insufficient).
+//   - searxng_plus_premium_ok:    both SearXNG and premium providers contributed results.
+//   - fallback_fail:              all providers exhausted with no results.
+//   - timeout:                    SearXNG returned context.DeadlineExceeded.
 func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, error) {
 	key := normalize(raw)
 

@@ -13,7 +13,7 @@ import (
 
 var (
 	// RequestsTotal counts gateway requests by outcome label.
-	// outcome ∈ {searxng_ok, fallback_brave_ok, fallback_brave_fail, cache_hit, timeout}
+	// outcome ∈ {cache_hit, searxng_ok, premium_ok, searxng_plus_premium_ok, fallback_fail, timeout}
 	RequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "searxng_gateway_requests_total",
@@ -23,7 +23,7 @@ var (
 	)
 
 	// RequestDuration tracks request latency in seconds, labelled by source backend
-	// and engine. source ∈ {searxng, brave}, engine ∈ {brave, <searxng-engine-name>}.
+	// and engine. source ∈ {searxng, <premium-provider-name>}, engine ∈ {<provider-name>, <searxng-engine-name>}.
 	RequestDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "searxng_gateway_request_duration_seconds",

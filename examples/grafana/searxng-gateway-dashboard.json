@@ -300,15 +300,15 @@
         }
       },
       {
-        "title": "Brave fallback (rate/min, time range)",
+        "title": "Premium provider contribution (rate/min, time range)",
         "type": "timeseries",
-        "description": "Brave API fallback diretto del gateway (la NOSTRA API key). Rate al minuto. Se 0, il fallback non \u00e8 mai scattato nel time range.",
+        "description": "Premium provider contribution (multi-provider). Rate per minute of requests where premium providers contributed results, including requests where SearXNG also contributed. Shows 0 if no premium provider contributed in the time range.",
         "datasource": null,
         "targets": [
           {
             "refId": "A",
-            "expr": "sum(rate(searxng_gateway_requests_total{outcome=\"fallback_brave_ok\"}[$__rate_interval])) * 60 or on() vector(0)",
-            "legendFormat": "fallback_brave_ok",
+            "expr": "sum(rate(searxng_gateway_requests_total{outcome=~\"premium_ok|searxng_plus_premium_ok\"}[$__rate_interval])) * 60 or on() vector(0)",
+            "legendFormat": "premium fallback",
             "datasource": {
               "name": "${datasource}"
             },
@@ -433,14 +433,14 @@
         }
       },
       {
-        "title": "Brave Premium",
+        "title": "Premium Providers",
         "type": "stat",
-        "description": "Brave fallback diretto gateway (la NOSTRA API key). Se 0, mai scattato.",
+        "description": "Requests where premium providers contributed results (including when SearXNG also contributed).",
         "datasource": null,
         "targets": [
           {
             "refId": "A",
-            "expr": "sum(rate(searxng_gateway_requests_total{outcome=\"fallback_brave_ok\"}[$__rate_interval])) * 60",
+            "expr": "sum(rate(searxng_gateway_requests_total{outcome=~\"premium_ok|searxng_plus_premium_ok\"}[$__rate_interval])) * 60",
             "legendFormat": "",
             "datasource": {
               "name": "${datasource}"
