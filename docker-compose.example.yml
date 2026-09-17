@@ -6,6 +6,9 @@
 #   SERPER_API_KEY  — Serper.dev API key (free tier: 2,500 queries/month, optional)
 #
 # Keyless mode: omitting both keys works — the gateway falls back to Tier 2 engines only.
+#
+# SearXNG settings are mounted as an explicit file (not a directory) so the
+# container can create required runtime files alongside the config.
 
 services:
   searxng:
@@ -13,7 +16,7 @@ services:
     container_name: searxng
     restart: unless-stopped
     volumes:
-      - ./examples/searxng:/etc/searxng:ro
+      - ./examples/searxng/settings.example.yml:/etc/searxng/settings.yml:ro
       - ./examples/searxng-engines/serper.py:/usr/local/searxng/searx/engines/serper.py:ro
       - ./examples/searxng-engines/mojeek_api.py:/usr/local/searxng/searx/engines/mojeek_api.py:ro
     environment:
@@ -27,7 +30,7 @@ services:
           memory: 384M
 
   searxng-gateway:
-    image: ghcr.io/ghilteras/searxng-gateway:latest
+    image: ghcr.io/ghilteras/searxng-gateway:v2.6.1
     container_name: searxng-gateway
     restart: unless-stopped
     ports:
