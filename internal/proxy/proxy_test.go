@@ -7,10 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"sx/backends"
 	"sx/internal/breaker"
 	"sx/internal/cache"
 	"sx/internal/config"
+	"sx/internal/metrics"
 	"sx/internal/searxng"
 )
 
@@ -344,5 +347,126 @@ func TestIsClientError(t *testing.T) {
 				t.Errorf("isClientError(%q) = %v, want %v", tt.reason, got, tt.want)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Regression: outcome metric labels must reflect actual contribution
+// ---------------------------------------------------------------------------
+
+// outcomeCounter reads the current value of searxng_gateway_requests_total
+// for the given outcome label.
+func outcomeCounter(t *testing.T, outcome string) float64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("Gather failed: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "searxng_gateway_requests_total" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "outcome" && l.GetValue() == outcome {
+					return m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// TestOutcomeLabels_SearxngErrorPremiumOnly — SearXNG errors, premium
+// returns results → outcome must be "premium_ok", NOT "searxng_plus_premium_ok".
+// Regression guard: the old code checked !sxSkipped (cooldown flag) instead of
+// whether SearXNG actually produced results.
+func TestOutcomeLabels_SearxngErrorPremiumOnly(t *testing.T) {
+	metrics.Init()
+	sx := &fakeSearxng{err: errors.New("boom")}
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "BR_A", URL: "https://brave-a.com", Content: "d", Engine: "brave"},
+	}}
+	c, _ := cache.New(100, 0)
+	p := newTestProxy(newCfg(), sx, c, breaker.New(), fb)
+
+	beforePremium := outcomeCounter(t, "premium_ok")
+	beforeSXPlus := outcomeCounter(t, "searxng_plus_premium_ok")
+
+	_, err := p.Search(context.Background(), "outcome_case_a_err")
+	if err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+
+	afterPremium := outcomeCounter(t, "premium_ok")
+	afterSXPlus := outcomeCounter(t, "searxng_plus_premium_ok")
+
+	if delta := afterPremium - beforePremium; delta != 1 {
+		t.Errorf("premium_ok delta = %v, want 1", delta)
+	}
+	if delta := afterSXPlus - beforeSXPlus; delta != 0 {
+		t.Errorf("searxng_plus_premium_ok delta = %v, want 0", delta)
+	}
+}
+
+// TestOutcomeLabels_SearxngEmptyPremiumOnly — SearXNG returns empty result
+// set, premium returns results → outcome must be "premium_ok".
+func TestOutcomeLabels_SearxngEmptyPremiumOnly(t *testing.T) {
+	metrics.Init()
+	sx := &fakeSearxng{resp: &searxng.Response{Results: nil}}
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "BR_B", URL: "https://brave-b.com", Content: "d", Engine: "brave"},
+	}}
+	c, _ := cache.New(100, 0)
+	p := newTestProxy(newCfg(), sx, c, breaker.New(), fb)
+
+	beforePremium := outcomeCounter(t, "premium_ok")
+	beforeSXPlus := outcomeCounter(t, "searxng_plus_premium_ok")
+
+	_, err := p.Search(context.Background(), "outcome_case_b_empty")
+	if err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+
+	afterPremium := outcomeCounter(t, "premium_ok")
+	afterSXPlus := outcomeCounter(t, "searxng_plus_premium_ok")
+
+	if delta := afterPremium - beforePremium; delta != 1 {
+		t.Errorf("premium_ok delta = %v, want 1", delta)
+	}
+	if delta := afterSXPlus - beforeSXPlus; delta != 0 {
+		t.Errorf("searxng_plus_premium_ok delta = %v, want 0", delta)
+	}
+}
+
+// TestOutcomeLabels_SearxngSufficientOnly — SearXNG returns >= SufficientMinResults
+// and no premium contributes → outcome must be "searxng_ok".
+func TestOutcomeLabels_SearxngSufficientOnly(t *testing.T) {
+	metrics.Init()
+	sxRes := make([]searxng.Result, 10)
+	for i := range sxRes {
+		sxRes[i] = searxng.Result{
+			Title:  fmt.Sprintf("SX%d", i),
+			URL:    fmt.Sprintf("https://sx%d-c.com", i),
+			Engine: "wikipedia",
+		}
+	}
+	sx := &fakeSearxng{resp: &searxng.Response{Results: sxRes}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.T1PremiumCount = 0 // no premium in hot path
+	p := newTestProxy(cfg, sx, c, breaker.New())
+
+	beforeOK := outcomeCounter(t, "searxng_ok")
+
+	_, err := p.Search(context.Background(), "outcome_case_c_sxonly")
+	if err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+
+	afterOK := outcomeCounter(t, "searxng_ok")
+
+	if delta := afterOK - beforeOK; delta != 1 {
+		t.Errorf("searxng_ok delta = %v, want 1", delta)
 	}
 }

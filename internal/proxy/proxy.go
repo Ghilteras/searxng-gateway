@@ -63,8 +63,8 @@ func New(cfg *config.Config, sx searxng.Client, c *cache.Cache, breakerMgr *brea
 //
 // Outcome counters (all via RequestsTotal):
 //   - cache_hit:                  entry found in cache, SearXNG not called.
-//   - searxng_ok:                 SearXNG returned a sufficient response (no premium results).
-//   - premium_ok:                 premium providers contributed results (SearXNG skipped or insufficient).
+//   - searxng_ok:                 only SearXNG contributed results (no premium results).
+//   - premium_ok:                 only premium providers contributed results (SearXNG skipped, errored, or returned empty).
 //   - searxng_plus_premium_ok:    both SearXNG and premium providers contributed results.
 //   - fallback_fail:              all providers exhausted with no results.
 //   - timeout:                    SearXNG returned context.DeadlineExceeded.
@@ -89,12 +89,13 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	seenURLs := make(map[string]bool)
 	usedPremiums := make(map[string]bool)
 	premiumHadResults := false
+	searxngHadResults := false
 	var premiumErrMsgs []string
 
 	// 3. Channel to collect SearXNG result from goroutine.
 	type sxResult struct {
-		resp *searxng.Response
-		err  error
+		resp    *searxng.Response
+		err     error
 		elapsed time.Duration
 	}
 	sxCh := make(chan sxResult, 1)
@@ -203,6 +204,7 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 				if !seenURLs[r.URL] {
 					seenURLs[r.URL] = true
 					allResults = append(allResults, r)
+					searxngHadResults = true
 				}
 			}
 		} else {
@@ -234,12 +236,10 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	}
 
 	outcome := "searxng_ok"
-	if premiumHadResults {
+	if searxngHadResults && premiumHadResults {
+		outcome = "searxng_plus_premium_ok"
+	} else if premiumHadResults {
 		outcome = "premium_ok"
-		// Check if SearXNG also contributed.
-		if !sxSkipped {
-			outcome = "searxng_plus_premium_ok"
-		}
 	}
 	metrics.RequestsTotal.WithLabelValues(outcome).Inc()
 
@@ -258,6 +258,7 @@ func (p *Proxy) sufficient(r *searxng.Response) bool {
 //   - merged results reach SufficientMinResults, OR
 //   - all available premiums have been tried, OR
 //   - the deadline expires.
+//
 // Each premium is called at most once per request (tracked via usedPremiums).
 // Premiums where the circuit breaker is open are skipped.
 // Returns the updated accumulators.
@@ -389,6 +390,7 @@ func (p *Proxy) observe(r *searxng.Response) {
 //   - attempt 2: after 1s
 //   - attempt 3: after 2s
 //   - attempt 4: after 4s (final)
+//
 // Returns the last error if all retries fail.
 // All errors are retried — no 4xx/5xx distinction, no circuit breaker.
 //
@@ -497,12 +499,13 @@ func normalize(q string) string {
 // (server is blocking us: 402, 403, 429, access denied, forbidden, etc.)
 //
 // Pattern coverage:
-//   4xx HTTP codes:           "HTTP error 4", "HTTP 402", "HTTP 403", "HTTP 429"
-//   Cloudflare-style blocks:  "blocked", "blocked by"
-//   Rate limiting:            "too many requests", "rate limited"
-//   Auth/access:              "access denied", "forbidden", "unauthorized", "not found"
-//   Billing/quota:            "payment required"
-//   Bot detection:            "captcha"
+//
+//	4xx HTTP codes:           "HTTP error 4", "HTTP 402", "HTTP 403", "HTTP 429"
+//	Cloudflare-style blocks:  "blocked", "blocked by"
+//	Rate limiting:            "too many requests", "rate limited"
+//	Auth/access:              "access denied", "forbidden", "unauthorized", "not found"
+//	Billing/quota:            "payment required"
+//	Bot detection:            "captcha"
 //
 // 5xx, timeout, HTTP error (5xx), connection refused = server error (retry).
 func isClientError(reason string) bool {
