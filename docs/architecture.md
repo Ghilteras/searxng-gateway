@@ -2,74 +2,171 @@
 
 ## Overview
 
-`searxng-gateway` is a thin decision proxy that sits in front of a SearXNG instance. It forwards queries to SearXNG as the primary source and falls back to the Brave Search API when SearXNG returns too few results or all engines are degraded.
-
-The client never talks to SearXNG directly — all traffic flows through the gateway.
+`searxng-gateway` is an HTTP search gateway that sits in front of a SearXNG instance and a configurable pool of premium search providers. It uses **speculative parallel execution** — calling SearXNG and N premium providers simultaneously — then merges results with URL deduplication. If the merged count is insufficient, it loops through remaining providers until a target threshold is met or a timeout expires. The client never talks to SearXNG directly.
 
 ```
-Client ───▶ searxng-gateway ───▶ SearXNG (primary)
-                    │
-                    └──▶ Brave Search API (fallback)
+Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (primary)
+                    │                         │
+                    │  ┌──────────────────────┤
+                    │  │ Speculative execution │
+                    │  │ (parallel round-robin)│
+                    │  └──────────────────────┤
+                    │                         │
+                    └──▶ T1 premium pool (T1_PREMIUM_COUNT providers)
+                         ├── Brave ──┐
+                         ├── Exa     ├── round-robin, run in parallel
+                         ├── Jina    │   with SearXNG. Dedup by URL.
+                         └── Tavily ─┘
+                         │
+                         └──▶ Fallback loop (if merged < SUFFICIENT_MIN_RESULTS)
+                              Round-robin through remaining providers
+                              until threshold, exhaustion, or FALLBACK_TIMEOUT
 ```
 
-## Decision flow (F3)
+## Request flow
 
-1. **Forward to SearXNG** with 3 retries (exponential backoff: 1s, 2s, 4s on 5xx/timeout; no retry on 4xx)
-2. **Parse `unresponsive_engines`** from SearXNG response
-3. **Circuit breaker per engine**: 4xx on an engine → circuit opens (5 min cooldown) → engine skipped on subsequent requests → auto-probe after 5 min
-4. **Fallback trigger**: if `len(results) < SUFFICIENT_MIN_RESULTS` (default 25) → call Brave Search API
-5. **Cache**: in-memory LRU (1000 entries, 1h TTL). Cache hit skips both SearXNG and Brave.
+1. **Normalise** the query (lowercase, collapse whitespace) and check the **LRU cache**. Cache hit returns immediately without calling any backend.
+2. **SearXNG cooldown check**: if SearXNG has hit `SEARXNG_FAIL_THRESHOLD` consecutive failures (default 6), it is skipped entirely for `SEARXNG_FAIL_COOLDOWN_SECONDS` (default 180s). Success resets the counter.
+3. **Speculative parallel call**: SearXNG and `T1_PREMIUM_COUNT` premium providers (selected via atomic round-robin from `FALLBACK_PROVIDERS`) are called concurrently.
+   - SearXNG is called with retry+backoff (3 attempts: 1s, 2s, 4s exponential — all error classes retried).
+   - Each premium provider is called once; circuit-breaker-open providers are skipped.
+4. **Merge and deduplicate** all results by URL. Record per-engine metrics from SearXNG's `unresponsive_engines` field.
+5. **Bounded fallback loop**: if merged results < `SUFFICIENT_MIN_RESULTS` (default 1), remaining providers (those not already called this request) are tried via round-robin until the threshold is met, all providers are exhausted, or `FALLBACK_TIMEOUT_SECONDS` (default 30) expires.
+6. **Outcome**: cache_hit, searxng_ok, premium_ok, searxng_plus_premium_ok, or fallback_fail.
 
-## Multi-tier engine posture
+## Per-engine circuit breaker
 
-The reference SearXNG config (`examples/searxng/`) implements three tiers:
+Uses `sony/gobreaker`. Each premium provider (and each SearXNG engine) gets its own breaker instance.
 
-| Tier | Source | Cost | Description |
-|------|--------|------|-------------|
-| T1 | Serper API | Free (2,500/mo) | Google results via API. Most relevant results. |
-| T2 | Bing, Wikipedia, GitHub, StackOverflow, ArXiv, PyPI, Docker Hub, Mwmbl, Marginalia | Free (keyless) | Broad coverage, no API key needed. |
-| T3 | Brave Search API | Free ($5 credit = 1,000/mo) | Paid fallback, triggered by gateway, not by SearXNG itself. |
+- **Trip trigger**: a single 4xx client error (403, 429, rate limit, captcha, access denied) trips the circuit immediately (`ReadyToTrip`: `ConsecutiveFailures >= 1`).
+- **Open state**: the engine is excluded from subsequent requests.
+- **Timeout** (default 5 min): circuit enters half-open, sends one probe request.
+  - Success → circuit closes; `recovery_total` counter increments.
+  - Failure → circuit re-opens for another 5 min.
+- **SearXNG is handled separately** via a binary cooldown counter (not `gobreaker`): after N consecutive SearXNG failures, the entire SearXNG call is skipped for the cooldown duration.
 
-Tier 1 is optional. The gateway works with T2 + T3 only. For a fully keyless setup, see [keyless.md](keyless.md).
+## Supported backends
 
-## Circuit breaker (per-engine)
+Set `FALLBACK_PROVIDERS` to a comma-separated list. Each needs its `<NAME>_API_KEY` env var (except keyless backends). `T1_PREMIUM_COUNT` controls how many are called in the T1 hot path alongside SearXNG; the rest are used in the fallback loop.
 
-Uses `sony/gobreaker`. The gateway parses SearXNG's `unresponsive_engines` response field:
+| Backend | Factory name | Key env var | Keyless? | Notes |
+|---------|-------------|-------------|----------|-------|
+| Brave Search API | `brave` | `BRAVE_API_KEY` | No | `$5 credit = ~1,000 queries/mo` |
+| Exa | `exa` | `EXA_API_KEY` | No | Also supports MCP mode (`EXA_MCP_URL`) |
+| Jina | `jina` | `JINA_API_KEY` | Optional | `JINA_ALLOW_KEYLESS=true` by default |
+| Tavily | `tavily` | `TAVILY_API_KEY` | No | `TAVILY_SEARCH_DEPTH=basic\|advanced` |
+| Bing (HTML scrape) | `bing` | — | Yes | Parses Bing HTML; bot-challenge detection |
+| Brave Web (HTML scrape) | `brave-web` | — | Yes | Parses Brave Search HTML |
+| SearXNG instance | `searxng` | — | Yes | For multi-instance or remote SearXNG backends |
 
-- **4xx on engine** → circuit opens immediately (threshold = 1)
-- **Open state**: engine excluded from SearXNG requests for 5 minutes
-- **Half-open probe**: after 5 min, one test request
-  - Success → circuit closes, `recovery_total` counter increments
-  - Failure → circuit re-opens for another 5 min
-
-## Prometheus metrics
-
-All metrics exposed at `:8080/metrics`, prefix `searxng_gateway_`:
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `circuit_breaker_state{engine}` | Gauge | 0=closed, 1=half-open, 2=open |
-| `circuit_breaker_trips_total{engine,reason}` | Counter | Cumulative CB trips |
-| `circuit_breaker_recovery_total{engine}` | Counter | Auto-recovery events |
-| `circuit_breaker_requests_total{engine,state}` | Counter | Requests per engine per CB state |
-| `retry_attempts_total{attempt,outcome,error_class}` | Counter | Retry attempts |
-| `retry_exhausted_total{error_class}` | Counter | Retries exhausted |
-| `engine_results_total{engine}` | Counter | Results per engine (including `brave-premium`) |
-| `request_duration_seconds{engine}` | Histogram | Latency per engine |
-| `fallback_triggered_total` | Counter | Brave API fallback calls |
-
-## Configuration
-
-All configuration via environment variables. See [README](../README.md) for the full list.
+All backends implement the `SearchBackend` interface in `backends/interface.go`. The `backends/factory.go` factory instantiates them from env vars. See [README](../README.md) for the full env var table and [keyless.md](keyless.md) for a zero-API-key setup.
 
 ## Response shape
 
-The gateway returns JSON in SearXNG format regardless of source (SearXNG or Brave), so existing clients work without modification.
+The gateway returns JSON in SearXNG format regardless of which backend provided the results. Each result carries:
 
-| SearXNG field | Brave source |
-|---------------|-------------|
-| `title` | Brave `title` |
-| `url` | Brave `url` |
-| `content` | Brave `description` |
-| `engine` | constant `"brave-api"` |
-| `score` | constant `1.0` |
+| Field | Source | Notes |
+|-------|--------|-------|
+| `title` | Backend-specific title | — |
+| `url` | Backend-specific URL | Deduplicated across all backends |
+| `content` | Backend-specific snippet | `description` from Brave, `content`/`summary` from Exa/Tavily, `content` from Jina |
+| `engine` | Backend name | e.g. `"brave"`, `"exa"`, `"jina"`, `"tavily"`, `"bing"`, or a SearXNG engine name |
+| `engines` | `[]string{engine}` | List format for compatibility |
+| `score` | — | Not set by premium providers (omitted) |
+
+Premium provider results are normalised to `searxng.Result` at merge time in `proxy.go`. SearXNG results are passed through as-is.
+
+## Retry and error classification
+
+SearXNG requests are retried up to 3 times with exponential backoff (1s → 2s → 4s). All error classes are retried — there is no 4xx/5xx distinction for the retry path. Errors are classified for metrics:
+
+| Error class | Trigger |
+|-------------|---------|
+| `timeout` | `context.DeadlineExceeded` |
+| `cancelled` | `context.Canceled` |
+| `5xx` | HTTP 500–599, "internal server error", "bad gateway", etc. |
+| `4xx` | HTTP 400–499 (rare in SearXNG, more common in premium providers) |
+| `network` | Connection refused, DNS failure, dial timeout, connection reset |
+| `other` | Anything else |
+
+## Prometheus metrics
+
+All metrics are exposed at `:8080/metrics` (configurable via `METRICS_PATH`), prefixed `searxng_gateway_`.
+
+### Request metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `requests_total` | Counter | `outcome` | Requests by outcome: `cache_hit`, `searxng_ok`, `premium_ok`, `searxng_plus_premium_ok`, `fallback_fail`, `timeout` |
+| `request_duration_seconds` | Histogram | `source`, `engine` | Latency per source backend and engine |
+| `results_count` | Histogram | — | Number of results returned per request |
+| `engines_count` | Gauge | — | Distinct engines in last response |
+
+### Engine metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `engine_results_total` | Counter | `engine` | Results contributed per engine (SearXNG engines + premium backends) |
+| `engine_unresponsive_total` | Counter | `engine`, `reason` | Times an engine was reported unresponsive by SearXNG |
+| `engine_status` | Gauge | `engine` | 1 if the engine responded in the last request, 0 otherwise |
+
+### Circuit breaker metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `circuit_breaker_state` | Gauge | `engine` | 0=closed, 1=half-open, 2=open |
+| `circuit_breaker_triggered_at` | Gauge | `engine`, `reason` | Unix timestamp when breaker went open |
+| `circuit_breaker_trips_total` | Counter | `engine`, `reason` | Cumulative CB trips |
+| `circuit_breaker_requests_total` | Counter | `engine`, `state` | Requests per engine per CB state |
+| `circuit_breaker_rejections_total` | Counter | `engine` | Requests rejected (open state) |
+| `circuit_breaker_recovery_total` | Counter | `engine` | Auto-recovery events |
+
+### Retry metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `retry_attempts_total` | Counter | `attempt`, `outcome`, `error_class` | Every retry attempt (including first) |
+| `retry_exhausted_total` | Counter | `error_class` | Requests where all retries failed |
+
+### Cache metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `cache_size` | Gauge | Current LRU cache entry count |
+
+### Quota metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `brave_credits_remaining` | Gauge | `period` | Brave API credits remaining (from response headers) |
+| `brave_credits_limit` | Gauge | `period` | Brave API credits limit |
+| `serper_searches_remaining` | Gauge | `period` | Serper searches remaining (no public API yet) |
+| `serper_searches_limit` | Gauge | `period` | Serper searches limit |
+
+## Configuration
+
+All configuration is via environment variables. Key variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LISTEN_ADDR` | `:8080` | HTTP listen address |
+| `SEARXNG_BACKEND_URL` | `http://searxng-primary:8080` | SearXNG instance URL |
+| `FALLBACK_PROVIDERS` | `brave` | Comma-separated premium provider names |
+| `T1_PREMIUM_COUNT` | `0` | Number of providers to call in parallel with SearXNG |
+| `SUFFICIENT_MIN_RESULTS` | `1` | Target merged result count before fallback loop stops |
+| `FALLBACK_TIMEOUT_SECONDS` | `30` | Max time for speculative execution + fallback loop |
+| `SEARXNG_TIMEOUT_SECONDS` | `25` | Per-request timeout for SearXNG |
+| `SEARXNG_FAIL_THRESHOLD` | `6` | Consecutive SearXNG failures before cooldown |
+| `SEARXNG_FAIL_COOLDOWN_SECONDS` | `180` | Cooldown duration for SearXNG |
+| `CACHE_SIZE` | `1000` | LRU cache entries |
+| `CACHE_TTL_SECONDS` | `3600` | Cache entry TTL |
+| `LOG_LEVEL` | `info` | Log level |
+| `METRICS_PATH` | `/metrics` | Prometheus endpoint path |
+
+See [README](../README.md) for the complete env var table including per-provider keys.
+
+## Deployment
+
+- **Docker**: `docker compose -f docker-compose.example.yml up -d` starts SearXNG + gateway. See [keyless.md](keyless.md) for a zero-key setup.
+- **Endpoints**: `GET /search?q=<query>&format=json`, `GET /healthz`, `GET /metrics`
+- The gateway image is built and pushed automatically by GitHub Actions on push to `main` and `v*` tags (`.github/workflows/build.yml`). See [README](../README.md) for build details.
