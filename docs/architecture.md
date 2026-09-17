@@ -2,7 +2,7 @@
 
 ## Overview
 
-`searxng-gateway` is an HTTP search gateway that sits in front of a SearXNG instance and a configurable pool of premium search providers. It uses **speculative parallel execution** — calling SearXNG and N premium providers simultaneously — then merges results with URL deduplication. If the merged count is insufficient, it loops through remaining providers until a target threshold is met or a timeout expires. The client never talks to SearXNG directly.
+`searxng-gateway` is an HTTP search gateway that sits in front of a SearXNG instance and a configurable pool of premium search providers. It uses **speculative execution** — starting SearXNG and the configured premium-provider pass concurrently, selecting providers via round-robin, and invoking premium providers serially within that pass — then merges results with URL deduplication. If the merged count is insufficient, it loops through remaining providers until a target threshold is met or a timeout expires. The client never talks to SearXNG directly.
 
 ```
 Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (primary)
@@ -14,8 +14,8 @@ Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (primary)
                     │                         │
                     └──▶ T1 premium pool (T1_PREMIUM_COUNT providers)
                          ├── Brave ──┐
-                         ├── Exa     ├── round-robin, run in parallel
-                         ├── Jina    │   with SearXNG. Dedup by URL.
+                         ├── Exa     ├── round-robin alongside SearXNG;
+                         ├── Jina    │   serial within the premium pass.
                          └── Tavily ─┘
                          │
                          └──▶ Fallback loop (if merged < SUFFICIENT_MIN_RESULTS)
@@ -27,7 +27,7 @@ Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (primary)
 
 1. **Normalise** the query (lowercase, collapse whitespace) and check the **LRU cache**. Cache hit returns immediately without calling any backend.
 2. **SearXNG cooldown check**: if SearXNG has hit `SEARXNG_FAIL_THRESHOLD` consecutive failures (default 6), it is skipped entirely for `SEARXNG_FAIL_COOLDOWN_SECONDS` (default 180s). Success resets the counter.
-3. **Speculative parallel call**: SearXNG and `T1_PREMIUM_COUNT` premium providers (selected via atomic round-robin from `FALLBACK_PROVIDERS`) are called concurrently.
+3. **Speculative call**: SearXNG starts concurrently with the `T1_PREMIUM_COUNT` premium-provider pass. Providers are selected via atomic round-robin from `FALLBACK_PROVIDERS` and invoked serially within that pass.
    - SearXNG is called with retry+backoff (3 attempts: 1s, 2s, 4s exponential — all error classes retried).
    - Each premium provider is called once; circuit-breaker-open providers are skipped.
 4. **Merge and deduplicate** all results by URL. Record per-engine metrics from SearXNG's `unresponsive_engines` field.
@@ -153,7 +153,7 @@ All configuration is via environment variables. Key variables:
 | `LISTEN_ADDR` | `:8080` | HTTP listen address |
 | `SEARXNG_BACKEND_URL` | `http://searxng-primary:8080` | SearXNG instance URL |
 | `FALLBACK_PROVIDERS` | `brave` | Comma-separated premium provider names |
-| `T1_PREMIUM_COUNT` | `0` | Number of providers to call in parallel with SearXNG |
+| `T1_PREMIUM_COUNT` | `0` | Number of providers to call in the hot path while SearXNG runs; premium calls are serial within the pass |
 | `SUFFICIENT_MIN_RESULTS` | `1` | Target merged result count before fallback loop stops |
 | `FALLBACK_TIMEOUT_SECONDS` | `30` | Max time for speculative execution + fallback loop |
 | `SEARXNG_TIMEOUT_SECONDS` | `25` | Per-request timeout for SearXNG |
