@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,11 +35,25 @@ type fakeBackend struct {
 	results []backends.SearchResult
 	err     error
 	avail   bool
+
+	// Optional overlap-detection hooks (zero values = no-op, existing tests unaffected).
+	delay   time.Duration
+	onEntry func()
+	onExit  func()
 }
 
 func (f *fakeBackend) Name() string      { return f.name }
 func (f *fakeBackend) IsAvailable() bool { return f.avail }
 func (f *fakeBackend) Search(_ backends.SearchOptions) ([]backends.SearchResult, error) {
+	if f.onEntry != nil {
+		f.onEntry()
+	}
+	if f.delay > 0 {
+		time.Sleep(f.delay)
+	}
+	if f.onExit != nil {
+		f.onExit()
+	}
 	return f.results, f.err
 }
 
@@ -559,5 +575,304 @@ func TestOutcomeLabels_SearxngDuplicatesPremium(t *testing.T) {
 	}
 	if delta := afterSxOk - beforeSxOk; delta != 0 {
 		t.Errorf("searxng_ok delta = %v, want 0", delta)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Regression: serial premium pass — no concurrency and deterministic labels
+// ---------------------------------------------------------------------------
+
+// overlapBackend wraps results with overlap detection: on entry atomically
+// increments in-flight, records the max observed, sleeps to widen any race
+// window, then decrements. Also records call order.
+type overlapBackend struct {
+	name      string
+	results   []backends.SearchResult
+	inFlight  *atomic.Int64
+	maxSeen   *atomic.Int64
+	callOrder *[]string
+	mu        *sync.Mutex
+}
+
+func (o *overlapBackend) Name() string      { return o.name }
+func (o *overlapBackend) IsAvailable() bool { return true }
+func (o *overlapBackend) Search(_ backends.SearchOptions) ([]backends.SearchResult, error) {
+	cur := o.inFlight.Add(1)
+	// Update max observed overlap.
+	for {
+		old := o.maxSeen.Load()
+		if cur <= old || o.maxSeen.CompareAndSwap(old, cur) {
+			break
+		}
+	}
+	time.Sleep(20 * time.Millisecond)
+	o.mu.Lock()
+	*o.callOrder = append(*o.callOrder, o.name)
+	o.mu.Unlock()
+	o.inFlight.Add(-1)
+	return o.results, nil
+}
+
+// TestT1PremiumPass_SerialNoOverlap verifies the T1 hot-path loop calls
+// providers serially (max overlap == 1) and in round-robin selection order.
+func TestT1PremiumPass_SerialNoOverlap(t *testing.T) {
+	var inFlight atomic.Int64
+	var maxSeen atomic.Int64
+	var mu sync.Mutex
+	order := make([]string, 0, 2)
+
+	brave := &overlapBackend{
+		name:      "brave",
+		results:   []backends.SearchResult{{Title: "B", URL: "https://b.com", Content: "d", Engine: "brave"}},
+		inFlight:  &inFlight,
+		maxSeen:   &maxSeen,
+		callOrder: &order,
+		mu:        &mu,
+	}
+	exa := &overlapBackend{
+		name:      "exa",
+		results:   []backends.SearchResult{{Title: "E", URL: "https://e.com", Content: "d", Engine: "exa"}},
+		inFlight:  &inFlight,
+		maxSeen:   &maxSeen,
+		callOrder: &order,
+		mu:        &mu,
+	}
+
+	// SearXNG returns 1 result so the fallback loop never runs.
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
+		{Title: "SX", URL: "https://sx.com", Engine: "wikipedia"},
+	}}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.T1PremiumCount = 2
+	cfg.SufficientMinResults = 1
+	cfg.FallbackProviders = []string{"brave", "exa"}
+
+	// Register overlap backends into a fresh manager via newTestProxy-like construction.
+	mgr := backends.NewManager()
+	mgr.Register(brave)
+	mgr.Register(exa)
+	_ = mgr.SetFallbacks(cfg.FallbackProviders)
+	p := New(cfg, sx, c, breaker.New(), mgr)
+
+	_, err := p.Search(context.Background(), "t1_serial_overlap")
+	if err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+	if got := maxSeen.Load(); got != 1 {
+		t.Errorf("max observed overlap = %d, want 1 (serial execution)", got)
+	}
+	// Round-robin with alphabetical sort: brave (idx 0), then exa (idx 1).
+	mu.Lock()
+	gotOrder := make([]string, len(order))
+	copy(gotOrder, order)
+	mu.Unlock()
+	wantOrder := []string{"brave", "exa"}
+	if len(gotOrder) != len(wantOrder) {
+		t.Fatalf("call order len = %d, want %d: got %v", len(gotOrder), len(wantOrder), gotOrder)
+	}
+	for i, w := range wantOrder {
+		if gotOrder[i] != w {
+			t.Errorf("call order[%d] = %q, want %q (got %v)", i, gotOrder[i], w, gotOrder)
+		}
+	}
+}
+
+// TestFallbackPremiumLoop_SerialNoOverlapAndEarlyStop verifies the fallback
+// loop calls providers serially (max overlap == 1) and stops the moment the
+// SufficientMinResults threshold is met — no speculative extra calls.
+func TestFallbackPremiumLoop_SerialNoOverlapAndEarlyStop(t *testing.T) {
+	var inFlight atomic.Int64
+	var maxSeen atomic.Int64
+	var mu sync.Mutex
+	order := make([]string, 0, 3)
+
+	mkOverlap := func(name, url string) *overlapBackend {
+		return &overlapBackend{
+			name:      name,
+			results:   []backends.SearchResult{{Title: name, URL: url, Content: "d", Engine: name}},
+			inFlight:  &inFlight,
+			maxSeen:   &maxSeen,
+			callOrder: &order,
+			mu:        &mu,
+		}
+	}
+	brave := mkOverlap("brave", "https://b.com")
+	exa := mkOverlap("exa", "https://e.com")
+	jina := mkOverlap("jina", "https://j.com")
+
+	// SearXNG returns 0 → fallback loop must run.
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{}}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 2
+	cfg.FallbackProviders = []string{"brave", "exa", "jina"}
+
+	mgr := backends.NewManager()
+	mgr.Register(brave)
+	mgr.Register(exa)
+	mgr.Register(jina)
+	_ = mgr.SetFallbacks(cfg.FallbackProviders)
+	p := New(cfg, sx, c, breaker.New(), mgr)
+
+	_, err := p.Search(context.Background(), "fallback_serial_earlystop")
+	if err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+	if got := maxSeen.Load(); got != 1 {
+		t.Errorf("max observed overlap = %d, want 1 (serial fallback loop)", got)
+	}
+	mu.Lock()
+	gotOrder := make([]string, len(order))
+	copy(gotOrder, order)
+	mu.Unlock()
+	// brave (1 result) → 1 < 2, continue; next provider (1 result) → 2 >= 2, stop.
+	// Exactly 2 calls — no speculative extra calls.
+	if len(gotOrder) != 2 {
+		t.Fatalf("call count = %d, want 2 (early stop): got order %v", len(gotOrder), gotOrder)
+	}
+	// First call must be brave (alphabetically first in full set).
+	if gotOrder[0] != "brave" {
+		t.Errorf("first call = %q, want brave", gotOrder[0])
+	}
+}
+
+// TestOutcomeLabels_DeterministicAcrossRepeats verifies that outcome metric
+// labels are deterministic across repeated identical-input calls. For each
+// scenario, 25 fresh iterations are run with a unique query and fresh
+// cache+proxy; every iteration must produce exactly the expected outcome delta
+// and the result URL order must be identical across all iterations.
+func TestOutcomeLabels_DeterministicAcrossRepeats(t *testing.T) {
+	metrics.Init()
+	const iterations = 25
+
+	// Shared URL set for both SearXNG and premium.
+	urls := []searxng.Result{
+		{Title: "D1", URL: "https://det-a.com", Engine: "wikipedia"},
+		{Title: "D2", URL: "https://det-b.com", Engine: "wikipedia"},
+		{Title: "D3", URL: "https://det-c.com", Engine: "wikipedia"},
+	}
+
+	// --- (i) T1 path: T1PremiumCount=1, premium and SearXNG return SAME URLs ---
+	// Premium runs first (T1 loop), adds URLs. SearXNG adds nothing new.
+	// outcome must be "premium_ok" every time.
+	var firstURLs []string
+	for i := 0; i < iterations; i++ {
+		sx := &fakeSearxng{resp: &searxng.Response{Results: urls}}
+		fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+			{Title: "D1", URL: "https://det-a.com", Content: "d", Engine: "brave"},
+			{Title: "D2", URL: "https://det-b.com", Content: "d", Engine: "brave"},
+			{Title: "D3", URL: "https://det-c.com", Content: "d", Engine: "brave"},
+		}}
+		c, _ := cache.New(100, 0)
+		cfg := newCfg()
+		cfg.T1PremiumCount = 1
+		cfg.SufficientMinResults = 3
+		p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+
+		beforePrem := outcomeCounter(t, "premium_ok")
+		beforeSxOk := outcomeCounter(t, "searxng_ok")
+		beforeSxPlus := outcomeCounter(t, "searxng_plus_premium_ok")
+
+		query := fmt.Sprintf("det_t1_iter_%d_%d", time.Now().UnixNano(), i)
+		resp, err := p.Search(context.Background(), query)
+		if err != nil {
+			t.Fatalf("T1 iter %d: Search error = %v", i, err)
+		}
+
+		afterPrem := outcomeCounter(t, "premium_ok")
+		afterSxOk := outcomeCounter(t, "searxng_ok")
+		afterSxPlus := outcomeCounter(t, "searxng_plus_premium_ok")
+
+		if delta := afterPrem - beforePrem; delta != 1 {
+			t.Errorf("T1 iter %d: premium_ok delta = %v, want 1", i, delta)
+		}
+		if delta := afterSxOk - beforeSxOk; delta != 0 {
+			t.Errorf("T1 iter %d: searxng_ok delta = %v, want 0", i, delta)
+		}
+		if delta := afterSxPlus - beforeSxPlus; delta != 0 {
+			t.Errorf("T1 iter %d: searxng_plus_premium_ok delta = %v, want 0", i, delta)
+		}
+
+		// Record URL order for determinism check.
+		iterURLs := make([]string, len(resp.Results))
+		for j, r := range resp.Results {
+			iterURLs[j] = r.URL
+		}
+		if i == 0 {
+			firstURLs = iterURLs
+		} else {
+			if len(iterURLs) != len(firstURLs) {
+				t.Errorf("T1 iter %d: URL count = %d, want %d", i, len(iterURLs), len(firstURLs))
+			} else {
+				for j := range firstURLs {
+					if iterURLs[j] != firstURLs[j] {
+						t.Errorf("T1 iter %d: URL[%d] = %q, want %q (nondeterministic)", i, j, iterURLs[j], firstURLs[j])
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// --- (ii) Fallback path: T1PremiumCount=0, premium merges AFTER SearXNG ---
+	// SearXNG returns URLs, premium returns same URLs → all filtered → searxng_ok.
+	var firstURLsFB []string
+	for i := 0; i < iterations; i++ {
+		sx := &fakeSearxng{resp: &searxng.Response{Results: urls}}
+		fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+			{Title: "D1", URL: "https://det-a.com", Content: "d", Engine: "brave"},
+			{Title: "D2", URL: "https://det-b.com", Content: "d", Engine: "brave"},
+			{Title: "D3", URL: "https://det-c.com", Content: "d", Engine: "brave"},
+		}}
+		c, _ := cache.New(100, 0)
+		cfg := newCfg()
+		cfg.T1PremiumCount = 0        // no T1 — fallback loop only
+		cfg.SufficientMinResults = 10 // force fallback loop
+		p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+
+		beforeSxOk := outcomeCounter(t, "searxng_ok")
+		beforePrem := outcomeCounter(t, "premium_ok")
+		beforeSxPlus := outcomeCounter(t, "searxng_plus_premium_ok")
+
+		query := fmt.Sprintf("det_fb_iter_%d_%d", time.Now().UnixNano(), i)
+		resp, err := p.Search(context.Background(), query)
+		if err != nil {
+			t.Fatalf("FB iter %d: Search error = %v", i, err)
+		}
+
+		afterSxOk := outcomeCounter(t, "searxng_ok")
+		afterPrem := outcomeCounter(t, "premium_ok")
+		afterSxPlus := outcomeCounter(t, "searxng_plus_premium_ok")
+
+		if delta := afterSxOk - beforeSxOk; delta != 1 {
+			t.Errorf("FB iter %d: searxng_ok delta = %v, want 1", i, delta)
+		}
+		if delta := afterPrem - beforePrem; delta != 0 {
+			t.Errorf("FB iter %d: premium_ok delta = %v, want 0", i, delta)
+		}
+		if delta := afterSxPlus - beforeSxPlus; delta != 0 {
+			t.Errorf("FB iter %d: searxng_plus_premium_ok delta = %v, want 0", i, delta)
+		}
+
+		// Record URL order for determinism check.
+		iterURLs := make([]string, len(resp.Results))
+		for j, r := range resp.Results {
+			iterURLs[j] = r.URL
+		}
+		if i == 0 {
+			firstURLsFB = iterURLs
+		} else {
+			if len(iterURLs) != len(firstURLsFB) {
+				t.Errorf("FB iter %d: URL count = %d, want %d", i, len(iterURLs), len(firstURLsFB))
+			} else {
+				for j := range firstURLsFB {
+					if iterURLs[j] != firstURLsFB[j] {
+						t.Errorf("FB iter %d: URL[%d] = %q, want %q (nondeterministic)", i, j, iterURLs[j], firstURLsFB[j])
+						break
+					}
+				}
+			}
+		}
 	}
 }

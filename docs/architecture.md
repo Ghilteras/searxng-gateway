@@ -2,7 +2,7 @@
 
 ## Overview
 
-`searxng-gateway` is an HTTP search gateway that sits in front of a SearXNG instance and a configurable pool of premium search providers. It uses **speculative execution** — starting SearXNG and the configured premium-provider pass concurrently, selecting providers via round-robin, and invoking premium providers serially within that pass — then merges results with URL deduplication. If the merged count is insufficient, it loops through remaining providers until a target threshold is met or a timeout expires. The client never talks to SearXNG directly.
+`searxng-gateway` is an HTTP search gateway that sits in front of a SearXNG instance and a configurable pool of premium search providers. It uses **speculative execution** — starting SearXNG and the configured premium-provider pass concurrently, selecting providers via round-robin, and invoking premium providers **serially within each pass** (a deliberate design choice; see [Why the premium pass is serial](#why-the-premium-pass-is-serial-deliberate)) — then merges results with URL deduplication. If the merged count is insufficient, it loops through remaining providers until a target threshold is met or a timeout expires. The client never talks to SearXNG directly.
 
 ```
 Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (primary)
@@ -27,12 +27,26 @@ Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (primary)
 
 1. **Normalise** the query (lowercase, collapse whitespace) and check the **LRU cache**. Cache hit returns immediately without calling any backend.
 2. **SearXNG cooldown check**: if SearXNG has hit `SEARXNG_FAIL_THRESHOLD` consecutive failures (default 6), it is skipped entirely for `SEARXNG_FAIL_COOLDOWN_SECONDS` (default 180s). Success resets the counter.
-3. **Speculative call**: SearXNG starts concurrently with the `T1_PREMIUM_COUNT` premium-provider pass. Providers are selected via atomic round-robin from `FALLBACK_PROVIDERS` and invoked serially within that pass.
+3. **Speculative call**: SearXNG starts concurrently with the `T1_PREMIUM_COUNT` premium-provider pass. Providers are selected via atomic round-robin from `FALLBACK_PROVIDERS` and invoked **serially within that pass** (by design; see [Why the premium pass is serial](#why-the-premium-pass-is-serial-deliberate)).
    - SearXNG is called with retry+backoff (3 attempts: 1s, 2s, 4s exponential — all error classes retried).
    - Each premium provider is called once; circuit-breaker-open providers are skipped.
 4. **Merge and deduplicate** all results by URL. Record per-engine metrics from SearXNG's `unresponsive_engines` field.
 5. **Bounded fallback loop**: if merged results < `SUFFICIENT_MIN_RESULTS` (default 1), remaining providers (those not already called this request) are tried via round-robin until the threshold is met, all providers are exhausted, or `FALLBACK_TIMEOUT_SECONDS` (default 30) expires.
 6. **Outcome**: cache_hit, searxng_ok, premium_ok, searxng_plus_premium_ok, or fallback_fail.
+
+## Why the premium pass is serial (deliberate)
+
+Both premium execution paths — the T1 hot-path loop (`proxy.go:118-157`) and the fallback `premiumLoop` (`proxy.go:265-337`) — invoke providers serially. This is a deliberate design choice, not a TODO to be fixed. Concurrency would degrade the system in three dimensions.
+
+**1. Quota and rate-limit control.** Concurrency defeats early stop: calls already launched cannot be un-launched even when the first provider alone would have sufficed, so it is strictly more billed calls (Brave ~1,000/mo, Exa ~2,800/mo, Tavily credits, Jina RPM/tokens). Serial execution also provides inter-call spacing that acts as de-facto pacing against per-second and per-minute caps (Brave QPS, Jina 500 RPM). Concurrency collapses that spacing and raises 429 risk. A single 4xx from any provider trips that engine's circuit breaker for 5 minutes — an availability cost, not just a metric blip.
+
+**2. Attribution determinism.** Merge order is load-bearing and deliberately order-dependent. In the T1 path, premium results merge *before* SearXNG, so premium owns duplicate URLs. In the fallback loop, premium merges *after* SearXNG, so SearXNG owns them. Two existing tests (`TestOutcomeLabels_SearxngDuplicatesPremium`, `TestOutcomeLabels_PremiumDuplicatesSearxng`) pin the two opposite outcomes for identical-URL inputs. Concurrency would make merge order nondeterministic, so both labels and result ordering become nondeterministic.
+
+**3. Latency — the correct fix is context propagation, not parallelism.** Concurrency would cap wall-clock latency, but the budget is currently advisory because `backends.SearchBackend.Search` takes no context (`backends/interface.go`), so the deadline is only checked between calls. The correct future fix is context propagation into each backend's `Search` method. Also, at `T1_PREMIUM_COUNT=1` there is nothing to overlap.
+
+**Non-goal:** Do not convert these passes to a concurrent fan-out.
+
+**Known limitation:** `FALLBACK_TIMEOUT_SECONDS` is not enforced as a hard bound inside a single premium call today — the deadline is only checked between calls. Context propagation (passing the request deadline into `backends.SearchBackend.Search`) is the correct fix for this, not parallelism.
 
 ## Per-engine circuit breaker
 
@@ -153,7 +167,7 @@ All configuration is via environment variables. Key variables:
 | `LISTEN_ADDR` | `:8080` | HTTP listen address |
 | `SEARXNG_BACKEND_URL` | `http://searxng-primary:8080` | SearXNG instance URL |
 | `FALLBACK_PROVIDERS` | `brave` | Comma-separated premium provider names |
-| `T1_PREMIUM_COUNT` | `0` | Number of providers to call in the hot path while SearXNG runs; premium calls are serial within the pass |
+| `T1_PREMIUM_COUNT` | `0` | Number of providers to call in the hot path while SearXNG runs (serial by design; see [Why the premium pass is serial](#why-the-premium-pass-is-serial-deliberate)) |
 | `SUFFICIENT_MIN_RESULTS` | `1` | Target merged result count before fallback loop stops |
 | `FALLBACK_TIMEOUT_SECONDS` | `30` | Max time for speculative execution + fallback loop |
 | `SEARXNG_TIMEOUT_SECONDS` | `25` | Per-request timeout for SearXNG |

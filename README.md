@@ -74,7 +74,7 @@ Keyless mode (no API keys) works out of the box using SearXNG's free engines (Bi
 
 ## Features
 
-- **Speculative execution** — `T1_PREMIUM_COUNT` premium providers are selected via atomic round-robin and invoked in the hot path while SearXNG runs concurrently; premium calls are serial within the pass. Results are merged and deduplicated by URL.
+- **Speculative execution** — `T1_PREMIUM_COUNT` premium providers are selected via atomic round-robin and invoked in the hot path while SearXNG runs concurrently; premium calls are **serial within the pass** by deliberate design (see [docs/architecture.md](docs/architecture.md#why-the-premium-pass-is-serial-deliberate)). Results are merged and deduplicated by URL.
 - **Bounded fallback loop** — if merged results < `SUFFICIENT_MIN_RESULTS`, remaining Tier 2 providers are tried via round-robin until threshold, exhaustion, or `FALLBACK_TIMEOUT_SECONDS`.
 - **Circuit breaker per engine** — 4xx on an engine opens the circuit for 5 min; auto-recovers
 - **Exponential backoff retry** — 3 retries with 1s/2s/4s backoff on 5xx/timeout
@@ -162,7 +162,7 @@ groups:
 | `JINA_API_KEY` | — | no | Jina Search API key |
 | `TAVILY_API_KEY` | — | no | Tavily Search API key |
 | `SUFFICIENT_MIN_RESULTS` | `1` | no | Target merged result count; loop stops when reached (recommend 10 with premiums) |
-| `T1_PREMIUM_COUNT` | `0` | no | Number of premium providers to call in the hot path while SearXNG runs (0 = none; premium calls are serial within the pass) |
+| `T1_PREMIUM_COUNT` | `0` | no | Number of premium providers to call in the hot path while SearXNG runs (0 = none; serial by design — see [docs/architecture.md](docs/architecture.md#why-the-premium-pass-is-serial-deliberate)) |
 | `FALLBACK_TIMEOUT_SECONDS` | `30` | no | Maximum time for speculative execution + fallback loop |
 | `SEARXNG_TIMEOUT_SECONDS` | `25` | no | Per-request timeout for SearXNG |
 | `SEARXNG_FAIL_THRESHOLD` | `6` | no | Consecutive SearXNG failures before cooldown |
