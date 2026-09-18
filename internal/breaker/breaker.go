@@ -92,6 +92,7 @@ type Manager struct {
 	mu       sync.RWMutex
 	breakers map[string]*gobreaker.CircuitBreaker
 	reasons  map[string]string
+	reasonMu sync.RWMutex // guards reasons only; never held across cb.Execute
 }
 
 // New creates a new Manager.
@@ -126,8 +127,8 @@ func (m *Manager) State(engine string) gobreaker.State {
 
 // LastReason returns the last reason recorded for a given engine.
 func (m *Manager) LastReason(engine string) string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.reasonMu.RLock()
+	defer m.reasonMu.RUnlock()
 	return m.reasons[engine]
 }
 
@@ -136,7 +137,9 @@ func (m *Manager) RecordClientError(engine, reason string) {
 	if engine == "" {
 		return
 	}
+	m.reasonMu.Lock()
 	m.reasons[engine] = reason
+	m.reasonMu.Unlock()
 	cb := m.getBreaker(engine)
 	// Force 1 failure to trip the breaker (threshold=1)
 	_, _ = cb.Execute(func() (interface{}, error) {
@@ -165,7 +168,9 @@ func (m *Manager) RecordSuccess(engine string) {
 	if engine == "" {
 		return
 	}
+	m.reasonMu.Lock()
 	delete(m.reasons, engine)
+	m.reasonMu.Unlock()
 	cb := m.getBreaker(engine)
 	_, _ = cb.Execute(func() (interface{}, error) {
 		return nil, nil
@@ -201,9 +206,9 @@ func (m *Manager) getBreaker(engine string) *gobreaker.CircuitBreaker {
 		OnStateChange: func(name string, from, to gobreaker.State) {
 			breakerState.WithLabelValues(name).Set(stateFloat(to))
 			if to == gobreaker.StateOpen {
-				m.mu.RLock()
+				m.reasonMu.RLock()
 				reason := m.reasons[name]
-				m.mu.RUnlock()
+				m.reasonMu.RUnlock()
 				if reason == "" {
 					reason = "unknown"
 				}
