@@ -27,7 +27,7 @@ Lessons, incidenti, decisioni di processo. Datato, non sovrascritto.
 
 ### Nota aperta
 
-- **`examples/searxng/settings.example.yml`: blocco "mojeek api" resta `disabled: false`** mentre il config deployato (`home/searxng/settings.yml`) è `disabled: true` da commit `b1dc472` (homelab-config) — scraping HTML viola ToS Mojeek 3.5(e), engine 403-blocked. Probabilmente intenzionale (l'esempio mostra come abilitarlo con la chiave `mojeek_api.py`): **non toccarlo senza conferma di Angelo**.
+- **`examples/searxng/settings.example.yml`: blocco "mojeek api" resta `disabled: false`** mentre il config deployato (`configs/searxng/settings.yml`) è `disabled: true` da commit `c51e6dfd` (homelab-config) — scraping HTML viola ToS Mojeek 3.5(e), engine 403-blocked. Probabilmente intenzionale (l'esempio mostra come abilitarlo con la chiave `mojeek_api.py`): **non toccarlo senza conferma di Angelo**.
 
 ---
 
@@ -103,7 +103,7 @@ Vedi: `backends/manager.go`, `internal/proxy/proxy.go`
 - `internal/breaker/breaker.go`: aggiunto `isClientError()` gate — solo errori 4xx aprono il CB per i premium. Prima ogni errore (timeout, 5xx) apriva il breaker.
 - `internal/proxy/proxy.go`: `premiumLoop()` sostituisce `fallbackSearch()`:
   - T1: SearXNG + 1 premium (round-robin) in parallelo, merge + dedup URL
-  - T2: se merged < SUFFICIENT_MIN_RESULTS (10), loop round-robin su premium rimanenti
+  - T2: se merged < SUFFICIENT_MIN_RESULTS, loop round-robin su premium rimanenti
   - Circuit breaker rispettato (`IsOpen()` → skip)
   - `FALLBACK_TIMEOUT` globale per T1 + T2
 - `backends/manager.go`: `GetAvailable()` e `NextAvailable()` con round-robin atomico (`atomic.Uint64`)
