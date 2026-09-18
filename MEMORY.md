@@ -121,7 +121,7 @@ Vedi: `backends/manager.go`, `internal/proxy/proxy.go`
 
 ### Risultati
 
-132 test passano. Tag `v0.11.0` su `df81245`. T1_PREMIUM_COUNT=1 in produzione.
+132 test passano. Tag `v0.11.0` su `df81245`. `T1_PREMIUM_COUNT=1` era il valore osservato al deploy del 2026-07-30 — dato storico, non verificabile dai repo: vedi TOOLS.md "Deploy env verification".
 
 ---
 
