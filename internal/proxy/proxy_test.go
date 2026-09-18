@@ -35,25 +35,11 @@ type fakeBackend struct {
 	results []backends.SearchResult
 	err     error
 	avail   bool
-
-	// Optional overlap-detection hooks (zero values = no-op, existing tests unaffected).
-	delay   time.Duration
-	onEntry func()
-	onExit  func()
 }
 
 func (f *fakeBackend) Name() string      { return f.name }
 func (f *fakeBackend) IsAvailable() bool { return f.avail }
 func (f *fakeBackend) Search(_ backends.SearchOptions) ([]backends.SearchResult, error) {
-	if f.onEntry != nil {
-		f.onEntry()
-	}
-	if f.delay > 0 {
-		time.Sleep(f.delay)
-	}
-	if f.onExit != nil {
-		f.onExit()
-	}
 	return f.results, f.err
 }
 
@@ -244,7 +230,7 @@ func TestSearchAllFail(t *testing.T) {
 	}
 }
 
-// TestSearchT1Premium — T1_PREMIUM_COUNT=1, 1 premium in parallel.
+// TestSearchT1Premium — T1_PREMIUM_COUNT=1, 1 premium serially within the T1 pass, alongside SearXNG.
 func TestSearchT1Premium(t *testing.T) {
 	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
 		{Title: "SX", URL: "https://sx1.com", Engine: "wikipedia"},
@@ -276,7 +262,7 @@ func TestSearchT1Premium(t *testing.T) {
 	}
 }
 
-// TestSearchT1PremiumTwo — T1_PREMIUM_COUNT=2, 2 premiums in parallel + SearXNG.
+// TestSearchT1PremiumTwo — T1_PREMIUM_COUNT=2, 2 premiums serially within the T1 pass, alongside SearXNG.
 func TestSearchT1PremiumTwo(t *testing.T) {
 	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
 		{Title: "SX", URL: "https://sx1.com", Engine: "wikipedia"},
