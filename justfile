@@ -26,11 +26,11 @@ check:
 
 # Run tests
 test:
-    go test ./...
+    go test -race -count=1 ./...
 
 # Run tests with verbose output
 test-v:
-    go test -v ./...
+    go test -race -count=1 -v ./...
 
 # Run tests with coverage
 test-cover:
@@ -50,6 +50,10 @@ fmt-check:
 # Run static analysis
 lint:
     go vet ./...
+
+# Run golangci-lint (install: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest)
+lint-golangci:
+    golangci-lint run ./...
 
 # === Install ===
 
