@@ -31,3 +31,7 @@ Source of truth is `homelab-config:configs/grafana/provisioning/alerting/rules.y
 
 - 4 base + 4 per-engine premium-spike rules. UIDs: `searxng-bravespikeburst` (renamed to PremiumFallbackSpike 2026-08-28; UID preserved — renaming without `deleteRules:` orphans), `searxng-premiumspike-brave/exa/tavily/jina` (thresholds 3/8/3/5, `for: 10m`, `alert_type: billing`), `searxng-cbstuckopen`, `searxng-cbrecovered`, `searxng-retryexhausted`.
 - BraveSpikeBurst was premium-wide, not Brave-only (corrected 2026-08-28). Jina rule is RPM/token proxy, not quota countdown.
+
+## Deploy env verification (2026-09-18)
+
+The deployed gateway environment (`T1_PREMIUM_COUNT`, `SUFFICIENT_MIN_RESULTS`, API keys, ...) lives only in Portainer stack 31 (id: `ai`) Env. `homelab-config:stacks/31-ai.yml` is SOPS-encrypted, so deployed values can be verified from neither repo — do not assert production values from repo contents.

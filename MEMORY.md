@@ -128,3 +128,11 @@ Vedi: `backends/manager.go`, `internal/proxy/proxy.go`
 ## 2026-08-28 — Premium engine alerting + dashboard diagnostic
 
 Journal: 20260828-170000-*.md (5 entries) — deploy bypass, false sops alarm, worktree reap, dashboard panel 28, deploy script friction. Premium metric inventory now in TOOLS.md (2026-08-28 live probe: Tavily/Exa/Jina no X-RateLimit headers, Brave-only quota).
+
+---
+
+## 2026-09-18 — Premium pass serial by design; breaker reasons race fixed
+
+- **Premium pass seriale per scelta** in entrambi i path (T1 hot-path + fallback `premiumLoop`), documentato in `docs/architecture.md` → "Why the premium pass is serial (deliberate)". → journal: search "serial-by-design"
+- **Incidente `breaker.Manager.reasons`**: map scritta/cancellata senza lock mentre i reader usavano `RLock` → `fatal error: concurrent map writes` sotto traffico normale. Fix: `reasonMu`, lock rilasciato PRIMA di `cb.Execute` (`OnStateChange` rientra in `RLock`). Regressione `internal/breaker/breaker_test.go` (`-race`). → journal: search "breaker race"
+- **Follow-up aperto (Angelo)**: `.github/workflows/build.yml` builda/pusha ma non lancia test; la copertura gira solo in locale. → journal: search "build.yml runs no tests"
