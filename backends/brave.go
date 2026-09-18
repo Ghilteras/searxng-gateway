@@ -46,8 +46,8 @@ func (b *BraveBackend) IsAvailable() bool {
 
 // braveSearchResponse matches Brave Search API response structure
 type braveSearchResponse struct {
-	Query     braveQuery      `json:"query"`
-	Web       braveWebResults `json:"web"`
+	Query braveQuery      `json:"query"`
+	Web   braveWebResults `json:"web"`
 }
 
 type braveQuery struct {
@@ -79,20 +79,20 @@ func (b *BraveBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	baseURL := b.BaseURL
 	params := url.Values{}
 	params.Set("q", opts.Query)
-	
+
 	// Set result count (max 20)
 	count := opts.NumResults
 	if count <= 0 || count > 20 {
 		count = 10
 	}
 	params.Set("count", fmt.Sprintf("%d", count))
-	
+
 	// Offset for pagination
 	if opts.PageNo > 1 {
 		offset := (opts.PageNo - 1) * count
 		params.Set("offset", fmt.Sprintf("%d", offset))
 	}
-	
+
 	// Safe search
 	safeSearch := "moderate"
 	if opts.SafeSearch == "none" {
@@ -101,7 +101,7 @@ func (b *BraveBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 		safeSearch = "strict"
 	}
 	params.Set("safesearch", safeSearch)
-	
+
 	// Filter by site
 	if opts.Site != "" {
 		params.Set("site", opts.Site)

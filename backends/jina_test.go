@@ -230,5 +230,3 @@ func TestJinaBackend_Search_ContentFallback(t *testing.T) {
 		t.Errorf("expected content fallback, got %q", results[0].Content)
 	}
 }
-
-

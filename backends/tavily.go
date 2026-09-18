@@ -62,10 +62,10 @@ type tavilyRequest struct {
 
 // tavilyResponse is the Tavily search API response
 type tavilyResponse struct {
-	Query        string          `json:"query"`
-	Answer       string          `json:"answer"`
-	Results      []tavilyResult  `json:"results"`
-	ResponseTime float64         `json:"response_time"`
+	Query        string         `json:"query"`
+	Answer       string         `json:"answer"`
+	Results      []tavilyResult `json:"results"`
+	ResponseTime float64        `json:"response_time"`
 }
 
 type tavilyResult struct {
