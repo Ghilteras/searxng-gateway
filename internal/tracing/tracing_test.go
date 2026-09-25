@@ -20,13 +20,37 @@ import (
 
 func setTracingEnv(t *testing.T, values map[string]string) {
 	t.Helper()
-	keys := []string{"OTEL_TRACES_EXPORTER", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_TRACES_SAMPLER_ARG"}
+	keys := []string{"OTEL_TRACES_EXPORTER", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_TRACES_SAMPLER_ARG", "OTEL_SERVICE_NAME", "OTEL_RESOURCE_ATTRIBUTES"}
 	for _, k := range keys {
 		t.Setenv(k, "")
 	}
 	for k, v := range values {
 		t.Setenv(k, v)
 	}
+}
+
+func TestGatewayResourceEnvironmentAndDefaultServiceName(t *testing.T) {
+	t.Run("OTEL_SERVICE_NAME wins", func(t *testing.T) {
+		setTracingEnv(t, map[string]string{"OTEL_SERVICE_NAME": "custom-gateway"})
+		value, ok := gatewayResource().Set().Value("service.name")
+		if got := value.AsString(); !ok || got != "custom-gateway" {
+			t.Fatalf("service.name = %q, want custom-gateway", got)
+		}
+	})
+	t.Run("resource attributes are retained", func(t *testing.T) {
+		setTracingEnv(t, map[string]string{"OTEL_RESOURCE_ATTRIBUTES": "deployment.environment=homelab"})
+		value, ok := gatewayResource().Set().Value("deployment.environment")
+		if got := value.AsString(); !ok || got != "homelab" {
+			t.Fatalf("deployment.environment = %q, want homelab", got)
+		}
+	})
+	t.Run("default service name", func(t *testing.T) {
+		setTracingEnv(t, nil)
+		value, ok := gatewayResource().Set().Value("service.name")
+		if got := value.AsString(); !ok || got != "searxng-gateway" {
+			t.Fatalf("service.name = %q, want searxng-gateway", got)
+		}
+	})
 }
 
 func TestInitDisabledNoExportAndTraceContextOnly(t *testing.T) {

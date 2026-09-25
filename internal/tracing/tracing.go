@@ -71,7 +71,7 @@ func Init(ctx context.Context) (func(context.Context) error, error) {
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exp, sdktrace.WithMaxQueueSize(256), sdktrace.WithMaxExportBatchSize(64), sdktrace.WithBatchTimeout(time.Second), sdktrace.WithExportTimeout(shutdownTimeout)),
 		sdktrace.WithSampler(sdktrace.TraceIDRatioBased(rate)),
-		sdktrace.WithResource(resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName("searxng-gateway"))),
+		sdktrace.WithResource(gatewayResource()),
 	)
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.TraceContext{})
@@ -80,6 +80,28 @@ func Init(ctx context.Context) (func(context.Context) error, error) {
 		defer cancel()
 		return tp.Shutdown(c)
 	}, nil
+}
+
+func gatewayResource() *resource.Resource {
+	serviceName := os.Getenv("OTEL_SERVICE_NAME")
+	if serviceName == "" {
+		if value, ok := resource.Environment().Set().Value("service.name"); ok {
+			serviceName = value.AsString()
+		}
+	}
+	if serviceName == "" {
+		serviceName = "searxng-gateway"
+	}
+	defaults := resource.Default()
+	environment, err := resource.Merge(defaults, resource.Environment())
+	if err != nil {
+		otel.Handle(err)
+	}
+	merged, err := resource.Merge(environment, resource.NewWithAttributes("", semconv.ServiceName(serviceName)))
+	if err != nil {
+		otel.Handle(err)
+	}
+	return merged
 }
 
 // Console exporter emits structured, allow-listed span records only.

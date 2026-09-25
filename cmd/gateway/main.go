@@ -82,11 +82,12 @@ func main() {
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	var listenErr error
 	select {
 	case <-stop:
-	case err := <-serveErr:
-		if err != nil && err != http.ErrServerClosed {
-			log.Printf("listen: %v", err)
+	case listenErr = <-serveErr:
+		if listenErr != nil && listenErr != http.ErrServerClosed {
+			log.Printf("listen: %v", listenErr)
 		}
 	}
 	log.Println("shutdown")
@@ -94,10 +95,13 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
-	traceCtx, cancelTrace := context.WithTimeout(context.Background(), 5*time.Second)
+	traceCtx, cancelTrace := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelTrace()
 	if err := traceShutdown(traceCtx); err != nil {
 		log.Printf("trace shutdown: %v", err)
+	}
+	if listenErr != nil && listenErr != http.ErrServerClosed {
+		os.Exit(1)
 	}
 }
 

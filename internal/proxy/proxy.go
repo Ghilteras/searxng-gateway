@@ -237,9 +237,7 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 			}
 		} else {
 			// SearXNG failed.
-			if sxRes.err != nil && ctx.Err() == nil && !errors.Is(sxRes.err, context.DeadlineExceeded) && !errors.Is(sxRes.err, context.Canceled) {
-				p.recordSearxngFailure()
-			} else if sxRes.err == nil && sxRes.resp == nil && sxCtx.Err() == nil && ctx.Err() == nil {
+			if timeoutCtx.Err() == nil {
 				p.recordSearxngFailure()
 			}
 			if sxRes.err != nil {
@@ -435,8 +433,8 @@ func (p *Proxy) observe(r *searxng.Response) {
 
 // retryWithBackoff calls fn up to maxAttempts with exponential backoff.
 //   - attempt 1: immediate
-//   - attempt 2: after 1s
-//   - attempt 3: after 2s (final)
+//   - attempt 2: after 250ms
+//   - attempt 3: after 500ms (final)
 //
 // Returns the last error if all retries fail.
 // All errors are retried — no 4xx/5xx distinction, no circuit breaker.
@@ -445,7 +443,7 @@ func (p *Proxy) observe(r *searxng.Response) {
 // and error_class. Without per-attempt metrics, the retry path is invisible
 // to monitoring when SearXNG succeeds on the first try.
 func (p *Proxy) retryWithBackoff(ctx context.Context, parent context.Context, fn func() (*searxng.Response, error)) (*searxng.Response, error) {
-	backoff := 1 * time.Second
+	backoff := 250 * time.Millisecond
 	const maxAttempts = 3
 
 	var lastErr error
@@ -476,7 +474,7 @@ func (p *Proxy) retryWithBackoff(ctx context.Context, parent context.Context, fn
 				return lastResp, ctx.Err()
 			case <-time.After(backoff):
 			}
-			backoff *= 2 // exponential: 1s -> 2s
+			backoff *= 2 // exponential: 250ms -> 500ms
 		}
 
 		_, callSpan := otel.Tracer("sx/internal/proxy").Start(attemptCtx, "searxng.http")

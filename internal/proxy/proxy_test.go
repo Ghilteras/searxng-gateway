@@ -1027,7 +1027,7 @@ func spanNames(spans []tracetest.SpanStub) []string {
 	return out
 }
 
-func TestSearxngChildTimeoutDoesNotTripCooldown(t *testing.T) {
+func TestSearxngChildBudgetExpiryTripsCooldown(t *testing.T) {
 	c, _ := cache.New(100, 0)
 	cfg := newCfg()
 	cfg.SearxngTimeout = 15 * time.Millisecond
@@ -1042,8 +1042,36 @@ func TestSearxngChildTimeoutDoesNotTripCooldown(t *testing.T) {
 	if _, err := p.Search(context.Background(), "child-timeout"); err != nil {
 		t.Fatal(err)
 	}
+	if !p.inCooldown() {
+		t.Fatal("SearXNG child budget expiry did not trip cooldown")
+	}
+}
+
+func TestSearxngParentBudgetExpiryDoesNotTripCooldown(t *testing.T) {
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.FallbackTimeout = 15 * time.Millisecond
+	cfg.SearxngTimeout = time.Second
+	cfg.SearxngFailThreshold = 1
+	cfg.T1PremiumCount = 0
+	sx := &contextSearxng{fn: func(ctx context.Context) (*searxng.Response, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	p := newTestProxy(cfg, sx, c, breaker.New())
+	callerCtx := context.Background()
+	started := time.Now()
+	if _, err := p.Search(callerCtx, "parent-timeout"); err == nil {
+		t.Fatal("expected error after parent request budget expired without results")
+	}
+	if time.Since(started) < cfg.FallbackTimeout {
+		t.Fatal("Search returned before the parent request budget expired")
+	}
+	if callerCtx.Err() != nil {
+		t.Fatalf("caller context unexpectedly expired: %v", callerCtx.Err())
+	}
 	if p.inCooldown() {
-		t.Fatal("intentional SearXNG child timeout tripped cooldown")
+		t.Fatal("overall parent budget expiry tripped SearXNG cooldown")
 	}
 }
 
