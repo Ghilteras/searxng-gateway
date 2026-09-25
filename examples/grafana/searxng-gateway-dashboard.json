@@ -1065,15 +1065,26 @@
         }
       },
       {
-        "title": "Response time p50 per engine (sec)",
+        "title": "Response time p50: /search vs SearXNG stage (sec)",
         "type": "timeseries",
-        "description": "p50 latency per engine. Yellow>2s, red>5s. Use p95/p99 panels for deeper.",
+        "description": "p50 of the complete /search handler and of the SearXNG retry stage. Budget is 8s total, 3s SearXNG stage. Per-engine timing is not measurable from the gateway; instrument SearXNG for that.",
         "datasource": null,
         "targets": [
           {
             "refId": "A",
-            "expr": "histogram_quantile(0.5, sum by (engine, le) (rate(searxng_gateway_request_duration_seconds_bucket{engine=~\".+\"}[$__rate_interval])))",
-            "legendFormat": "{{engine}}",
+            "expr": "histogram_quantile(0.5, sum by (le) (rate(searxng_gateway_search_request_duration_seconds_bucket[$__rate_interval])))",
+            "legendFormat": "/search handler",
+            "datasource": {
+              "name": "${datasource}"
+            },
+            "instant": false,
+            "range": true,
+            "hide": false
+          },
+          {
+            "refId": "B",
+            "expr": "histogram_quantile(0.5, sum by (le) (rate(searxng_gateway_searxng_stage_duration_seconds_bucket[$__rate_interval])))",
+            "legendFormat": "searxng stage",
             "datasource": {
               "name": "${datasource}"
             },
