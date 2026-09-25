@@ -147,6 +147,15 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	// Start T1 concurrently with SearXNG, but do not make its completion a
 	// prerequisite when SearXNG alone already supplies enough distinct URLs.
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// net/http recovery does not cover goroutines started here.
+				t1Ch <- t1PassResult{
+					usedPremiums: make(map[string]bool),
+					errMsgs:      []string{fmt.Sprintf("t1 pass panic: %v", r)},
+				}
+			}
+		}()
 		t1Ch <- p.runT1Pass(t1Ctx, key)
 	}()
 
@@ -283,6 +292,11 @@ func (p *Proxy) sufficient(r *searxng.Response) bool {
 	for _, result := range r.Results {
 		seenURLs[result.URL] = struct{}{}
 	}
+	if len(seenURLs) == 0 {
+		// With SUFFICIENT_MIN_RESULTS=0, 0 >= 0 would cancel T1 and skip
+		// fallback, turning a recoverable search into fallback_fail.
+		return false
+	}
 	return len(seenURLs) >= p.cfg.SufficientMinResults
 }
 
@@ -311,11 +325,22 @@ func (p *Proxy) runT1Pass(ctx context.Context, key string) t1PassResult {
 			providerSpan.End()
 			break
 		}
-		results, err := premium.Search(backends.SearchOptions{
-			Context:    providerCtx,
-			Query:      key,
-			NumResults: 10,
-		})
+		var results []backends.SearchResult
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// net/http recovery does not cover goroutines started here.
+					err = fmt.Errorf("panic: %v", r)
+					results = nil
+				}
+			}()
+			results, err = premium.Search(backends.SearchOptions{
+				Context:    providerCtx,
+				Query:      key,
+				NumResults: 10,
+			})
+		}()
 		providerSpan.SetAttributes(attribute.String("outcome", spanOutcome(err)), attribute.Int("result_count", len(results)))
 		providerSpan.End()
 		elapsed := time.Since(start)

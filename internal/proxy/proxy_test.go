@@ -140,6 +140,9 @@ func TestSufficientSearxngReturnsWithoutWaitingForT1(t *testing.T) {
 	cfg.T1PremiumCount = 1
 	cfg.SufficientMinResults = 3
 	p := newTestProxy(cfg, sx, c, breaker.New(), backend)
+	searxngOKBefore := outcomeCounter(t, "searxng_ok")
+	premiumOKBefore := outcomeCounter(t, "premium_ok")
+	searxngPlusPremiumOKBefore := outcomeCounter(t, "searxng_plus_premium_ok")
 
 	type searchResult struct {
 		response *searxng.Response
@@ -173,6 +176,40 @@ func TestSufficientSearxngReturnsWithoutWaitingForT1(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("T1 provider did not receive cancellation after the sufficient SearXNG response")
 	}
+	// T1 still runs and records provider work, but its discarded results must
+	// not change the request's outcome label.
+	if delta := outcomeCounter(t, "searxng_ok") - searxngOKBefore; delta != 1 {
+		t.Errorf("searxng_ok delta = %v, want 1", delta)
+	}
+	if delta := outcomeCounter(t, "premium_ok") - premiumOKBefore; delta != 0 {
+		t.Errorf("premium_ok delta = %v, want 0", delta)
+	}
+	if delta := outcomeCounter(t, "searxng_plus_premium_ok") - searxngPlusPremiumOKBefore; delta != 0 {
+		t.Errorf("searxng_plus_premium_ok delta = %v, want 0", delta)
+	}
+}
+
+func TestSufficientRequiresAtLeastOneDistinctURL(t *testing.T) {
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{}}}
+	backend := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "Premium", URL: "https://premium-only.com", Engine: "brave"},
+	}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.T1PremiumCount = 1
+	cfg.SufficientMinResults = 0
+	p := newTestProxy(cfg, sx, c, breaker.New(), backend)
+
+	out, err := p.Search(context.Background(), "empty-sx-zero-threshold")
+	if err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+	for _, result := range out.Results {
+		if result.URL == "https://premium-only.com" {
+			return
+		}
+	}
+	t.Fatal("premium result URL missing")
 }
 
 func TestSufficientThresholdUsesDistinctSearxngURLs(t *testing.T) {
