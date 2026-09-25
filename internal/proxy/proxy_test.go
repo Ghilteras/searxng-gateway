@@ -96,7 +96,7 @@ func newTestProxy(cfg *config.Config, sx searxng.Client, c *cache.Cache, breaker
 
 // --- Tests ---
 
-// TestSearchSearxngOK — SearXNG returns >= 10 results → sufficient, still calls 1 premium.
+// TestSearchSearxngOK — SearXNG returns enough results without needing premium results.
 func TestSearchSearxngOK(t *testing.T) {
 	sxRes := make([]searxng.Result, 10)
 	for i := range sxRes {
@@ -114,6 +114,91 @@ func TestSearchSearxngOK(t *testing.T) {
 	}
 	if len(out.Results) < 10 {
 		t.Errorf("len = %d, want >= 10", len(out.Results))
+	}
+}
+
+func TestSufficientSearxngReturnsWithoutWaitingForT1(t *testing.T) {
+	metrics.Init()
+	t1Started := make(chan struct{})
+	t1Canceled := make(chan struct{})
+	backend := &contextBackend{name: "brave", fn: func(ctx context.Context) ([]backends.SearchResult, error) {
+		close(t1Started)
+		<-ctx.Done()
+		close(t1Canceled)
+		return []backends.SearchResult{{Title: "premium", URL: "https://premium-only.com", Engine: "brave"}}, nil
+	}}
+	sx := &contextSearxng{fn: func(context.Context) (*searxng.Response, error) {
+		<-t1Started
+		return &searxng.Response{Results: []searxng.Result{
+			{Title: "S1", URL: "https://s1.com", Engine: "wikipedia"},
+			{Title: "S2", URL: "https://s2.com", Engine: "bing"},
+			{Title: "S3", URL: "https://s3.com", Engine: "bing"},
+		}}, nil
+	}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.T1PremiumCount = 1
+	cfg.SufficientMinResults = 3
+	p := newTestProxy(cfg, sx, c, breaker.New(), backend)
+
+	type searchResult struct {
+		response *searxng.Response
+		err      error
+	}
+	searchDone := make(chan searchResult, 1)
+	go func() {
+		response, err := p.Search(context.Background(), "sufficient-sx-fast-path")
+		searchDone <- searchResult{response: response, err: err}
+	}()
+
+	var got searchResult
+	select {
+	case got = <-searchDone:
+	case <-time.After(time.Second):
+		t.Fatal("Search waited for the blocked T1 provider despite sufficient SearXNG results")
+	}
+	if got.err != nil {
+		t.Fatalf("Search error = %v", got.err)
+	}
+	if len(got.response.Results) != 3 {
+		t.Fatalf("result count = %d, want 3 SearXNG results", len(got.response.Results))
+	}
+	for _, result := range got.response.Results {
+		if result.URL == "https://premium-only.com" {
+			t.Fatal("included T1 result on the SearXNG-sufficient fast path")
+		}
+	}
+	select {
+	case <-t1Canceled:
+	case <-time.After(time.Second):
+		t.Fatal("T1 provider did not receive cancellation after the sufficient SearXNG response")
+	}
+}
+
+func TestSufficientThresholdUsesDistinctSearxngURLs(t *testing.T) {
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
+		{Title: "S1", URL: "https://shared.com", Engine: "wikipedia"},
+		{Title: "S2 duplicate", URL: "https://shared.com", Engine: "bing"},
+		{Title: "S3", URL: "https://sx-only.com", Engine: "bing"},
+	}}}
+	backend := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "Premium", URL: "https://premium-only.com", Engine: "brave"},
+	}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.T1PremiumCount = 1
+	cfg.SufficientMinResults = 3
+	p := newTestProxy(cfg, sx, c, breaker.New(), backend)
+
+	out, err := p.Search(context.Background(), "distinct-sx-threshold")
+	if err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+	if len(out.Results) != 3 {
+		t.Fatalf("result count = %d, want 3 distinct URLs including T1", len(out.Results))
+	}
+	if out.Results[0].URL != "https://premium-only.com" {
+		t.Errorf("first URL = %q, want T1-first merge order", out.Results[0].URL)
 	}
 }
 
@@ -650,14 +735,14 @@ func TestT1PremiumPass_SerialNoOverlap(t *testing.T) {
 		mu:        &mu,
 	}
 
-	// SearXNG returns 1 result so the fallback loop never runs.
+	// SearXNG returns 1 result, so T1 must run; together they meet the threshold.
 	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
 		{Title: "SX", URL: "https://sx.com", Engine: "wikipedia"},
 	}}}
 	c, _ := cache.New(100, 0)
 	cfg := newCfg()
 	cfg.T1PremiumCount = 2
-	cfg.SufficientMinResults = 1
+	cfg.SufficientMinResults = 3
 	cfg.FallbackProviders = []string{"brave", "exa"}
 
 	// Register overlap backends into a fresh manager via newTestProxy-like construction.
@@ -1276,9 +1361,8 @@ func TestOutcomeLabels_DeterministicAcrossRepeats(t *testing.T) {
 		{Title: "D3", URL: "https://det-c.com", Engine: "wikipedia"},
 	}
 
-	// --- (i) T1 path: T1PremiumCount=1, premium and SearXNG return SAME URLs ---
-	// Premium runs first (T1 loop), adds URLs. SearXNG adds nothing new.
-	// outcome must be "premium_ok" every time.
+	// --- (i) T1 path: insufficient SearXNG makes the request wait for T1. ---
+	// Premium and SearXNG return the same URLs, so only premium contributes.
 	var firstURLs []string
 	for i := 0; i < iterations; i++ {
 		sx := &fakeSearxng{resp: &searxng.Response{Results: urls}}
@@ -1290,7 +1374,7 @@ func TestOutcomeLabels_DeterministicAcrossRepeats(t *testing.T) {
 		c, _ := cache.New(100, 0)
 		cfg := newCfg()
 		cfg.T1PremiumCount = 1
-		cfg.SufficientMinResults = 3
+		cfg.SufficientMinResults = 4
 		p := newTestProxy(cfg, sx, c, breaker.New(), fb)
 
 		beforePrem := outcomeCounter(t, "premium_ok")

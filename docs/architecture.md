@@ -2,7 +2,7 @@
 
 ## Overview
 
-`searxng-gateway` is an HTTP search gateway that sits in front of a SearXNG instance and a configurable pool of premium search providers. It uses **speculative execution** — starting SearXNG and the configured premium-provider pass concurrently, selecting providers via round-robin, and invoking premium providers **serially within each pass** (a deliberate design choice; see [Why the premium pass is serial](#why-the-premium-pass-is-serial-deliberate)) — then merges results with URL deduplication. If the merged count is insufficient, it loops through remaining providers until a target threshold is met or a timeout expires. The client never talks to SearXNG directly.
+`searxng-gateway` is an HTTP search gateway that sits in front of a SearXNG instance and a configurable pool of premium search providers. It uses **speculative execution** — starting SearXNG and the configured premium-provider pass concurrently, selecting providers via round-robin, and invoking premium providers **serially within each pass** (a deliberate design choice; see [Why the premium pass is serial](#why-the-premium-pass-is-serial-deliberate)). If SearXNG alone returns enough distinct URLs, the gateway returns without waiting for or merging premium results. Otherwise, it merges T1 results with URL deduplication and loops through remaining providers until a target threshold is met or a timeout expires. The client never talks to SearXNG directly.
 
 ```
 Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (primary)
@@ -16,7 +16,7 @@ Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (primary)
                          ├── Brave ──┐
                          ├── Exa     ├── round-robin alongside SearXNG;
                          ├── Jina    │   serial within the premium pass.
-                         └── Tavily ─┘
+                         └── Tavily ─┘   ignored if SearXNG alone meets threshold
                          │
                          └──▶ Fallback loop (if merged < SUFFICIENT_MIN_RESULTS)
                               Round-robin through remaining providers
@@ -28,21 +28,21 @@ Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (primary)
 1. **Normalise** the query (lowercase, collapse whitespace) and check the **LRU cache**. Cache hit returns immediately without calling any backend.
 2. **SearXNG cooldown check**: if SearXNG has hit `SEARXNG_FAIL_THRESHOLD` consecutive failures (default 6), it is skipped entirely for `SEARXNG_FAIL_COOLDOWN_SECONDS` (default 180s). Success resets the counter.
 3. **Speculative call**: SearXNG starts concurrently with the `T1_PREMIUM_COUNT` premium-provider pass. Providers are selected via atomic round-robin from `FALLBACK_PROVIDERS` and invoked **serially within that pass** (by design; see [Why the premium pass is serial](#why-the-premium-pass-is-serial-deliberate)).
-    - SearXNG is called with up to 3 attempts (250ms/500ms between attempts); the complete retry sequence shares the `SEARXNG_TIMEOUT_SECONDS` child budget, bounded by the overall request context.
-   - Each premium provider is called once; circuit-breaker-open providers are skipped.
-4. **Merge and deduplicate** all results by URL. Record per-engine metrics from SearXNG's `unresponsive_engines` field.
-5. **Bounded fallback loop**: if merged results < `SUFFICIENT_MIN_RESULTS` (default 1), remaining providers (those not already called this request) are tried via round-robin until the threshold is met, all providers are exhausted, or the overall `FALLBACK_TIMEOUT_SECONDS` budget (default 8) expires. At expiry, accumulated nonempty results are returned; an empty result set remains an error. Under-threshold results returned at the deadline are cached with the normal cache TTL.
+     - SearXNG is called with up to 3 attempts (250ms/500ms between attempts); the complete retry sequence shares the `SEARXNG_TIMEOUT_SECONDS` child budget, bounded by the overall request context.
+     - Each premium provider is called at most once; circuit-breaker-open providers are skipped.
+4. **SearXNG fast path / merge**: if SearXNG alone returns at least `SUFFICIENT_MIN_RESULTS` distinct URLs, cancel the speculative T1 context and return SearXNG results without waiting for or merging T1 output. Otherwise, wait for T1, merge T1 results before SearXNG results, and deduplicate by URL. Record per-engine metrics from SearXNG's `unresponsive_engines` field.
+5. **Bounded fallback loop**: if merged distinct URLs < `SUFFICIENT_MIN_RESULTS` (default 1), remaining providers (those not already called this request) are tried via round-robin until the threshold is met, all providers are exhausted, or the overall `FALLBACK_TIMEOUT_SECONDS` budget (default 8) expires. At expiry, accumulated nonempty results are returned; an empty result set remains an error. Under-threshold results returned at the deadline are cached with the normal cache TTL.
 6. **Outcome**: cache_hit, searxng_ok, premium_ok, searxng_plus_premium_ok, or fallback_fail.
 
 ## Why the premium pass is serial (deliberate)
 
-Both premium execution paths — the T1 hot-path loop (`proxy.go:119-159`) and the fallback `premiumLoop` (`proxy.go:268-340`) — invoke providers serially. This is a deliberate design choice, not a TODO to be fixed. The trade-offs behind the choice, and why concurrency is not the fix, are:
+Both premium execution paths — `runT1Pass` and the fallback `premiumLoop` — invoke providers serially. This is a deliberate design choice, not a TODO to be fixed. The trade-offs behind the choice, and why concurrency is not the fix, are:
 
-**1. Quota and rate-limit control.** The two paths differ here, and the argument is strongest for the fallback loop. In the fallback loop, concurrency defeats early stop: calls already launched cannot be un-launched even when the first provider alone would have sufficed, so it is strictly more billed calls (Brave ~1,000/mo, Exa ~2,800/mo, Tavily credits, Jina RPM/tokens). In the T1 hot path `T1_PREMIUM_COUNT` is an attempt budget rather than a guaranteed call count: the loop breaks once the deadline has passed and skips providers that are unavailable or circuit-broken (`proxy.go:119-127`), so concurrency would not generally bill more T1 calls; what it would remove is the inter-call spacing that provides best-effort pacing against per-second and per-minute caps (Brave QPS, Jina 500 RPM) — response-time spacing, not an explicit rate limiter — and under a tight deadline a fan-out could instead launch more calls before the deadline is observed. A single 4xx from any provider trips that engine's circuit breaker for 5 minutes — an availability cost, not just a metric blip.
+**1. Quota and rate-limit control.** The two paths differ here, and the argument is strongest for the fallback loop. In the fallback loop, concurrency defeats early stop: calls already launched cannot be un-launched even when the first provider alone would have sufficed, so it is strictly more billed calls (Brave ~1,000/mo, Exa ~2,800/mo, Tavily credits, Jina RPM/tokens). In the T1 pass, `T1_PREMIUM_COUNT` is an attempt budget rather than a guaranteed call count: the loop stops at the request deadline and skips providers that are unavailable or circuit-broken. Serial execution also preserves best-effort pacing against per-second and per-minute caps (Brave QPS, Jina 500 RPM) — response-time spacing, not an explicit rate limiter. A single 4xx from any provider trips that engine's circuit breaker for 5 minutes — an availability cost, not just a metric blip.
 
-**2. Attribution determinism.** Merge order is load-bearing and deliberately order-dependent. In the T1 path, premium results merge *before* SearXNG, so premium owns duplicate URLs. In the fallback loop, premium merges *after* SearXNG, so SearXNG owns them. Two existing tests (`TestOutcomeLabels_SearxngDuplicatesPremium`, `TestOutcomeLabels_PremiumDuplicatesSearxng`) pin the two opposite outcomes for identical-URL inputs. Concurrency would make merge order nondeterministic, so both labels and result ordering become nondeterministic.
+**2. Attribution determinism.** Merge order is load-bearing and deliberately order-dependent. When SearXNG is insufficient, T1 premium results merge *before* SearXNG, so premium owns duplicate URLs; in the fallback loop, premium merges *after* SearXNG, so SearXNG owns them. The SearXNG-sufficient fast path is deliberately SearXNG-only, even if T1 has already completed, so response contents and ordering do not depend on goroutine scheduling. Tests pin these cases.
 
-**3. Latency — the correct fix is context propagation, not parallelism.** `SearchOptions.Context` carries the request context through each built-in backend to its outbound HTTP requests (including both Exa MCP calls), so the total budget cancels an in-flight premium request instead of only checking between calls. The SearXNG retry sequence has a shorter child budget. Also, at `T1_PREMIUM_COUNT=1` there is nothing to overlap.
+**3. Latency — do not wait for T1 when it is unnecessary.** `SearchOptions.Context` carries the T1 context through each built-in backend to its outbound HTTP requests (including both Exa MCP calls). If SearXNG alone meets the distinct-URL threshold, the gateway cancels T1 and returns immediately; any already-issued provider request may still have consumed quota, and cancellation is cooperative. Insufficient-result searches retain speculative parallelism and wait for T1 before starting the bounded fallback loop.
 
 **Non-goal:** Do not convert these passes to a concurrent fan-out.
 
@@ -175,8 +175,8 @@ All configuration is via environment variables. Key variables:
 | `LISTEN_ADDR` | `:8080` | HTTP listen address |
 | `SEARXNG_BACKEND_URL` | `http://searxng-primary:8080` | SearXNG instance URL |
 | `FALLBACK_PROVIDERS` | `brave` | Comma-separated premium provider names |
-| `T1_PREMIUM_COUNT` | `0` | Number of providers to call in the hot path while SearXNG runs (serial by design; see [Why the premium pass is serial](#why-the-premium-pass-is-serial-deliberate)) |
-| `SUFFICIENT_MIN_RESULTS` | `1` | Target merged result count before fallback loop stops |
+| `T1_PREMIUM_COUNT` | `0` | Number of providers to call speculatively while SearXNG runs; results are ignored on the SearXNG-sufficient fast path (serial within T1; see [Why the premium pass is serial](#why-the-premium-pass-is-serial-deliberate)) |
+| `SUFFICIENT_MIN_RESULTS` | `1` | Target distinct-URL result count before fallback loop stops |
 | `FALLBACK_TIMEOUT_SECONDS` | `8` | Hard total budget for speculative execution + fallback loop; returns accumulated results on expiry |
 | `SEARXNG_TIMEOUT_SECONDS` | `3` | Total SearXNG stage budget shared across the request and retries/backoff |
 | `BRAVE_TIMEOUT_SECONDS` | `3` | HTTP timeout applied to every premium provider (legacy name) |
