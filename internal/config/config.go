@@ -36,10 +36,10 @@ func Load() (*Config, error) {
 		BraveAPIKey:       os.Getenv("BRAVE_API_KEY"),
 		FallbackProviders: parseProviderList(getEnv("FALLBACK_PROVIDERS", "brave")),
 		T1PremiumCount:    getEnvInt("T1_PREMIUM_COUNT", 0),
-		FallbackTimeout:   time.Duration(getEnvInt("FALLBACK_TIMEOUT_SECONDS", 18)) * time.Second,
-		SearxngTimeout:    time.Duration(getEnvInt("SEARXNG_TIMEOUT_SECONDS", 8)) * time.Second,
+		FallbackTimeout:   time.Duration(getEnvInt("FALLBACK_TIMEOUT_SECONDS", 8)) * time.Second,
+		SearxngTimeout:    time.Duration(getEnvInt("SEARXNG_TIMEOUT_SECONDS", 3)) * time.Second,
 		// BRAVE_TIMEOUT_SECONDS is retained for compatibility and configures every premium backend.
-		BraveTimeout:         time.Duration(getEnvInt("BRAVE_TIMEOUT_SECONDS", 5)) * time.Second,
+		BraveTimeout:         time.Duration(getEnvInt("BRAVE_TIMEOUT_SECONDS", 3)) * time.Second,
 		CacheSize:            getEnvInt("CACHE_SIZE", 1000),
 		CacheTTL:             time.Duration(getEnvInt("CACHE_TTL_SECONDS", 3600)) * time.Second,
 		LogLevel:             getEnv("LOG_LEVEL", "info"),

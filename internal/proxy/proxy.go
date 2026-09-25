@@ -31,6 +31,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"sx/backends"
 	"sx/internal/breaker"
 	"sx/internal/cache"
@@ -70,13 +74,19 @@ func New(cfg *config.Config, sx searxng.Client, c *cache.Cache, breakerMgr *brea
 //   - fallback_fail:              all providers exhausted with no results.
 //   - timeout:                    The overall request budget expired before any results were collected.
 func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, error) {
+	ctx, span := otel.Tracer("sx/internal/proxy").Start(ctx, "proxy.search")
+	defer span.End()
 	key := normalize(raw)
 
 	// 1. Cache check.
 	if v, ok := p.c.Get(key); ok {
+		span.AddEvent("cache.hit", trace.WithAttributes(traceAttrs("cache_hit")...))
+		span.SetAttributes(attribute.String("outcome", "cache_hit"), attribute.Int("result_count", resultCount(v.(*searxng.Response))))
+		span.SetStatus(codes.Ok, "")
 		metrics.RequestsTotal.WithLabelValues("cache_hit").Inc()
 		return v.(*searxng.Response), nil
 	}
+	span.AddEvent("cache.miss", trace.WithAttributes(traceAttrs("cache_miss")...))
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, p.cfg.FallbackTimeout)
 	defer cancel()
@@ -96,19 +106,23 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 
 	// 3. Channel to collect SearXNG result from goroutine.
 	type sxResult struct {
-		resp    *searxng.Response
-		err     error
-		elapsed time.Duration
+		resp *searxng.Response
+		err  error
 	}
 	sxCh := make(chan sxResult, 1)
 
 	if !sxSkipped {
 		go func() {
 			start := time.Now()
-			resp, err := p.retryWithBackoff(sxCtx, func() (*searxng.Response, error) {
+			stageCtx, stageSpan := otel.Tracer("sx/internal/proxy").Start(ctx, "searxng.stage")
+			resp, err := p.retryWithBackoff(sxCtx, stageCtx, func() (*searxng.Response, error) {
 				return p.sx.Search(sxCtx, key)
 			})
-			sxCh <- sxResult{resp: resp, err: err, elapsed: time.Since(start)}
+			elapsed := time.Since(start)
+			stageSpan.SetAttributes(attribute.String("phase", "searxng"), attribute.String("outcome", searxngOutcome(resp, err)), attribute.Int("result_count", resultCount(resp)))
+			stageSpan.End()
+			metrics.SearxngStageDuration.Observe(elapsed.Seconds())
+			sxCh <- sxResult{resp: resp, err: err}
 		}()
 	} else {
 		// Cooldown active: signal SearXNG skipped.
@@ -127,13 +141,21 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		}
 		usedPremiums[premium.Name()] = true
 		start := time.Now()
+		providerCtx, providerSpan := otel.Tracer("sx/internal/proxy").Start(timeoutCtx, "premium.t1")
+		providerSpan.SetAttributes(attribute.String("provider", premium.Name()), attribute.String("phase", "t1"))
+		if timeoutCtx.Err() != nil {
+			providerSpan.End()
+			break
+		}
 		results, err := premium.Search(backends.SearchOptions{
-			Context:    timeoutCtx,
+			Context:    providerCtx,
 			Query:      key,
 			NumResults: 10,
 		})
+		providerSpan.SetAttributes(attribute.String("outcome", spanOutcome(err)), attribute.Int("result_count", len(results)))
+		providerSpan.End()
 		elapsed := time.Since(start)
-		metrics.RequestDuration.WithLabelValues(premium.Name(), premium.Name()).Observe(elapsed.Seconds())
+		metrics.RequestDuration.WithLabelValues(premium.Name(), "t1").Observe(elapsed.Seconds())
 
 		if err != nil {
 			if isClientError(err.Error()) {
@@ -160,11 +182,15 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	}
 
 	// 5. Collect SearXNG result.
-	if sxResult, ok := <-sxCh; ok {
-		if sxResult.err == nil && sxResult.resp != nil {
+	_, waitSpan := otel.Tracer("sx/internal/proxy").Start(ctx, "searxng.result_wait")
+	sxRes, sxAvailable := <-sxCh
+	waitSpan.SetAttributes(attribute.String("phase", "searxng"), attribute.String("outcome", map[bool]string{true: "completed", false: "skipped"}[sxAvailable]))
+	waitSpan.End()
+	if sxAvailable {
+		if sxRes.err == nil && sxRes.resp != nil {
 			// Per-engine metrics from SearXNG response.
 			seenEngines := make(map[string]struct{})
-			for _, result := range sxResult.resp.Results {
+			for _, result := range sxRes.resp.Results {
 				if result.Engine != "" {
 					metrics.EngineResultsTotal.WithLabelValues(result.Engine).Inc()
 					metrics.EngineStatus.WithLabelValues(result.Engine).Set(1)
@@ -179,13 +205,12 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 				}
 			}
 			for eng := range seenEngines {
-				metrics.RequestDuration.WithLabelValues("searxng", eng).Observe(sxResult.elapsed.Seconds())
 				p.breakerMgr.RecordEngineSeen(eng)
 				p.breakerMgr.RecordSuccess(eng)
 			}
 			// Handle unresponsive engines.
 			unresponsiveSet := make(map[string]string)
-			for _, ue := range sxResult.resp.UnresponsiveEngines {
+			for _, ue := range sxRes.resp.UnresponsiveEngines {
 				if len(ue) >= 2 {
 					unresponsiveSet[ue[0]] = ue[1]
 				}
@@ -203,7 +228,7 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 
 			// Merge SearXNG results into allResults (dedup by URL).
 			// Outcome label is set once at the end (step 7).
-			for _, r := range sxResult.resp.Results {
+			for _, r := range sxRes.resp.Results {
 				if !seenURLs[r.URL] {
 					seenURLs[r.URL] = true
 					allResults = append(allResults, r)
@@ -212,17 +237,24 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 			}
 		} else {
 			// SearXNG failed.
-			p.recordSearxngFailure()
-			if sxResult.err != nil {
-				premiumErrMsgs = append(premiumErrMsgs, fmt.Sprintf("searxng: %v", sxResult.err))
+			if sxRes.err != nil && ctx.Err() == nil && !errors.Is(sxRes.err, context.DeadlineExceeded) && !errors.Is(sxRes.err, context.Canceled) {
+				p.recordSearxngFailure()
+			} else if sxRes.err == nil && sxRes.resp == nil && sxCtx.Err() == nil && ctx.Err() == nil {
+				p.recordSearxngFailure()
+			}
+			if sxRes.err != nil {
+				premiumErrMsgs = append(premiumErrMsgs, fmt.Sprintf("searxng: %v", sxRes.err))
 			}
 		}
 	}
 
 	// 6. Fallback loop: all remaining FALLBACK_PROVIDERS (skips already-used).
 	if len(allResults) < p.cfg.SufficientMinResults {
+		fallbackCtx, fallbackSpan := otel.Tracer("sx/internal/proxy").Start(timeoutCtx, "fallback.loop")
 		allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs =
-			p.premiumLoop(timeoutCtx, key, allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs)
+			p.premiumLoop(fallbackCtx, key, allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs)
+		fallbackSpan.SetAttributes(attribute.String("phase", "fallback"), attribute.Int("result_count", len(allResults)), attribute.String("outcome", "complete"))
+		fallbackSpan.End()
 	}
 
 	// 7. Outcome.
@@ -232,6 +264,8 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 			outcome = "timeout"
 		}
 		metrics.RequestsTotal.WithLabelValues(outcome).Inc()
+		span.SetAttributes(attribute.String("outcome", outcome), attribute.Int("result_count", 0))
+		span.SetStatus(codes.Error, "")
 		errDetail := "all fallbacks failed"
 		if len(premiumErrMsgs) > 0 {
 			errDetail = strings.Join(premiumErrMsgs, "; ")
@@ -246,6 +280,8 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		outcome = "premium_ok"
 	}
 	metrics.RequestsTotal.WithLabelValues(outcome).Inc()
+	span.SetAttributes(attribute.String("outcome", outcome), attribute.Int("result_count", len(allResults)))
+	span.SetStatus(codes.Ok, "")
 
 	mapped := &searxng.Response{Results: allResults}
 	p.observe(mapped)
@@ -298,14 +334,22 @@ func (p *Proxy) premiumLoop(
 		}
 
 		// Call the premium backend.
+		providerCtx, providerSpan := otel.Tracer("sx/internal/proxy").Start(ctx, "premium.fallback")
+		providerSpan.SetAttributes(attribute.String("provider", premium.Name()), attribute.String("phase", "fallback"))
+		if ctx.Err() != nil {
+			providerSpan.End()
+			break
+		}
 		start := time.Now()
 		results, err := premium.Search(backends.SearchOptions{
-			Context:    ctx,
+			Context:    providerCtx,
 			Query:      key,
 			NumResults: 10,
 		})
+		providerSpan.SetAttributes(attribute.String("outcome", spanOutcome(err)), attribute.Int("result_count", len(results)))
+		providerSpan.End()
 		elapsed := time.Since(start)
-		metrics.RequestDuration.WithLabelValues(premium.Name(), premium.Name()).Observe(elapsed.Seconds())
+		metrics.RequestDuration.WithLabelValues(premium.Name(), "fallback").Observe(elapsed.Seconds())
 
 		if err != nil {
 			if isClientError(err.Error()) {
@@ -400,7 +444,7 @@ func (p *Proxy) observe(r *searxng.Response) {
 // Metrics (v0.8.1): every attempt is instrumented with attempt, outcome,
 // and error_class. Without per-attempt metrics, the retry path is invisible
 // to monitoring when SearXNG succeeds on the first try.
-func (p *Proxy) retryWithBackoff(ctx context.Context, fn func() (*searxng.Response, error)) (*searxng.Response, error) {
+func (p *Proxy) retryWithBackoff(ctx context.Context, parent context.Context, fn func() (*searxng.Response, error)) (*searxng.Response, error) {
 	backoff := 1 * time.Second
 	const maxAttempts = 3
 
@@ -408,20 +452,37 @@ func (p *Proxy) retryWithBackoff(ctx context.Context, fn func() (*searxng.Respon
 	var lastResp *searxng.Response
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			if lastErr != nil {
+				return lastResp, lastErr
+			}
+			return lastResp, ctx.Err()
+		}
+		attemptCtx, attemptSpan := otel.Tracer("sx/internal/proxy").Start(parent, "searxng.attempt")
+		attemptSpan.SetAttributes(attribute.Int("attempt", attempt), attribute.String("phase", "searxng"))
 		if attempt > 1 {
+			attemptSpan.AddEvent("retry.backoff", trace.WithAttributes(traceAttrs("backoff")...))
 			select {
 			case <-ctx.Done():
+				attemptSpan.SetAttributes(attribute.String("outcome", "cancelled"))
+				attemptSpan.End()
 				// Context cancelled while waiting between attempts.
 				metrics.RetryAttemptsTotal.WithLabelValues(
 					fmt.Sprintf("%d", attempt), "cancelled", "cancelled",
 				).Inc()
+				if lastErr != nil {
+					return lastResp, lastErr
+				}
 				return lastResp, ctx.Err()
 			case <-time.After(backoff):
 			}
 			backoff *= 2 // exponential: 1s -> 2s
 		}
 
+		_, callSpan := otel.Tracer("sx/internal/proxy").Start(attemptCtx, "searxng.http")
 		resp, err := fn()
+		callSpan.SetAttributes(attribute.String("phase", "searxng"), attribute.Int("attempt", attempt), attribute.String("outcome", spanOutcome(err)), attribute.Int("result_count", resultCount(resp)))
+		callSpan.End()
 		outcome := "success"
 		errClass := "none"
 		if err != nil {
@@ -433,8 +494,12 @@ func (p *Proxy) retryWithBackoff(ctx context.Context, fn func() (*searxng.Respon
 		).Inc()
 
 		if err == nil {
+			attemptSpan.SetAttributes(attribute.String("outcome", "success"))
+			attemptSpan.End()
 			return resp, nil
 		}
+		attemptSpan.SetAttributes(attribute.String("outcome", "error"))
+		attemptSpan.End()
 		lastErr = err
 		lastResp = resp
 	}
@@ -447,6 +512,31 @@ func (p *Proxy) retryWithBackoff(ctx context.Context, fn func() (*searxng.Respon
 	metrics.RetryAttemptsTotal.WithLabelValues("final", "exhausted", errClass).Inc()
 	metrics.RetryExhaustedTotal.WithLabelValues(errClass).Inc()
 	return lastResp, lastErr
+}
+
+func traceAttrs(value string) []attribute.KeyValue {
+	return []attribute.KeyValue{attribute.String("outcome", value)}
+}
+func spanOutcome(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "success"
+}
+func searxngOutcome(resp *searxng.Response, err error) string {
+	if err != nil {
+		return spanOutcome(err)
+	}
+	if resp == nil {
+		return "error"
+	}
+	return "success"
+}
+func resultCount(r *searxng.Response) int {
+	if r == nil {
+		return 0
+	}
+	return len(r.Results)
 }
 
 // classifyError maps an error to a Prometheus label value for retry metrics.

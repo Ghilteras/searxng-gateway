@@ -4,12 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"sx/backends"
 	"sx/internal/breaker"
@@ -68,6 +74,7 @@ func newCfg() *config.Config {
 	return &config.Config{
 		SearxngBackendURL:    "http://searxng-primary:8080",
 		FallbackTimeout:      30 * time.Second,
+		SearxngTimeout:       time.Second,
 		CacheTTL:             time.Hour,
 		SearxngFailThreshold: 6,
 		SearxngFailCooldown:  180 * time.Second,
@@ -858,6 +865,371 @@ func TestSearchDoesNotStartPremiumAfterDeadline(t *testing.T) {
 	if got := secondCalls.Load(); got != 0 {
 		t.Fatalf("second provider started %d times after deadline", got)
 	}
+}
+
+func TestCallerCancellationStopsProviderWork(t *testing.T) {
+	metrics.Init()
+	before := outcomeCounter(t, "fallback_fail")
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.FallbackTimeout = time.Second
+	cfg.SearxngTimeout = time.Second
+	cfg.T1PremiumCount = 2
+	cfg.FallbackProviders = []string{"brave", "exa"}
+	started := make(chan struct{})
+	first := &contextBackend{name: "brave", fn: func(ctx context.Context) ([]backends.SearchResult, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	var secondCalls atomic.Int64
+	second := &contextBackend{name: "exa", fn: func(context.Context) ([]backends.SearchResult, error) { secondCalls.Add(1); return nil, nil }}
+	var sxCalls atomic.Int64
+	sxCanceled := make(chan struct{})
+	sx := &contextSearxng{fn: func(ctx context.Context) (*searxng.Response, error) {
+		sxCalls.Add(1)
+		<-ctx.Done()
+		close(sxCanceled)
+		return nil, ctx.Err()
+	}}
+	p := newTestProxy(cfg, sx, c, breaker.New(), first, second)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := p.Search(ctx, "cancel-provider"); done <- err }()
+	<-started
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("expected canceled request error")
+	}
+	if sxCalls.Load() > 0 {
+		select {
+		case <-sxCanceled:
+		default:
+			t.Fatal("in-flight SearXNG work did not observe cancellation")
+		}
+	}
+	if got := secondCalls.Load(); got != 0 {
+		t.Fatalf("second provider started after cancellation: %d", got)
+	}
+	if p.inCooldown() {
+		t.Fatal("caller cancellation tripped SearXNG cooldown")
+	}
+	if got := outcomeCounter(t, "fallback_fail") - before; got != 1 {
+		t.Fatalf("request outcome count delta = %v, want exactly one fallback_fail", got)
+	}
+}
+
+func TestTracingSpanTreeAndSanitization(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	previous := otel.GetTracerProvider()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter), sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()); otel.SetTracerProvider(previous) })
+
+	const querySecret = "QUERY-SENTINEL-73d9"
+	const titleSecret = "TITLE-SENTINEL-4c2a"
+	const bodySecret = "BODY-SECRET-552a"
+	var attempts atomic.Int64
+	sx := &contextSearxng{fn: func(context.Context) (*searxng.Response, error) {
+		if attempts.Add(1) == 1 {
+			return nil, errors.New("secret error body")
+		}
+		return &searxng.Response{Results: []searxng.Result{{Title: titleSecret, URL: "https://private.example/path?q=hidden", Content: bodySecret, Engine: "engine"}}}, nil
+	}}
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{{Title: "fallback", URL: "https://fallback.example", Engine: "brave"}}}
+	fb2 := &fakeBackend{name: "exa", avail: true, results: []backends.SearchResult{{Title: "fallback2", URL: "https://fallback2.example", Engine: "exa"}}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.T1PremiumCount = 1
+	cfg.SufficientMinResults = 5
+	cfg.SearxngTimeout = 5 * time.Second
+	cfg.FallbackProviders = []string{"brave", "exa"}
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb, fb2)
+	ctx, request := otel.Tracer("test").Start(context.Background(), "http.server /search")
+	_, err := p.Search(ctx, querySecret)
+	request.End()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spans := exporter.GetSpans()
+	byName := make(map[string]tracetest.SpanStub)
+	for _, s := range spans {
+		byName[s.Name] = s
+	}
+	proxySpan, ok := byName["proxy.search"]
+	if !ok {
+		t.Fatalf("missing proxy span; got %v", spanNames(spans))
+	}
+	stage, ok := byName["searxng.stage"]
+	if !ok {
+		t.Fatalf("missing SearXNG stage; got %v", spanNames(spans))
+	}
+	prem, ok := byName["premium.t1"]
+	if !ok {
+		t.Fatalf("missing T1 provider span; got %v", spanNames(spans))
+	}
+	if stage.Parent.SpanID() != proxySpan.SpanContext.SpanID() || prem.Parent.SpanID() != proxySpan.SpanContext.SpanID() {
+		t.Fatalf("SearXNG stage and T1 must be siblings under proxy: stage parent=%s t1 parent=%s proxy=%s", stage.Parent.SpanID(), prem.Parent.SpanID(), proxySpan.SpanContext.SpanID())
+	}
+	foundAttempt, foundBackoff := false, false
+	for i := range spans {
+		if spans[i].Name != "searxng.attempt" {
+			continue
+		}
+		foundAttempt = true
+		if spans[i].Parent.SpanID() != stage.SpanContext.SpanID() {
+			t.Fatal("retry attempt is not child of SearXNG stage")
+		}
+		for _, event := range spans[i].Events {
+			if event.Name == "retry.backoff" {
+				foundBackoff = true
+			}
+		}
+	}
+	if !foundAttempt {
+		t.Fatal("retry attempt span missing")
+	}
+	fallbackLoop, ok := byName["fallback.loop"]
+	if !ok {
+		t.Fatalf("missing fallback loop span; got %v", spanNames(spans))
+	}
+	fallbackProvider, ok := byName["premium.fallback"]
+	if !ok || fallbackProvider.Parent.SpanID() != fallbackLoop.SpanContext.SpanID() {
+		t.Fatal("fallback provider span is not a child of fallback loop")
+	}
+	if _, ok := byName["searxng.result_wait"]; !ok {
+		t.Fatal("missing SearXNG result wait span")
+	}
+	if !foundBackoff {
+		t.Fatal("retry backoff event missing")
+	}
+	for _, s := range spans {
+		for _, a := range s.Attributes {
+			if strings.Contains(a.Value.AsString(), "SENTINEL") || strings.Contains(a.Value.AsString(), "SECRET") || strings.Contains(a.Value.AsString(), "private.example") {
+				t.Fatalf("sensitive attr leaked in %s: %v", s.Name, a)
+			}
+		}
+		for _, e := range s.Events {
+			for _, a := range e.Attributes {
+				if strings.Contains(a.Value.AsString(), "SENTINEL") || strings.Contains(a.Value.AsString(), "SECRET") {
+					t.Fatalf("sensitive event leaked in %s: %v", s.Name, a)
+				}
+			}
+		}
+	}
+}
+
+func spanNames(spans []tracetest.SpanStub) []string {
+	out := make([]string, 0, len(spans))
+	for _, s := range spans {
+		out = append(out, s.Name)
+	}
+	return out
+}
+
+func TestSearxngChildTimeoutDoesNotTripCooldown(t *testing.T) {
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.SearxngTimeout = 15 * time.Millisecond
+	cfg.FallbackTimeout = time.Second
+	cfg.SearxngFailThreshold = 1
+	cfg.T1PremiumCount = 1
+	sx := &contextSearxng{fn: func(ctx context.Context) (*searxng.Response, error) { <-ctx.Done(); return nil, ctx.Err() }}
+	fb := &contextBackend{name: "brave", fn: func(ctx context.Context) ([]backends.SearchResult, error) {
+		return []backends.SearchResult{{URL: "https://partial", Engine: "brave"}}, nil
+	}}
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+	if _, err := p.Search(context.Background(), "child-timeout"); err != nil {
+		t.Fatal(err)
+	}
+	if p.inCooldown() {
+		t.Fatal("intentional SearXNG child timeout tripped cooldown")
+	}
+}
+
+func TestSearxngGenuineFailureTripsCooldown(t *testing.T) {
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.SearxngFailThreshold = 1
+	cfg.SearxngTimeout = 80 * time.Millisecond
+	cfg.SufficientMinResults = 1
+	p := newTestProxy(cfg, &fakeSearxng{err: errors.New("upstream 503")}, c, breaker.New())
+	_, _ = p.Search(context.Background(), "real-error")
+	if !p.inCooldown() {
+		t.Fatal("genuine SearXNG failure did not trip cooldown")
+	}
+}
+
+func TestTracingCacheErrorAndPartialResults(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	previous := otel.GetTracerProvider()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter), sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()); otel.SetTracerProvider(previous) })
+
+	c, _ := cache.New(100, 0)
+	c.Set("cached", &searxng.Response{Results: []searxng.Result{{URL: "https://cached"}}})
+	cfg := newCfg()
+	cfg.FallbackTimeout = 200 * time.Millisecond
+	cfg.SearxngTimeout = 20 * time.Millisecond
+	cfg.T1PremiumCount = 1
+	cfg.SufficientMinResults = 10
+	partialBackend := &contextBackend{name: "brave", fn: func(context.Context) ([]backends.SearchResult, error) {
+		return []backends.SearchResult{{URL: "https://partial", Engine: "brave"}}, nil
+	}}
+	p := newTestProxy(cfg, &contextSearxng{fn: func(ctx context.Context) (*searxng.Response, error) { <-ctx.Done(); return nil, ctx.Err() }}, c, breaker.New(), partialBackend)
+	if _, err := p.Search(context.Background(), "cached"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Search(context.Background(), "partial")
+	if err != nil || len(result.Results) != 1 {
+		t.Fatalf("partial response=%v err=%v", result, err)
+	}
+	// Cooldown makes the failing request deterministic without retry delay.
+	failing := &contextBackend{name: "brave", fn: func(context.Context) ([]backends.SearchResult, error) { return nil, errors.New("ERROR-SECRET") }}
+	pErr := newTestProxy(cfg, &fakeSearxng{}, c, breaker.New(), failing)
+	pErr.sxCooldownTil.Store(time.Now().Add(time.Minute).UnixNano())
+	if _, err := pErr.Search(context.Background(), "error-path"); err == nil {
+		t.Fatal("expected provider failure")
+	}
+	spans := exporter.GetSpans()
+	cacheEvent, sawError, sawPartial := false, false, false
+	for _, s := range spans {
+		if s.Name == "proxy.search" && s.Status.Code == codes.Error {
+			sawError = true
+		}
+		for _, event := range s.Events {
+			if event.Name == "cache.hit" {
+				cacheEvent = true
+			}
+		}
+		for _, attr := range s.Attributes {
+			if strings.Contains(attr.Value.AsString(), "ERROR-SECRET") {
+				t.Fatalf("raw error leaked into span %s", s.Name)
+			}
+		}
+		if s.Name == "premium.t1" {
+			for _, attr := range s.Attributes {
+				if attr.Key == "result_count" && attr.Value.AsInt64() == 1 {
+					sawPartial = true
+				}
+			}
+		}
+	}
+	if !cacheEvent || !sawError || !sawPartial {
+		t.Fatalf("trace paths missing cache=%v error=%v partial=%v; spans=%v", cacheEvent, sawError, sawPartial, spanNames(spans))
+	}
+}
+
+func TestLatencyHistogramsUseTruthfulStageAndProviderSamples(t *testing.T) {
+	metrics.Init()
+	beforeStage := histogramSampleCount(t, "searxng_gateway_searxng_stage_duration_seconds")
+	beforeProvider := histogramSampleCount(t, "searxng_gateway_provider_duration_seconds")
+	c, _ := cache.New(100, 0)
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
+		{URL: "https://a", Engine: "engine-a"}, {URL: "https://b", Engine: "engine-b"},
+	}}}
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{{URL: "https://c", Engine: "brave"}}}
+	cfg := newCfg()
+	cfg.T1PremiumCount = 1
+	cfg.SufficientMinResults = 10
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+	if _, err := p.Search(context.Background(), "metric-contract"); err != nil {
+		t.Fatal(err)
+	}
+	if got := histogramSampleCount(t, "searxng_gateway_searxng_stage_duration_seconds") - beforeStage; got != 1 {
+		t.Fatalf("stage samples = %d, want 1 independent of 2 engines", got)
+	}
+	if got := histogramSampleCount(t, "searxng_gateway_provider_duration_seconds") - beforeProvider; got != 1 {
+		t.Fatalf("provider samples = %d, want one actual premium call", got)
+	}
+	if got := histogramSampleCount(t, "searxng_gateway_request_duration_seconds"); got != 0 {
+		t.Fatalf("legacy engine-labelled request histogram has %d samples", got)
+	}
+	for _, mf := range gatherMetricFamily(t, "searxng_gateway_provider_duration_seconds") {
+		for _, metric := range mf.GetMetric() {
+			labels := map[string]string{}
+			for _, l := range metric.GetLabel() {
+				labels[l.GetName()] = l.GetValue()
+			}
+			if _, exists := labels["engine"]; exists {
+				t.Fatalf("provider histogram falsely has engine label: %v", labels)
+			}
+		}
+	}
+	if got := histogramSampleCountForLabels(t, "searxng_gateway_provider_duration_seconds", map[string]string{"provider": "brave", "phase": "t1"}); got < 1 {
+		t.Fatalf("missing truthful T1 provider duration series: %d", got)
+	}
+}
+
+func TestSearxngStageHistogramRecordsFailureAndSkipsCooldown(t *testing.T) {
+	metrics.Init()
+	before := histogramSampleCount(t, "searxng_gateway_searxng_stage_duration_seconds")
+	cfg := newCfg()
+	cfg.SearxngTimeout = 12 * time.Millisecond
+	cfg.FallbackTimeout = time.Second
+	cfg.SufficientMinResults = 10
+	c, _ := cache.New(100, 0)
+	sx := &contextSearxng{fn: func(ctx context.Context) (*searxng.Response, error) { return nil, errors.New("upstream failed") }}
+	p := newTestProxy(cfg, sx, c, breaker.New())
+	_, _ = p.Search(context.Background(), "stage-failure")
+	if got := histogramSampleCount(t, "searxng_gateway_searxng_stage_duration_seconds") - before; got != 1 {
+		t.Fatalf("failed stage samples = %d, want 1", got)
+	}
+	p2 := newTestProxy(cfg, sx, c, breaker.New())
+	p2.sxCooldownTil.Store(time.Now().Add(time.Minute).UnixNano())
+	_, _ = p2.Search(context.Background(), "stage-skipped")
+	if got := histogramSampleCount(t, "searxng_gateway_searxng_stage_duration_seconds") - before - 1; got != 0 {
+		t.Fatalf("skipped stage samples = %d, want 0", got)
+	}
+}
+
+func histogramSampleCount(t *testing.T, name string) uint64 {
+	t.Helper()
+	var total uint64
+	for _, mf := range gatherMetricFamily(t, name) {
+		for _, m := range mf.GetMetric() {
+			total += m.GetHistogram().GetSampleCount()
+		}
+	}
+	return total
+}
+
+func histogramSampleCountForLabels(t *testing.T, name string, wanted map[string]string) uint64 {
+	t.Helper()
+	var count uint64
+	for _, mf := range gatherMetricFamily(t, name) {
+		for _, m := range mf.GetMetric() {
+			labels := map[string]string{}
+			for _, l := range m.GetLabel() {
+				labels[l.GetName()] = l.GetValue()
+			}
+			match := true
+			for k, v := range wanted {
+				if labels[k] != v {
+					match = false
+				}
+			}
+			if match {
+				count += m.GetHistogram().GetSampleCount()
+			}
+		}
+	}
+	return count
+}
+
+func gatherMetricFamily(t *testing.T, name string) []*dto.MetricFamily {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == name {
+			return []*dto.MetricFamily{mf}
+		}
+	}
+	return nil
 }
 
 // TestOutcomeLabels_DeterministicAcrossRepeats verifies that outcome metric

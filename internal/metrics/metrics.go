@@ -24,16 +24,26 @@ var (
 		[]string{"outcome"},
 	)
 
-	// RequestDuration tracks request latency in seconds, labelled by source backend
-	// and engine. source ∈ {searxng, <premium-provider-name>}, engine ∈ {<provider-name>, <searxng-engine-name>}.
+	// RequestDuration tracks actual premium-provider calls, labeled by provider and phase.
 	RequestDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "searxng_gateway_request_duration_seconds",
-			Help:    "Request duration in seconds per source and engine",
-			Buckets: prometheus.DefBuckets,
+			Name:    "searxng_gateway_provider_duration_seconds",
+			Help:    "Duration in seconds for an actual premium-provider call",
+			Buckets: durationBuckets,
 		},
-		[]string{"source", "engine"},
+		[]string{"provider", "phase"},
 	)
+
+	SearxngStageDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "searxng_gateway_searxng_stage_duration_seconds",
+		Help:    "Duration of a complete SearXNG HTTP retry stage",
+		Buckets: durationBuckets,
+	})
+	SearchRequestDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "searxng_gateway_search_request_duration_seconds",
+		Help:    "Duration of the complete /search handler including response writing",
+		Buckets: durationBuckets,
+	})
 
 	// ResultsCount is a histogram of the number of results returned per request.
 	ResultsCount = prometheus.NewHistogram(prometheus.HistogramOpts{
@@ -159,12 +169,14 @@ var (
 	)
 )
 
+var durationBuckets = []float64{1, 2, 3, 4, 5, 8, 10, 15, 20, 30}
+
 var initOnce sync.Once
 
 // Init registers all Prometheus collectors with the default registerer.
 // It is safe to call multiple times — subsequent calls are no-ops.
 func Init() {
 	initOnce.Do(func() {
-		prometheus.MustRegister(RequestsTotal, RequestDuration, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveRateLimitRemaining, BraveRateLimitLimit, BraveRateLimitResetSeconds, SerperSearchesRemaining, SerperSearchesLimit)
+		prometheus.MustRegister(RequestsTotal, RequestDuration, SearxngStageDuration, SearchRequestDuration, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveRateLimitRemaining, BraveRateLimitLimit, BraveRateLimitResetSeconds, SerperSearchesRemaining, SerperSearchesLimit)
 	})
 }

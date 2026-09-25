@@ -1,6 +1,9 @@
 package metrics
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestInitIdempotent(t *testing.T) {
 	Init() // first
@@ -17,5 +20,12 @@ func TestRequestsTotalNotNil(t *testing.T) {
 	Init()
 	if RequestsTotal == nil {
 		t.Fatal("RequestsTotal is nil after Init")
+	}
+}
+
+func TestLatencyBucketBoundaries(t *testing.T) {
+	want := []float64{1, 2, 3, 4, 5, 8, 10, 15, 20, 30}
+	if !reflect.DeepEqual(durationBuckets, want) {
+		t.Fatalf("latency buckets = %v, want %v", durationBuckets, want)
 	}
 }
