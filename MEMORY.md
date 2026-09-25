@@ -73,3 +73,9 @@ Lessons, incidenti, decisioni di processo. Datato, non sovrascritto. Indice: il 
 ## 2026-09-25 — Post-deploy latency verification: stage race, cold start, gaps
 
 → journal: search "straddles the stage budget" · "Cold SearXNG restart" · "cooldown is not exported" · "measurement pitfalls" · "nonexistent container"
+
+---
+
+## 2026-09-25 — Verdetto del reviewer child nascosto da una read a limit piccolo; duplicato spawnato
+
+→ journal: search "small-limit read-child-output" · "duplicate reviewer spawned"
