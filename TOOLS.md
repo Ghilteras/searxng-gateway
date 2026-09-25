@@ -11,12 +11,15 @@ All metrics are Prometheus, emitted by the gateway at /metrics:
 - `searxng_gateway_circuit_breaker_trips_total{engine="...",reason="..."}` — trips
 - `searxng_gateway_circuit_breaker_recovery_total{engine="..."}` — half-open recoveries
 - `searxng_gateway_search_request_duration_seconds` — whole `/search` handler latency histogram
-- `searxng_gateway_searxng_stage_duration_seconds` — one sample per attempted SearXNG retry stage, zero when the stage is skipped (histogram)
+- `searxng_gateway_searxng_stage_duration_seconds` — one sample per attempted SearXNG retry stage, no sample when the stage is skipped (histogram)
 - `searxng_gateway_provider_duration_seconds{provider="...",phase="t1|fallback"}` — premium call latency histogram
-- `searxng_gateway_request_duration_seconds{source="...",engine="..."}` — **RETIRED 2026-09-25**: recorded one whole-call duration once per responding engine, so co-responding engines got identical deltas; do not use for per-engine latency
 - `searxng_gateway_engine_status{engine="..."}` — 0/1 from SearXNG UnresponsiveEngines list (gauge)
 
 Source pointers: `internal/brave/client.go` (X-RateLimit parsing), `internal/quota/quota.go` (Brave remaining/limit gauges; Serper scaffold at 0), `backends/*.go` (SearchBackend), `internal/proxy/proxy.go` (engine_status).
+
+## Retired metrics
+
+- `searxng_gateway_request_duration_seconds{source="...",engine="..."}` — retired 2026-09-25: it recorded one whole-SearXNG-call duration once per engine that responded, so co-responding engines got identical deltas (misleading as per-engine latency). Replaced by the three histograms above; no longer emitted.
 
 ## Premium quota caveat (2026-08-28 live probe)
 

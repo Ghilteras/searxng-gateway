@@ -54,19 +54,16 @@ Lessons, incidenti, decisioni di processo. Datato, non sovrascritto. Indice: il 
 
 ## 2026-09-25 — Latency bounded: parent budget + context propagation
 
-- Uncached consumer-path queries hit 30s (one 502); the unbounded SearXNG stage, not gateway overhead (3–9 ms), dominated. Fix: propagate the request context into every backend HTTP call and keep the parent budget below the tighter caller (OpenCode fetch 10s / OpenClaw 20s, both `searxng-fallback`); retry ladder 1s/2s → 250ms/500ms.
 → journal: search "stage unbounded"
 
 ---
 
 ## 2026-09-25 — Latency metric was lying; retired and replaced
 
-- `searxng_gateway_request_duration_seconds{source,engine}` recorded one whole-call duration once per responding engine (identical deltas on bing/brave/mwmbl) → retired. New: `..._search_request_duration_seconds`, `..._searxng_stage_duration_seconds`, `..._provider_duration_seconds{provider,phase}`. Open follow-up outside this repo: retired name still in homelab-config Grafana dashboard + alerting rules + `scripts/push-searxng-dashboard.py`.
 → journal: search "metric was misleading"
 
 ---
 
-## 2026-09-25 — Tooling: Serena/gopls unusable; rtk prefix is by design
+## 2026-09-25 — Serena/gopls unavailable here; use direct file edits
 
-- Serena/gopls symbol lookup unusable here → direct file edits, never abort on gopls. An `rtk`-prefixed executor command is NOT corruption (global `rtk` plugin rewrites executor commands by design) — do NOT add a no-rtk clause to delegation prompts.
 → journal: search "Serena gopls"
