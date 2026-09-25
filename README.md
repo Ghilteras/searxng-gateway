@@ -164,7 +164,7 @@ groups:
 | `SUFFICIENT_MIN_RESULTS` | `1` | no | Target merged result count; loop stops when reached (recommend 10 with premiums) |
 | `T1_PREMIUM_COUNT` | `0` | no | Number of premium providers to call in the hot path while SearXNG runs (0 = none; serial by design — see [docs/architecture.md](docs/architecture.md#why-the-premium-pass-is-serial-deliberate)) |
 | `FALLBACK_TIMEOUT_SECONDS` | `8` | no | Hard total request budget for speculative execution and the serial fallback loop; accumulated nonempty results are returned at the deadline |
-| `SEARXNG_TIMEOUT_SECONDS` | `3` | no | Total SearXNG stage budget shared by the HTTP request and all retries/backoff; the stage is cancelled when it expires, and expiry is not counted as an upstream failure |
+| `SEARXNG_TIMEOUT_SECONDS` | `3` | no | Total SearXNG stage budget shared by the HTTP request and all retries/backoff; the stage is cancelled when it expires. A stage expiry while the parent request budget is still alive counts as a SearXNG failure; a parent-budget expiry or caller cancellation does not |
 | `SEARXNG_FAIL_THRESHOLD` | `6` | no | Consecutive SearXNG failures before cooldown |
 | `SEARXNG_FAIL_COOLDOWN_SECONDS` | `180` | no | Cooldown duration for SearXNG (seconds) |
 | `BRAVE_FAIL_THRESHOLD` | `3` | no | Consecutive Brave failures before cooldown |
