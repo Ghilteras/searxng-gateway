@@ -80,7 +80,7 @@ func (j *JinaBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 		return nil, &BackendError{Backend: j.Name(), Err: fmt.Errorf("failed to marshal request: %v", err), Code: ErrCodeInvalidResponse}
 	}
 
-	req, err := http.NewRequest("POST", j.BaseURL, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(searchContext(opts), "POST", j.BaseURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, &BackendError{Backend: j.Name(), Err: err, Code: ErrCodeNetwork}
 	}

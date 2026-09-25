@@ -1,6 +1,7 @@
 package backends
 
 import (
+	"context"
 	"fmt"
 	"time"
 )
@@ -35,6 +36,7 @@ type SearchResult struct {
 
 // SearchOptions contains parameters for a search query
 type SearchOptions struct {
+	Context    context.Context
 	Query      string
 	Categories []string
 	Engines    []string
@@ -66,6 +68,13 @@ type SearchBackend interface {
 
 	// IsAvailable checks if the backend is properly configured and reachable
 	IsAvailable() bool
+}
+
+func searchContext(opts SearchOptions) context.Context {
+	if opts.Context != nil {
+		return opts.Context
+	}
+	return context.Background()
 }
 
 // BackendError represents an error from a specific backend

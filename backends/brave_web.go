@@ -59,7 +59,7 @@ func (b *BraveWebBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 		params.Set("safesearch", opts.SafeSearch)
 	}
 
-	req, err := http.NewRequest("GET", b.BaseURL+"/search?"+params.Encode(), nil)
+	req, err := http.NewRequestWithContext(searchContext(opts), "GET", b.BaseURL+"/search?"+params.Encode(), nil)
 	if err != nil {
 		return nil, &BackendError{Backend: b.Name(), Err: err, Code: ErrCodeNetwork}
 	}

@@ -109,7 +109,7 @@ func (b *BraveBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 
 	reqURL := baseURL + "?" + params.Encode()
 
-	req, err := http.NewRequest("GET", reqURL, nil)
+	req, err := http.NewRequestWithContext(searchContext(opts), "GET", reqURL, nil)
 	if err != nil {
 		return nil, &BackendError{
 			Backend: b.Name(),

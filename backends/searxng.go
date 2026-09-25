@@ -108,13 +108,13 @@ func (s *SearxngBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	var err error
 
 	if s.HTTPMethod == "POST" {
-		req, err = http.NewRequest("POST", searchURL, reqBody)
+		req, err = http.NewRequestWithContext(searchContext(opts), "POST", searchURL, reqBody)
 		if err != nil {
 			return nil, s.wrapError(err, ErrCodeNetwork)
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	} else {
-		req, err = http.NewRequest("GET", searchURL, nil)
+		req, err = http.NewRequestWithContext(searchContext(opts), "GET", searchURL, nil)
 		if err != nil {
 			return nil, s.wrapError(err, ErrCodeNetwork)
 		}

@@ -75,7 +75,7 @@ func (b *BingBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 		params.Set("setlang", opts.Language)
 	}
 
-	req, err := http.NewRequest("GET", b.BaseURL+"/search?"+params.Encode(), nil)
+	req, err := http.NewRequestWithContext(searchContext(opts), "GET", b.BaseURL+"/search?"+params.Encode(), nil)
 	if err != nil {
 		return nil, &BackendError{Backend: b.Name(), Err: err, Code: ErrCodeNetwork}
 	}

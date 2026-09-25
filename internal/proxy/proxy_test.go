@@ -37,6 +37,25 @@ type fakeBackend struct {
 	avail   bool
 }
 
+type contextBackend struct {
+	name string
+	fn   func(context.Context) ([]backends.SearchResult, error)
+}
+
+func (b *contextBackend) Name() string      { return b.name }
+func (b *contextBackend) IsAvailable() bool { return true }
+func (b *contextBackend) Search(opts backends.SearchOptions) ([]backends.SearchResult, error) {
+	return b.fn(opts.Context)
+}
+
+type contextSearxng struct {
+	fn func(context.Context) (*searxng.Response, error)
+}
+
+func (s *contextSearxng) Search(ctx context.Context, _ string) (*searxng.Response, error) {
+	return s.fn(ctx)
+}
+
 func (f *fakeBackend) Name() string      { return f.name }
 func (f *fakeBackend) IsAvailable() bool { return f.avail }
 func (f *fakeBackend) Search(_ backends.SearchOptions) ([]backends.SearchResult, error) {
@@ -720,6 +739,104 @@ func TestFallbackPremiumLoop_SerialNoOverlapAndEarlyStop(t *testing.T) {
 	// First call must be brave (alphabetically first in full set).
 	if gotOrder[0] != "brave" {
 		t.Errorf("first call = %q, want brave", gotOrder[0])
+	}
+}
+
+func TestSearchReturnsT1PartialWhileSearxngChildBudgetExpires(t *testing.T) {
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.FallbackTimeout = 500 * time.Millisecond
+	cfg.SearxngTimeout = 40 * time.Millisecond
+	cfg.SufficientMinResults = 10
+	cfg.T1PremiumCount = 1
+	sx := &contextSearxng{fn: func(ctx context.Context) (*searxng.Response, error) { <-ctx.Done(); return nil, ctx.Err() }}
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{{Title: "partial", URL: "https://partial.test", Engine: "brave"}}}
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+	start := time.Now()
+	out, err := p.Search(context.Background(), "partial-budget")
+	if err != nil || len(out.Results) != 1 {
+		t.Fatalf("response=%v err=%v", out, err)
+	}
+	if elapsed := time.Since(start); elapsed > 300*time.Millisecond {
+		t.Fatalf("search took %v", elapsed)
+	}
+}
+
+func TestSearchFallsThroughAfterSearxngChildBudget(t *testing.T) {
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.FallbackTimeout = 500 * time.Millisecond
+	cfg.SearxngTimeout = 40 * time.Millisecond
+	cfg.SufficientMinResults = 1
+	cfg.T1PremiumCount = 1
+	cfg.FallbackProviders = []string{"brave", "exa"}
+	sx := &contextSearxng{fn: func(ctx context.Context) (*searxng.Response, error) { <-ctx.Done(); return nil, ctx.Err() }}
+	fail := &fakeBackend{name: "brave", avail: true, err: errors.New("upstream failure")}
+	second := &fakeBackend{name: "exa", avail: true, results: []backends.SearchResult{{Title: "secondary", URL: "https://secondary.test", Engine: "exa"}}}
+	p := newTestProxy(cfg, sx, c, breaker.New(), fail, second)
+	out, err := p.Search(context.Background(), "secondary-budget")
+	if err != nil || len(out.Results) != 1 || out.Results[0].Engine != "exa" {
+		t.Fatalf("response=%v err=%v", out, err)
+	}
+}
+
+func TestSearchDeadlineCancelsPremiumAndReturnsPartialOrError(t *testing.T) {
+	for _, withResults := range []bool{true, false} {
+		t.Run(fmt.Sprintf("results_%v", withResults), func(t *testing.T) {
+			c, _ := cache.New(100, 0)
+			cfg := newCfg()
+			cfg.FallbackTimeout = 50 * time.Millisecond
+			cfg.SearxngTimeout = 10 * time.Millisecond
+			cfg.T1PremiumCount = 1
+			cfg.SufficientMinResults = 10
+			started := make(chan struct{})
+			canceled := make(chan struct{})
+			fb := &contextBackend{name: "brave", fn: func(ctx context.Context) ([]backends.SearchResult, error) {
+				close(started)
+				<-ctx.Done()
+				close(canceled)
+				return nil, ctx.Err()
+			}}
+			sx := &fakeSearxng{resp: &searxng.Response{}}
+			if withResults {
+				fb.fn = func(ctx context.Context) ([]backends.SearchResult, error) {
+					close(started)
+					<-ctx.Done()
+					close(canceled)
+					return []backends.SearchResult{{Title: "kept", URL: "https://kept.test", Engine: "brave"}}, nil
+				}
+			}
+			p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+			out, err := p.Search(context.Background(), "premium-deadline")
+			<-started
+			<-canceled
+			if withResults {
+				if err != nil || len(out.Results) != 1 {
+					t.Fatalf("response=%v err=%v", out, err)
+				}
+			} else if err == nil {
+				t.Fatal("expected error with no accumulated results")
+			}
+		})
+	}
+}
+
+func TestSearchDoesNotStartPremiumAfterDeadline(t *testing.T) {
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.FallbackTimeout = 40 * time.Millisecond
+	cfg.SearxngTimeout = 10 * time.Millisecond
+	cfg.T1PremiumCount = 2
+	cfg.FallbackProviders = []string{"brave", "exa"}
+	var secondCalls atomic.Int64
+	first := &contextBackend{name: "brave", fn: func(ctx context.Context) ([]backends.SearchResult, error) { <-ctx.Done(); return nil, ctx.Err() }}
+	second := &contextBackend{name: "exa", fn: func(context.Context) ([]backends.SearchResult, error) { secondCalls.Add(1); return nil, nil }}
+	p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, breaker.New(), first, second)
+	if _, err := p.Search(context.Background(), "no-late-provider"); err == nil {
+		t.Fatal("expected error with no results")
+	}
+	if got := secondCalls.Load(); got != 0 {
+		t.Fatalf("second provider started %d times after deadline", got)
 	}
 }
 

@@ -79,10 +79,11 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, p.cfg.FallbackTimeout)
 	defer cancel()
+	sxCtx, cancelSX := context.WithTimeout(timeoutCtx, p.cfg.SearxngTimeout)
+	defer cancelSX()
 
 	// 2. Check if SearXNG is in cooldown (skip SearXNG, go premium-only).
 	sxSkipped := p.inCooldown()
-	deadline := time.Now().Add(p.cfg.FallbackTimeout)
 
 	// Per-call state
 	allResults := make([]searxng.Result, 0)
@@ -103,8 +104,8 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	if !sxSkipped {
 		go func() {
 			start := time.Now()
-			resp, err := p.retryWithBackoff(timeoutCtx, func() (*searxng.Response, error) {
-				return p.sx.Search(timeoutCtx, key)
+			resp, err := p.retryWithBackoff(sxCtx, func() (*searxng.Response, error) {
+				return p.sx.Search(sxCtx, key)
 			})
 			sxCh <- sxResult{resp: resp, err: err, elapsed: time.Since(start)}
 		}()
@@ -116,7 +117,7 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	// 4. T1 premium: if T1_PREMIUM_COUNT > 0, pick that many distinct providers
 	// via round-robin and call each one. Runs in parallel with the SearXNG goroutine.
 	for i := 0; i < p.cfg.T1PremiumCount; i++ {
-		if time.Now().After(deadline) {
+		if timeoutCtx.Err() != nil {
 			break
 		}
 		premium := p.fallbackMgr.NextAvailable(usedPremiums)
@@ -126,6 +127,7 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		usedPremiums[premium.Name()] = true
 		start := time.Now()
 		results, err := premium.Search(backends.SearchOptions{
+			Context:    timeoutCtx,
 			Query:      key,
 			NumResults: 10,
 		})
@@ -222,7 +224,7 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	// 6. Fallback loop: all remaining FALLBACK_PROVIDERS (skips already-used).
 	if len(allResults) < p.cfg.SufficientMinResults {
 		allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs =
-			p.premiumLoop(timeoutCtx, key, deadline, allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs)
+			p.premiumLoop(timeoutCtx, key, allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs)
 	}
 
 	// 7. Outcome.
@@ -265,7 +267,6 @@ func (p *Proxy) sufficient(r *searxng.Response) bool {
 func (p *Proxy) premiumLoop(
 	ctx context.Context,
 	key string,
-	deadline time.Time,
 	allResults []searxng.Result,
 	seenURLs map[string]bool,
 	usedPremiums map[string]bool,
@@ -277,7 +278,7 @@ func (p *Proxy) premiumLoop(
 		if len(allResults) >= p.cfg.SufficientMinResults {
 			break
 		}
-		if time.Now().After(deadline) {
+		if ctx.Err() != nil {
 			break
 		}
 
@@ -297,6 +298,7 @@ func (p *Proxy) premiumLoop(
 		// Call the premium backend.
 		start := time.Now()
 		results, err := premium.Search(backends.SearchOptions{
+			Context:    ctx,
 			Query:      key,
 			NumResults: 10,
 		})

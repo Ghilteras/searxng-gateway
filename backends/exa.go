@@ -2,6 +2,7 @@ package backends
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -89,20 +90,20 @@ func (e *ExaBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 
 	switch e.Mode {
 	case ExaModeAPI:
-		return e.searchAPI(query, count)
+		return e.searchAPI(searchContext(opts), query, count)
 	case ExaModeMCP:
-		return e.searchMCP(query, count)
+		return e.searchMCP(searchContext(opts), query, count)
 	case ExaModeAuto:
 		fallthrough
 	default:
 		if strings.TrimSpace(e.APIKey) != "" {
-			results, err := e.searchAPI(query, count)
+			results, err := e.searchAPI(searchContext(opts), query, count)
 			if err == nil {
 				return results, nil
 			}
 		}
 		if strings.TrimSpace(e.MCPURL) != "" {
-			return e.searchMCP(query, count)
+			return e.searchMCP(searchContext(opts), query, count)
 		}
 		return nil, &BackendError{Backend: e.Name(), Err: fmt.Errorf("Exa not configured (need API key or MCP URL)"), Code: ErrCodeUnavailable}
 	}
@@ -122,7 +123,7 @@ type exaAPIResponse struct {
 	} `json:"results"`
 }
 
-func (e *ExaBackend) searchAPI(query string, count int) ([]SearchResult, error) {
+func (e *ExaBackend) searchAPI(ctx context.Context, query string, count int) ([]SearchResult, error) {
 	if strings.TrimSpace(e.APIKey) == "" {
 		return nil, &BackendError{Backend: e.Name(), Err: fmt.Errorf("Exa API key not configured"), Code: ErrCodeUnavailable}
 	}
@@ -132,7 +133,7 @@ func (e *ExaBackend) searchAPI(query string, count int) ([]SearchResult, error) 
 		return nil, &BackendError{Backend: e.Name(), Err: err, Code: ErrCodeInvalidResponse}
 	}
 
-	req, err := http.NewRequest("POST", e.BaseURL, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, "POST", e.BaseURL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, &BackendError{Backend: e.Name(), Err: err, Code: ErrCodeNetwork}
 	}
@@ -191,14 +192,14 @@ type mcpToolCallResult struct {
 	} `json:"content,omitempty"`
 }
 
-func (e *ExaBackend) searchMCP(query string, count int) ([]SearchResult, error) {
+func (e *ExaBackend) searchMCP(ctx context.Context, query string, count int) ([]SearchResult, error) {
 	if strings.TrimSpace(e.MCPURL) == "" {
 		return nil, &BackendError{Backend: e.Name(), Err: fmt.Errorf("Exa MCP URL not configured"), Code: ErrCodeUnavailable}
 	}
 	client := NewMCPHTTPClient(e.MCPURL, e.Timeout)
-	_ = client.Initialize() // best effort for servers that require initialize first
+	_ = client.InitializeContext(ctx) // best effort for servers that require initialize first
 
-	resultRaw, err := client.CallTool(e.MCPTool, map[string]interface{}{
+	resultRaw, err := client.CallToolContext(ctx, e.MCPTool, map[string]interface{}{
 		"query":       query,
 		"num_results": count,
 		"numResults":  count,

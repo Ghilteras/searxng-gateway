@@ -2,6 +2,7 @@ package backends
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,7 +38,7 @@ type mcpRPCResponse struct {
 	Error   *mcpRPCError    `json:"error,omitempty"`
 }
 
-func (c *MCPHTTPClient) call(method string, id int, params interface{}) (json.RawMessage, error) {
+func (c *MCPHTTPClient) call(ctx context.Context, method string, id int, params interface{}) (json.RawMessage, error) {
 	payload := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      id,
@@ -49,7 +50,7 @@ func (c *MCPHTTPClient) call(method string, id int, params interface{}) (json.Ra
 		return nil, err
 	}
 
-	req, err := http.NewRequest("POST", c.BaseURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +82,11 @@ func (c *MCPHTTPClient) call(method string, id int, params interface{}) (json.Ra
 }
 
 func (c *MCPHTTPClient) Initialize() error {
-	_, err := c.call("initialize", 1, map[string]interface{}{
+	return c.InitializeContext(context.Background())
+}
+
+func (c *MCPHTTPClient) InitializeContext(ctx context.Context) error {
+	_, err := c.call(ctx, "initialize", 1, map[string]interface{}{
 		"protocolVersion": "2024-11-05",
 		"capabilities":    map[string]interface{}{},
 		"clientInfo": map[string]interface{}{
@@ -93,7 +98,11 @@ func (c *MCPHTTPClient) Initialize() error {
 }
 
 func (c *MCPHTTPClient) CallTool(toolName string, args map[string]interface{}) (json.RawMessage, error) {
-	result, err := c.call("tools/call", 2, map[string]interface{}{
+	return c.CallToolContext(context.Background(), toolName, args)
+}
+
+func (c *MCPHTTPClient) CallToolContext(ctx context.Context, toolName string, args map[string]interface{}) (json.RawMessage, error) {
+	result, err := c.call(ctx, "tools/call", 2, map[string]interface{}{
 		"name":      toolName,
 		"arguments": args,
 	})

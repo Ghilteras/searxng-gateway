@@ -52,14 +52,14 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.BraveAPIKey != "test-key" {
 		t.Errorf("BraveAPIKey = %q, want %q", cfg.BraveAPIKey, "test-key")
 	}
-	if cfg.FallbackTimeout != 30*time.Second {
-		t.Errorf("FallbackTimeout = %v, want 30s", cfg.FallbackTimeout)
+	if cfg.FallbackTimeout != 18*time.Second {
+		t.Errorf("FallbackTimeout = %v, want 18s", cfg.FallbackTimeout)
 	}
-	if cfg.SearxngTimeout != 25*time.Second {
-		t.Errorf("SearxngTimeout = %v, want 25s", cfg.SearxngTimeout)
+	if cfg.SearxngTimeout != 8*time.Second {
+		t.Errorf("SearxngTimeout = %v, want 8s", cfg.SearxngTimeout)
 	}
-	if cfg.BraveTimeout != 15*time.Second {
-		t.Errorf("BraveTimeout = %v, want 15s", cfg.BraveTimeout)
+	if cfg.BraveTimeout != 5*time.Second {
+		t.Errorf("BraveTimeout = %v, want 5s", cfg.BraveTimeout)
 	}
 	if cfg.CacheSize != 1000 {
 		t.Errorf("CacheSize = %d, want 1000", cfg.CacheSize)

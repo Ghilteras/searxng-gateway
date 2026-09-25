@@ -114,7 +114,7 @@ func (t *TavilyBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 		}
 	}
 
-	req, err := http.NewRequest("POST", t.BaseURL, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(searchContext(opts), "POST", t.BaseURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, &BackendError{
 			Backend: t.Name(),

@@ -31,14 +31,15 @@ type Config struct {
 
 func Load() (*Config, error) {
 	c := &Config{
-		ListenAddr:           getEnv("LISTEN_ADDR", ":8080"),
-		SearxngBackendURL:    getEnv("SEARXNG_BACKEND_URL", "http://searxng-primary:8080"),
-		BraveAPIKey:          os.Getenv("BRAVE_API_KEY"),
-		FallbackProviders:    parseProviderList(getEnv("FALLBACK_PROVIDERS", "brave")),
-		T1PremiumCount:       getEnvInt("T1_PREMIUM_COUNT", 0),
-		FallbackTimeout:      time.Duration(getEnvInt("FALLBACK_TIMEOUT_SECONDS", 30)) * time.Second,
-		SearxngTimeout:       time.Duration(getEnvInt("SEARXNG_TIMEOUT_SECONDS", 25)) * time.Second,
-		BraveTimeout:         time.Duration(getEnvInt("BRAVE_TIMEOUT_SECONDS", 15)) * time.Second,
+		ListenAddr:        getEnv("LISTEN_ADDR", ":8080"),
+		SearxngBackendURL: getEnv("SEARXNG_BACKEND_URL", "http://searxng-primary:8080"),
+		BraveAPIKey:       os.Getenv("BRAVE_API_KEY"),
+		FallbackProviders: parseProviderList(getEnv("FALLBACK_PROVIDERS", "brave")),
+		T1PremiumCount:    getEnvInt("T1_PREMIUM_COUNT", 0),
+		FallbackTimeout:   time.Duration(getEnvInt("FALLBACK_TIMEOUT_SECONDS", 18)) * time.Second,
+		SearxngTimeout:    time.Duration(getEnvInt("SEARXNG_TIMEOUT_SECONDS", 8)) * time.Second,
+		// BRAVE_TIMEOUT_SECONDS is retained for compatibility and configures every premium backend.
+		BraveTimeout:         time.Duration(getEnvInt("BRAVE_TIMEOUT_SECONDS", 5)) * time.Second,
 		CacheSize:            getEnvInt("CACHE_SIZE", 1000),
 		CacheTTL:             time.Duration(getEnvInt("CACHE_TTL_SECONDS", 3600)) * time.Second,
 		LogLevel:             getEnv("LOG_LEVEL", "info"),
