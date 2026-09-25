@@ -743,6 +743,9 @@ func TestFallbackPremiumLoop_SerialNoOverlapAndEarlyStop(t *testing.T) {
 }
 
 func TestSearchReturnsT1PartialWhileSearxngChildBudgetExpires(t *testing.T) {
+	metrics.Init()
+	beforeTimeout := outcomeCounter(t, "timeout")
+	beforePremium := outcomeCounter(t, "premium_ok")
 	c, _ := cache.New(100, 0)
 	cfg := newCfg()
 	cfg.FallbackTimeout = 500 * time.Millisecond
@@ -759,6 +762,12 @@ func TestSearchReturnsT1PartialWhileSearxngChildBudgetExpires(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 300*time.Millisecond {
 		t.Fatalf("search took %v", elapsed)
+	}
+	if got := outcomeCounter(t, "timeout") - beforeTimeout; got != 0 {
+		t.Errorf("request timeout outcome delta = %v, want 0 for successful premium fallback", got)
+	}
+	if got := outcomeCounter(t, "premium_ok") - beforePremium; got != 1 {
+		t.Errorf("premium_ok outcome delta = %v, want 1", got)
 	}
 }
 
@@ -781,8 +790,11 @@ func TestSearchFallsThroughAfterSearxngChildBudget(t *testing.T) {
 }
 
 func TestSearchDeadlineCancelsPremiumAndReturnsPartialOrError(t *testing.T) {
+	metrics.Init()
 	for _, withResults := range []bool{true, false} {
 		t.Run(fmt.Sprintf("results_%v", withResults), func(t *testing.T) {
+			beforeTimeout := outcomeCounter(t, "timeout")
+			beforePremium := outcomeCounter(t, "premium_ok")
 			c, _ := cache.New(100, 0)
 			cfg := newCfg()
 			cfg.FallbackTimeout = 50 * time.Millisecond
@@ -814,8 +826,16 @@ func TestSearchDeadlineCancelsPremiumAndReturnsPartialOrError(t *testing.T) {
 				if err != nil || len(out.Results) != 1 {
 					t.Fatalf("response=%v err=%v", out, err)
 				}
+				if got := outcomeCounter(t, "timeout") - beforeTimeout; got != 0 {
+					t.Errorf("request timeout outcome delta = %v, want 0 for a partial response", got)
+				}
+				if got := outcomeCounter(t, "premium_ok") - beforePremium; got != 1 {
+					t.Errorf("premium_ok outcome delta = %v, want 1", got)
+				}
 			} else if err == nil {
 				t.Fatal("expected error with no accumulated results")
+			} else if got := outcomeCounter(t, "timeout") - beforeTimeout; got != 1 {
+				t.Errorf("request timeout outcome delta = %v, want 1", got)
 			}
 		})
 	}

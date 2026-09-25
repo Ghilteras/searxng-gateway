@@ -14,6 +14,8 @@ import (
 var (
 	// RequestsTotal counts gateway requests by outcome label.
 	// outcome ∈ {cache_hit, searxng_ok, premium_ok, searxng_plus_premium_ok, fallback_fail, timeout}
+	// Exactly one outcome is recorded per request; a SearXNG stage timeout is
+	// not a request timeout when fallback returns results before the parent deadline.
 	RequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "searxng_gateway_requests_total",

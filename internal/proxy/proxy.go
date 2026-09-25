@@ -68,7 +68,7 @@ func New(cfg *config.Config, sx searxng.Client, c *cache.Cache, breakerMgr *brea
 //   - premium_ok:                 only premium providers contributed results (SearXNG skipped, errored, or returned empty).
 //   - searxng_plus_premium_ok:    both SearXNG and premium providers contributed results.
 //   - fallback_fail:              all providers exhausted with no results.
-//   - timeout:                    SearXNG returned context.DeadlineExceeded.
+//   - timeout:                    The overall request budget expired before any results were collected.
 func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, error) {
 	key := normalize(raw)
 
@@ -213,9 +213,6 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 		} else {
 			// SearXNG failed.
 			p.recordSearxngFailure()
-			if errors.Is(sxResult.err, context.DeadlineExceeded) {
-				metrics.RequestsTotal.WithLabelValues("timeout").Inc()
-			}
 			if sxResult.err != nil {
 				premiumErrMsgs = append(premiumErrMsgs, fmt.Sprintf("searxng: %v", sxResult.err))
 			}
@@ -230,7 +227,11 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 
 	// 7. Outcome.
 	if len(allResults) == 0 {
-		metrics.RequestsTotal.WithLabelValues("fallback_fail").Inc()
+		outcome := "fallback_fail"
+		if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
+			outcome = "timeout"
+		}
+		metrics.RequestsTotal.WithLabelValues(outcome).Inc()
 		errDetail := "all fallbacks failed"
 		if len(premiumErrMsgs) > 0 {
 			errDetail = strings.Join(premiumErrMsgs, "; ")
