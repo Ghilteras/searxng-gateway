@@ -77,7 +77,7 @@ Keyless mode (no API keys) works out of the box using SearXNG's free engines (Bi
 - **Speculative execution** — `T1_PREMIUM_COUNT` premium providers are selected via atomic round-robin and invoked in the hot path while SearXNG runs concurrently; premium calls are **serial within the pass** by deliberate design (see [docs/architecture.md](docs/architecture.md#why-the-premium-pass-is-serial-deliberate)). Results are merged and deduplicated by URL.
 - **Bounded fallback loop** — if merged results < `SUFFICIENT_MIN_RESULTS`, remaining Tier 2 providers are tried via round-robin until threshold, exhaustion, or `FALLBACK_TIMEOUT_SECONDS`.
 - **Circuit breaker per engine** — 4xx on an engine opens the circuit for 5 min; auto-recovers
-- **Exponential backoff retry** — 3 retries with 1s/2s/4s backoff on 5xx/timeout
+- **Exponential backoff retry** — up to 3 attempts (1s/2s between attempts), bounded by the SearXNG stage budget
 - **Prometheus /metrics** — 15+ gauges and counters prefixed `searxng_gateway_`
 - **LRU cache** — 1000 entries, 1h TTL, in-memory
 - **SearXNG config tuning** — reference `examples/searxng/` with engine selection, `suspended_times` tuning, custom User-Agent, and custom Python engines (Serper, Mojeek)
@@ -163,13 +163,13 @@ groups:
 | `TAVILY_API_KEY` | — | no | Tavily Search API key |
 | `SUFFICIENT_MIN_RESULTS` | `1` | no | Target merged result count; loop stops when reached (recommend 10 with premiums) |
 | `T1_PREMIUM_COUNT` | `0` | no | Number of premium providers to call in the hot path while SearXNG runs (0 = none; serial by design — see [docs/architecture.md](docs/architecture.md#why-the-premium-pass-is-serial-deliberate)) |
-| `FALLBACK_TIMEOUT_SECONDS` | `30` | no | Maximum time for speculative execution + fallback loop |
-| `SEARXNG_TIMEOUT_SECONDS` | `25` | no | Per-request timeout for SearXNG |
+| `FALLBACK_TIMEOUT_SECONDS` | `18` | no | Hard total request budget for speculative execution and the serial fallback loop; accumulated nonempty results are returned at the deadline |
+| `SEARXNG_TIMEOUT_SECONDS` | `8` | no | SearXNG stage budget shared by its HTTP request and all retries/backoff; bounded by the total fallback budget |
 | `SEARXNG_FAIL_THRESHOLD` | `6` | no | Consecutive SearXNG failures before cooldown |
 | `SEARXNG_FAIL_COOLDOWN_SECONDS` | `180` | no | Cooldown duration for SearXNG (seconds) |
 | `BRAVE_FAIL_THRESHOLD` | `3` | no | Consecutive Brave failures before cooldown |
 | `BRAVE_FAIL_COOLDOWN_SECONDS` | `300` | no | Cooldown duration for Brave (seconds) |
-| `BRAVE_TIMEOUT_SECONDS` | `15` | no | Per-request timeout for Brave API |
+| `BRAVE_TIMEOUT_SECONDS` | `5` | no | Per-request timeout applied to every configured premium provider (legacy variable name) |
 | `CACHE_SIZE` | `1000` | no | LRU cache entries (in-memory) |
 | `CACHE_TTL_SECONDS` | `3600` | no | Cache entry TTL (seconds) |
 | `LOG_LEVEL` | `info` | no | Log level (debug, info, warn, error) |
@@ -184,8 +184,21 @@ type MyProvider struct { APIKey string; Timeout time.Duration }
 
 func (m *MyProvider) Name() string { return "myprovider" }
 func (m *MyProvider) IsAvailable() bool { return m.APIKey != "" }
-func (m *MyProvider) Search(opts SearchOptions) ([]SearchResult, error) { /* ... */ }
+func (m *MyProvider) Search(opts SearchOptions) ([]SearchResult, error) {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.test/search", nil)
+	if err != nil {
+		return nil, err
+	}
+	// Execute req with an HTTP client and map the response to SearchResult values.
+	return nil, nil
+}
 ```
+
+Provider implementations must pass `opts.Context` to outbound requests so gateway cancellation and the total response deadline stop upstream work.
 
 Then add a case to `backends/factory.go` and set `MYPROVIDER_API_KEY` in the environment. The rest (registry, fallback chain, circuit breaker) is automatic.
 

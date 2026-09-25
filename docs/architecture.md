@@ -28,10 +28,10 @@ Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (primary)
 1. **Normalise** the query (lowercase, collapse whitespace) and check the **LRU cache**. Cache hit returns immediately without calling any backend.
 2. **SearXNG cooldown check**: if SearXNG has hit `SEARXNG_FAIL_THRESHOLD` consecutive failures (default 6), it is skipped entirely for `SEARXNG_FAIL_COOLDOWN_SECONDS` (default 180s). Success resets the counter.
 3. **Speculative call**: SearXNG starts concurrently with the `T1_PREMIUM_COUNT` premium-provider pass. Providers are selected via atomic round-robin from `FALLBACK_PROVIDERS` and invoked **serially within that pass** (by design; see [Why the premium pass is serial](#why-the-premium-pass-is-serial-deliberate)).
-   - SearXNG is called with retry+backoff (3 attempts: 1s, 2s, 4s exponential — all error classes retried).
+    - SearXNG is called with up to 3 attempts (1s/2s between attempts); the complete retry sequence shares the `SEARXNG_TIMEOUT_SECONDS` child budget, bounded by the overall request context.
    - Each premium provider is called once; circuit-breaker-open providers are skipped.
 4. **Merge and deduplicate** all results by URL. Record per-engine metrics from SearXNG's `unresponsive_engines` field.
-5. **Bounded fallback loop**: if merged results < `SUFFICIENT_MIN_RESULTS` (default 1), remaining providers (those not already called this request) are tried via round-robin until the threshold is met, all providers are exhausted, or `FALLBACK_TIMEOUT_SECONDS` (default 30) expires.
+5. **Bounded fallback loop**: if merged results < `SUFFICIENT_MIN_RESULTS` (default 1), remaining providers (those not already called this request) are tried via round-robin until the threshold is met, all providers are exhausted, or the overall `FALLBACK_TIMEOUT_SECONDS` budget (default 18) expires. At expiry, accumulated nonempty results are returned; an empty result set remains an error. Under-threshold results returned at the deadline are cached with the normal cache TTL.
 6. **Outcome**: cache_hit, searxng_ok, premium_ok, searxng_plus_premium_ok, or fallback_fail.
 
 ## Why the premium pass is serial (deliberate)
@@ -42,11 +42,11 @@ Both premium execution paths — the T1 hot-path loop (`proxy.go:118-157`) and t
 
 **2. Attribution determinism.** Merge order is load-bearing and deliberately order-dependent. In the T1 path, premium results merge *before* SearXNG, so premium owns duplicate URLs. In the fallback loop, premium merges *after* SearXNG, so SearXNG owns them. Two existing tests (`TestOutcomeLabels_SearxngDuplicatesPremium`, `TestOutcomeLabels_PremiumDuplicatesSearxng`) pin the two opposite outcomes for identical-URL inputs. Concurrency would make merge order nondeterministic, so both labels and result ordering become nondeterministic.
 
-**3. Latency — the correct fix is context propagation, not parallelism.** Concurrency would cap wall-clock latency, but the budget is currently advisory because `backends.SearchBackend.Search` takes no context (`backends/interface.go`), so the deadline is only checked between calls. The correct future fix is context propagation into each backend's `Search` method. Also, at `T1_PREMIUM_COUNT=1` there is nothing to overlap.
+**3. Latency — the correct fix is context propagation, not parallelism.** `SearchOptions.Context` carries the request context through each built-in backend to its outbound HTTP requests (including both Exa MCP calls), so the total budget cancels an in-flight premium request instead of only checking between calls. The SearXNG retry sequence has a shorter child budget. Also, at `T1_PREMIUM_COUNT=1` there is nothing to overlap.
 
 **Non-goal:** Do not convert these passes to a concurrent fan-out.
 
-**Known limitation:** `FALLBACK_TIMEOUT_SECONDS` is not enforced as a hard bound inside a single premium call today — the deadline is only checked between calls. Context propagation (passing the request deadline into `backends.SearchBackend.Search`) is the correct fix for this, not parallelism.
+**Budget and degraded-result trade-offs:** `FALLBACK_TIMEOUT_SECONDS` (default 18s) is the hard parent request budget; `SEARXNG_TIMEOUT_SECONDS` (default 8s) bounds the entire SearXNG retry stage; the legacy `BRAVE_TIMEOUT_SECONDS` variable (default 5s) sets the HTTP timeout for every premium provider. Premium fallback remains serial. If the parent budget expires after some results have accumulated, those partial results are returned and cached with the configured cache TTL; if no result exists, the search fails. A SearXNG stage timeout counts as a SearXNG failure toward its existing consecutive-failure cooldown.
 
 ## Per-engine circuit breaker
 
@@ -169,8 +169,8 @@ All configuration is via environment variables. Key variables:
 | `FALLBACK_PROVIDERS` | `brave` | Comma-separated premium provider names |
 | `T1_PREMIUM_COUNT` | `0` | Number of providers to call in the hot path while SearXNG runs (serial by design; see [Why the premium pass is serial](#why-the-premium-pass-is-serial-deliberate)) |
 | `SUFFICIENT_MIN_RESULTS` | `1` | Target merged result count before fallback loop stops |
-| `FALLBACK_TIMEOUT_SECONDS` | `30` | Max time for speculative execution + fallback loop |
-| `SEARXNG_TIMEOUT_SECONDS` | `25` | Per-request timeout for SearXNG |
+| `FALLBACK_TIMEOUT_SECONDS` | `18` | Hard total budget for speculative execution + fallback loop; returns accumulated results on expiry |
+| `SEARXNG_TIMEOUT_SECONDS` | `8` | Total SearXNG stage budget shared across the request and retries/backoff |
 | `SEARXNG_FAIL_THRESHOLD` | `6` | Consecutive SearXNG failures before cooldown |
 | `SEARXNG_FAIL_COOLDOWN_SECONDS` | `180` | Cooldown duration for SearXNG |
 | `CACHE_SIZE` | `1000` | LRU cache entries |

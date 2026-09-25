@@ -17,7 +17,8 @@
 //   - Round-robin premium selection distributes load evenly.
 //   - Cooldown circuit breaker for SearXNG: after SEARXNG_FAIL_THRESHOLD
 //     consecutive failures, SearXNG is skipped entirely until cooldown expires.
-//   - Retry with exponential backoff (3 attempts: 1s/2s/4s) for SearXNG errors.
+//   - Retry with up to 3 attempts and 1s/2s backoff for SearXNG errors,
+//     bounded by the SearXNG child timeout.
 //   - URL deduplication across SearXNG and all premium providers.
 package proxy
 
@@ -387,11 +388,10 @@ func (p *Proxy) observe(r *searxng.Response) {
 	metrics.CacheSize.Set(float64(p.c.Len()))
 }
 
-// retryWithBackoff retries fn up to maxAttempts with exponential backoff.
+// retryWithBackoff calls fn up to maxAttempts with exponential backoff.
 //   - attempt 1: immediate
 //   - attempt 2: after 1s
-//   - attempt 3: after 2s
-//   - attempt 4: after 4s (final)
+//   - attempt 3: after 2s (final)
 //
 // Returns the last error if all retries fail.
 // All errors are retried — no 4xx/5xx distinction, no circuit breaker.
@@ -417,7 +417,7 @@ func (p *Proxy) retryWithBackoff(ctx context.Context, fn func() (*searxng.Respon
 				return lastResp, ctx.Err()
 			case <-time.After(backoff):
 			}
-			backoff *= 2 // exponential: 1s -> 2s -> 4s
+			backoff *= 2 // exponential: 1s -> 2s
 		}
 
 		resp, err := fn()
