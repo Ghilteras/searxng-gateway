@@ -163,13 +163,13 @@ groups:
 | `TAVILY_API_KEY` | — | no | Tavily Search API key |
 | `SUFFICIENT_MIN_RESULTS` | `1` | no | Target merged result count; loop stops when reached (recommend 10 with premiums) |
 | `T1_PREMIUM_COUNT` | `0` | no | Number of premium providers to call in the hot path while SearXNG runs (0 = none; serial by design — see [docs/architecture.md](docs/architecture.md#why-the-premium-pass-is-serial-deliberate)) |
-| `FALLBACK_TIMEOUT_SECONDS` | `18` | no | Hard total request budget for speculative execution and the serial fallback loop; accumulated nonempty results are returned at the deadline |
-| `SEARXNG_TIMEOUT_SECONDS` | `8` | no | SearXNG stage budget shared by its HTTP request and all retries/backoff; bounded by the total fallback budget |
+| `FALLBACK_TIMEOUT_SECONDS` | `8` | no | Hard total request budget for speculative execution and the serial fallback loop; accumulated nonempty results are returned at the deadline |
+| `SEARXNG_TIMEOUT_SECONDS` | `3` | no | Total SearXNG stage budget shared by the HTTP request and all retries/backoff; the stage is cancelled when it expires, and expiry is not counted as an upstream failure |
 | `SEARXNG_FAIL_THRESHOLD` | `6` | no | Consecutive SearXNG failures before cooldown |
 | `SEARXNG_FAIL_COOLDOWN_SECONDS` | `180` | no | Cooldown duration for SearXNG (seconds) |
 | `BRAVE_FAIL_THRESHOLD` | `3` | no | Consecutive Brave failures before cooldown |
 | `BRAVE_FAIL_COOLDOWN_SECONDS` | `300` | no | Cooldown duration for Brave (seconds) |
-| `BRAVE_TIMEOUT_SECONDS` | `5` | no | Per-request timeout applied to every configured premium provider (legacy variable name) |
+| `BRAVE_TIMEOUT_SECONDS` | `3` | no | Per-request timeout applied to every configured premium provider (legacy variable name) |
 | `CACHE_SIZE` | `1000` | no | LRU cache entries (in-memory) |
 | `CACHE_TTL_SECONDS` | `3600` | no | Cache entry TTL (seconds) |
 | `LOG_LEVEL` | `info` | no | Log level (debug, info, warn, error) |

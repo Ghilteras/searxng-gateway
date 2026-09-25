@@ -31,7 +31,7 @@ Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (primary)
     - SearXNG is called with up to 3 attempts (1s/2s between attempts); the complete retry sequence shares the `SEARXNG_TIMEOUT_SECONDS` child budget, bounded by the overall request context.
    - Each premium provider is called once; circuit-breaker-open providers are skipped.
 4. **Merge and deduplicate** all results by URL. Record per-engine metrics from SearXNG's `unresponsive_engines` field.
-5. **Bounded fallback loop**: if merged results < `SUFFICIENT_MIN_RESULTS` (default 1), remaining providers (those not already called this request) are tried via round-robin until the threshold is met, all providers are exhausted, or the overall `FALLBACK_TIMEOUT_SECONDS` budget (default 18) expires. At expiry, accumulated nonempty results are returned; an empty result set remains an error. Under-threshold results returned at the deadline are cached with the normal cache TTL.
+5. **Bounded fallback loop**: if merged results < `SUFFICIENT_MIN_RESULTS` (default 1), remaining providers (those not already called this request) are tried via round-robin until the threshold is met, all providers are exhausted, or the overall `FALLBACK_TIMEOUT_SECONDS` budget (default 8) expires. At expiry, accumulated nonempty results are returned; an empty result set remains an error. Under-threshold results returned at the deadline are cached with the normal cache TTL.
 6. **Outcome**: cache_hit, searxng_ok, premium_ok, searxng_plus_premium_ok, or fallback_fail.
 
 ## Why the premium pass is serial (deliberate)
@@ -46,7 +46,7 @@ Both premium execution paths — the T1 hot-path loop (`proxy.go:119-159`) and t
 
 **Non-goal:** Do not convert these passes to a concurrent fan-out.
 
-**Budget and degraded-result trade-offs:** `FALLBACK_TIMEOUT_SECONDS` (default 18s) is the hard parent request budget; `SEARXNG_TIMEOUT_SECONDS` (default 8s) bounds the entire SearXNG retry stage; the legacy `BRAVE_TIMEOUT_SECONDS` variable (default 5s) sets the HTTP timeout for every premium provider. Premium fallback remains serial. If the parent budget expires after some results have accumulated, those partial results are returned and cached with the configured cache TTL; if no result exists, the search fails. A SearXNG stage timeout counts as a SearXNG failure toward its existing consecutive-failure cooldown.
+**Budget and degraded-result trade-offs:** `FALLBACK_TIMEOUT_SECONDS` (default 8s) is the hard parent request budget; `SEARXNG_TIMEOUT_SECONDS` (default 3s) bounds the entire SearXNG retry stage; the legacy `BRAVE_TIMEOUT_SECONDS` variable (default 3s) sets the HTTP timeout for every premium provider. Premium fallback remains serial. If the parent budget expires after some results have accumulated, those partial results are returned and cached with the configured cache TTL; if no result exists, the search fails. Only genuine upstream failures count toward the SearXNG consecutive-failure cooldown: an intentional stage-budget expiry or a caller cancellation does not.
 
 ## Per-engine circuit breaker
 
@@ -112,9 +112,17 @@ All metrics are exposed at `:8080/metrics` (configurable via `METRICS_PATH`), pr
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `requests_total` | Counter | `outcome` | Exactly one final outcome per request: `cache_hit`, `searxng_ok`, `premium_ok`, `searxng_plus_premium_ok`, `fallback_fail`, or `timeout` (overall budget expired with no results). A SearXNG child-stage timeout that falls back to a result is not a `timeout` request outcome; inspect `retry_attempts_total` for attempt-level timeout/cancellation. |
-| `request_duration_seconds` | Histogram | `source`, `engine` | Latency per source backend and engine |
+| `search_request_duration_seconds` | Histogram | — | Complete `/search` handler duration, including cache hits, validation errors and failures |
+| `searxng_stage_duration_seconds` | Histogram | — | Complete SearXNG retry stage: exactly one sample per attempted stage, including failures and timeouts, independent of how many engines responded |
+| `provider_duration_seconds` | Histogram | `provider`, `phase` | Duration of an actual premium-provider call, labelled by provider and `phase` (`t1`/`fallback`) |
 | `results_count` | Histogram | — | Number of results returned per request |
 | `engines_count` | Gauge | — | Distinct engines in last response |
+
+Latency histograms use second buckets `1, 2, 3, 4, 5, 8, 10, 15, 20, 30`. There is deliberately **no per-engine duration series**: the gateway can only time the whole SearXNG call, not the individual engines inside it, so attributing that duration to each engine that responded was misleading. Use `retry_attempts_total` and `engine_unresponsive_total` for per-engine signals, and instrument SearXNG itself for true per-engine timing.
+
+### Tracing (OpenTelemetry)
+
+Tracing is **disabled by default**. Set `OTEL_TRACES_EXPORTER` to `console` (structured, allow-listed span records on stdout) or `otlp` (OTLP/HTTP) to enable it. `otlp` requires `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, used verbatim); a generic endpoint gets `/v1/traces` appended. Sampling is a trace-ID ratio (`OTEL_TRACES_SAMPLER_ARG`, default `0.1`) and deliberately ignores an incoming sampled flag, so an external caller cannot force full sampling. Only W3C `tracecontext` is propagated; baggage is never extracted. Spans cover the `/search` handler, the cache lookup, the SearXNG stage with its attempts and backoff, the wait for the SearXNG result, and each premium call (`t1`/`fallback`). Attributes are restricted to fixed low-cardinality keys — query text, URLs, provider bodies and raw error strings are never recorded.
 
 ### Engine metrics
 
@@ -169,8 +177,12 @@ All configuration is via environment variables. Key variables:
 | `FALLBACK_PROVIDERS` | `brave` | Comma-separated premium provider names |
 | `T1_PREMIUM_COUNT` | `0` | Number of providers to call in the hot path while SearXNG runs (serial by design; see [Why the premium pass is serial](#why-the-premium-pass-is-serial-deliberate)) |
 | `SUFFICIENT_MIN_RESULTS` | `1` | Target merged result count before fallback loop stops |
-| `FALLBACK_TIMEOUT_SECONDS` | `18` | Hard total budget for speculative execution + fallback loop; returns accumulated results on expiry |
-| `SEARXNG_TIMEOUT_SECONDS` | `8` | Total SearXNG stage budget shared across the request and retries/backoff |
+| `FALLBACK_TIMEOUT_SECONDS` | `8` | Hard total budget for speculative execution + fallback loop; returns accumulated results on expiry |
+| `SEARXNG_TIMEOUT_SECONDS` | `3` | Total SearXNG stage budget shared across the request and retries/backoff |
+| `BRAVE_TIMEOUT_SECONDS` | `3` | HTTP timeout applied to every premium provider (legacy name) |
+| `OTEL_TRACES_EXPORTER` | *(empty)* | Tracing off. `console` or `otlp` to enable |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | *(empty)* | OTLP/HTTP base endpoint; `/v1/traces` is appended |
+| `OTEL_TRACES_SAMPLER_ARG` | `0.1` | Trace-ID ratio sampler, `0`–`1` |
 | `SEARXNG_FAIL_THRESHOLD` | `6` | Consecutive SearXNG failures before cooldown |
 | `SEARXNG_FAIL_COOLDOWN_SECONDS` | `180` | Cooldown duration for SearXNG |
 | `CACHE_SIZE` | `1000` | LRU cache entries |
