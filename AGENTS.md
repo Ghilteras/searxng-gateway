@@ -6,6 +6,7 @@ Proxy HTTP davanti a SearXNG: forward a SearXNG, fallback a provider esterni (Br
 - **Build**: automatica via GitHub Actions su push main e tag `v*` — `.github/workflows/build.yml` (`docker/build-push-action@v6`, platforms `linux/amd64,linux/arm64`, cache gha, push su GHCR). NIENTE build locale multi-arch: il builder buildx `multiarch` è stato rimosso dal homelab (2026-08-04).
 - **Test**: `go test ./...`
 - **Lint**: `golangci-lint run`
+- **Semantic tooling**: Serena/gopls symbol lookup is unavailable in this repo — use direct file edits (`read`/`grep`/`edit`) and never abort a task because gopls is unavailable.
 
 ## Architettura
 
