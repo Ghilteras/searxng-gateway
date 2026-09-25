@@ -77,7 +77,7 @@ Keyless mode (no API keys) works out of the box using SearXNG's free engines (Bi
 - **Speculative execution** — `T1_PREMIUM_COUNT` premium providers are selected via atomic round-robin and invoked in the hot path while SearXNG runs concurrently; premium calls are **serial within the pass** by deliberate design (see [docs/architecture.md](docs/architecture.md#why-the-premium-pass-is-serial-deliberate)). Results are merged and deduplicated by URL.
 - **Bounded fallback loop** — if merged results < `SUFFICIENT_MIN_RESULTS`, remaining Tier 2 providers are tried via round-robin until threshold, exhaustion, or `FALLBACK_TIMEOUT_SECONDS`.
 - **Circuit breaker per engine** — 4xx on an engine opens the circuit for 5 min; auto-recovers
-- **Exponential backoff retry** — up to 3 attempts (1s/2s between attempts), bounded by the SearXNG stage budget
+- **Exponential backoff retry** — up to 3 attempts (250ms/500ms between attempts), bounded by the SearXNG stage budget
 - **Prometheus /metrics** — 15+ gauges and counters prefixed `searxng_gateway_`
 - **LRU cache** — 1000 entries, 1h TTL, in-memory
 - **SearXNG config tuning** — reference `examples/searxng/` with engine selection, `suspended_times` tuning, custom User-Agent, and custom Python engines (Serper, Mojeek)
@@ -170,6 +170,12 @@ groups:
 | `BRAVE_FAIL_THRESHOLD` | `3` | no | Consecutive Brave failures before cooldown |
 | `BRAVE_FAIL_COOLDOWN_SECONDS` | `300` | no | Cooldown duration for Brave (seconds) |
 | `BRAVE_TIMEOUT_SECONDS` | `3` | no | Per-request timeout applied to every configured premium provider (legacy variable name) |
+| `OTEL_TRACES_EXPORTER` | *(empty)* | no | Tracing off. Set `console` or `otlp` to enable OpenTelemetry tracing |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | *(empty)* | no | OTLP/HTTP base endpoint; `/v1/traces` is appended. Required when the exporter is `otlp` |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | *(empty)* | no | Trace-specific OTLP endpoint, used verbatim; takes precedence over the generic one |
+| `OTEL_TRACES_SAMPLER_ARG` | `0.1` | no | Trace-ID ratio sampler (`0`–`1`); an incoming sampled flag cannot override it |
+| `OTEL_SERVICE_NAME` | `searxng-gateway` | no | Resource `service.name` for exported spans |
+| `OTEL_RESOURCE_ATTRIBUTES` | *(empty)* | no | Extra standard resource attributes, e.g. `deployment.environment=homelab` |
 | `CACHE_SIZE` | `1000` | no | LRU cache entries (in-memory) |
 | `CACHE_TTL_SECONDS` | `3600` | no | Cache entry TTL (seconds) |
 | `LOG_LEVEL` | `info` | no | Log level (debug, info, warn, error) |
