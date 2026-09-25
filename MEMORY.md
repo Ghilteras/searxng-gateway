@@ -67,3 +67,9 @@ Lessons, incidenti, decisioni di processo. Datato, non sovrascritto. Indice: il 
 ## 2026-09-25 — Serena/gopls unavailable here; use direct file edits
 
 → journal: search "Serena gopls"
+
+---
+
+## 2026-09-25 — Post-deploy latency verification: stage race, cold start, gaps
+
+→ journal: search "straddles the stage budget" · "Cold SearXNG restart" · "cooldown is not exported" · "measurement pitfalls" · "nonexistent container"
