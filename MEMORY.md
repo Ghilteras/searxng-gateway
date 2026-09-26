@@ -54,7 +54,7 @@ Lessons, incidenti, decisioni di processo. Datato, non sovrascritto. Indice: il 
 
 ## 2026-09-25 — Post-deploy latency verification: stage race, cold start, gaps
 
-→ journal: search "straddles the stage budget" · "Cold SearXNG restart" · "cooldown is not exported" · "measurement pitfalls" · "nonexistent container"
+→ journal: search "straddles the stage budget" · "Cold SearXNG restart" · "exported as a metric" · "measurement pitfalls" · "nonexistent container"
 
 ---
 
