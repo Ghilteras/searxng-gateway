@@ -143,6 +143,15 @@ Tracing is **disabled by default**. Set `OTEL_TRACES_EXPORTER` to `console` (str
 | `circuit_breaker_rejections_total` | Counter | `engine` | Requests rejected (open state) |
 | `circuit_breaker_recovery_total` | Counter | `engine` | Auto-recovery events |
 
+### SearXNG cooldown metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `searxng_failure_streak` | Gauge | — | Current consecutive SearXNG failures; reset to 0 on success or when an expired cooldown is cleared |
+| `searxng_cooldown_until_seconds` | Gauge | — | Unix timestamp (seconds) when the current SearXNG cooldown expires; 0 when not in cooldown |
+
+The cooldown gauge is cleared lazily: it keeps the expired timestamp until `inCooldown()` runs on the next request that checks it, so an alert must compare against the current time (`> time()`), not against zero (`> 0`).
+
 ### Retry metrics
 
 | Metric | Type | Labels | Description |
