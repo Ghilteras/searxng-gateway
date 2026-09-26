@@ -44,6 +44,14 @@ var (
 		Help:    "Duration of the complete /search handler including response writing",
 		Buckets: durationBuckets,
 	})
+	SearxngFailureStreak = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "searxng_gateway_searxng_failure_streak",
+		Help: "Current consecutive SearXNG failures",
+	})
+	SearxngCooldownUntilSeconds = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "searxng_gateway_searxng_cooldown_until_seconds",
+		Help: "Unix time when the current SearXNG cooldown expires, or 0 when not in cooldown",
+	})
 
 	// ResultsCount is a histogram of the number of results returned per request.
 	ResultsCount = prometheus.NewHistogram(prometheus.HistogramOpts{
@@ -177,6 +185,6 @@ var initOnce sync.Once
 // It is safe to call multiple times — subsequent calls are no-ops.
 func Init() {
 	initOnce.Do(func() {
-		prometheus.MustRegister(RequestsTotal, RequestDuration, SearxngStageDuration, SearchRequestDuration, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveRateLimitRemaining, BraveRateLimitLimit, BraveRateLimitResetSeconds, SerperSearchesRemaining, SerperSearchesLimit)
+		prometheus.MustRegister(RequestsTotal, RequestDuration, SearxngStageDuration, SearchRequestDuration, SearxngFailureStreak, SearxngCooldownUntilSeconds, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveRateLimitRemaining, BraveRateLimitLimit, BraveRateLimitResetSeconds, SerperSearchesRemaining, SerperSearchesLimit)
 	})
 }

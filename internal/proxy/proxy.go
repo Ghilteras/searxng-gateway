@@ -472,6 +472,8 @@ func (p *Proxy) recordSearxngSuccess() {
 	defer p.mu.Unlock()
 	atomic.StoreInt64(&p.sxFails, 0)
 	p.sxCooldownTil.Store(0)
+	metrics.SearxngFailureStreak.Set(0)
+	metrics.SearxngCooldownUntilSeconds.Set(0)
 }
 
 // recordSearxngFailure increments the failure counter and starts a cooldown
@@ -480,9 +482,11 @@ func (p *Proxy) recordSearxngFailure() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	fails := atomic.AddInt64(&p.sxFails, 1)
+	metrics.SearxngFailureStreak.Set(float64(fails))
 	if int(fails) >= p.cfg.SearxngFailThreshold {
 		until := time.Now().Add(p.cfg.SearxngFailCooldown).UnixNano()
 		p.sxCooldownTil.Store(until)
+		metrics.SearxngCooldownUntilSeconds.Set(float64(until / int64(time.Second)))
 	}
 }
 
@@ -494,10 +498,23 @@ func (p *Proxy) inCooldown() bool {
 		return false
 	}
 	if time.Now().UnixNano() >= until {
-		// Cooldown expired — reset state.
-		p.sxCooldownTil.Store(0)
-		atomic.StoreInt64(&p.sxFails, 0)
-		return false
+		// Recheck under the same lock used by success/failure transitions. A
+		// concurrent failure may have restarted or extended the cooldown.
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		until = p.sxCooldownTil.Load()
+		if until == 0 {
+			return false
+		}
+		if time.Now().UnixNano() >= until {
+			// Cooldown expired — reset state.
+			p.sxCooldownTil.Store(0)
+			atomic.StoreInt64(&p.sxFails, 0)
+			metrics.SearxngFailureStreak.Set(0)
+			metrics.SearxngCooldownUntilSeconds.Set(0)
+			return false
+		}
+		return true
 	}
 	return true
 }

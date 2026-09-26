@@ -527,6 +527,71 @@ func outcomeCounter(t *testing.T, outcome string) float64 {
 	return 0
 }
 
+func gaugeValue(t *testing.T, name string) float64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("Gather failed: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == name {
+			for _, m := range mf.GetMetric() {
+				return m.GetGauge().GetValue()
+			}
+		}
+	}
+	t.Fatalf("metric %q not found", name)
+	return 0
+}
+
+func TestSearxngCooldownMetrics(t *testing.T) {
+	metrics.Init()
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	p := newTestProxy(cfg, &fakeSearxng{}, c, breaker.New())
+
+	// The Prometheus registry is process-global, so establish the initial zero
+	// state through the real Proxy success transition instead of relying on test order.
+	p.recordSearxngSuccess()
+	if got := gaugeValue(t, "searxng_gateway_searxng_cooldown_until_seconds"); got != 0 {
+		t.Fatalf("cooldown_until_seconds after initial success = %v, want 0", got)
+	}
+	if got := gaugeValue(t, "searxng_gateway_searxng_failure_streak"); got != 0 {
+		t.Fatalf("failure_streak after initial success = %v, want 0", got)
+	}
+	for range cfg.SearxngFailThreshold {
+		p.recordSearxngFailure()
+	}
+	if got := gaugeValue(t, "searxng_gateway_searxng_failure_streak"); got != float64(cfg.SearxngFailThreshold) {
+		t.Fatalf("failure_streak = %v, want %d", got, cfg.SearxngFailThreshold)
+	}
+	if got := gaugeValue(t, "searxng_gateway_searxng_cooldown_until_seconds"); got <= float64(time.Now().Unix()) {
+		t.Fatalf("cooldown_until_seconds = %v, want future unix time", got)
+	}
+	// Verify success clears non-zero gauges (not merely the already-expired zero state).
+	p.recordSearxngSuccess()
+	if got := gaugeValue(t, "searxng_gateway_searxng_failure_streak"); got != 0 {
+		t.Fatalf("failure_streak after success = %v, want 0", got)
+	}
+	if got := gaugeValue(t, "searxng_gateway_searxng_cooldown_until_seconds"); got != 0 {
+		t.Fatalf("cooldown_until_seconds after success = %v, want 0", got)
+	}
+	// Re-trigger threshold independently, then verify lazy expiry clears state/gauges.
+	for range cfg.SearxngFailThreshold {
+		p.recordSearxngFailure()
+	}
+	p.sxCooldownTil.Store(time.Now().Add(-time.Second).UnixNano())
+	if p.inCooldown() {
+		t.Fatal("inCooldown() = true after forced expiry, want false")
+	}
+	if got := gaugeValue(t, "searxng_gateway_searxng_failure_streak"); got != 0 {
+		t.Fatalf("failure_streak after expiry = %v, want 0", got)
+	}
+	if got := gaugeValue(t, "searxng_gateway_searxng_cooldown_until_seconds"); got != 0 {
+		t.Fatalf("cooldown_until_seconds after expiry = %v, want 0", got)
+	}
+}
+
 // TestOutcomeLabels_SearxngErrorPremiumOnly — SearXNG errors, premium
 // returns results → outcome must be "premium_ok", NOT "searxng_plus_premium_ok".
 // Regression guard: the old code checked !sxSkipped (cooldown flag) instead of
