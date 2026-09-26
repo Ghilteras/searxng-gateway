@@ -79,3 +79,11 @@ Lessons, incidenti, decisioni di processo. Datato, non sovrascritto. Indice: il 
 ## 2026-09-25 — Verdetto del reviewer child nascosto da una read a limit piccolo; duplicato spawnato
 
 → journal: search "small-limit read-child-output" · "duplicate reviewer spawned"
+
+---
+
+## 2026-09-25 — Credenziale OpenAI invalida travestita da idle-wake ghost; turno vuoto = sintomo
+
+→ journal: search "idle-wake ghosts" · "empty assistant turn is a symptom"
+
+Placement finale FUORI SCOPE (homelab-config): `opencode-self` + `subagent-orchestration`.
