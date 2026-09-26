@@ -10,27 +10,9 @@ Lessons, incidenti, decisioni di processo. Datato, non sovrascritto. Indice: il 
 
 ---
 
-## 2026-07-31 — README: Bing fuori dai fallback; chiavi provider; nota mojeek
-
-→ journal: search "Bing removed from fallback"
-
----
-
 ## 2026-07-31 — Cache TTL; Valkey non serve; limiter SearXNG
 
 → journal: search "Valkey rejected"
-
----
-
-## 2026-07-29 — Refactor proxy: fallbackSearch → premiumLoop
-
-→ journal: search "fallbackSearch"
-
----
-
-## 2026-07-29 — T1 Premium Provider → T1_PREMIUM_COUNT
-
-→ journal: search "T1_PREMIUM_COUNT"
 
 ---
 
@@ -87,3 +69,9 @@ Lessons, incidenti, decisioni di processo. Datato, non sovrascritto. Indice: il 
 → journal: search "idle-wake ghosts" · "empty assistant turn is a symptom"
 
 Placement finale FUORI SCOPE (homelab-config): `opencode-self` + `subagent-orchestration`.
+
+---
+
+## 2026-09-26 — Post-deploy: soglia premium mai raggiunta, T1 fast path inerte
+
+→ journal: search "never reached" · "T1 fast path inert" · "measure activation" · "direct-first cache confound"
