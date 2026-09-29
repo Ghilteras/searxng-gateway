@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -102,6 +105,41 @@ func TestSearchEndpointFallback(t *testing.T) {
 	}
 	if !strings.Contains(rr.Header().Get("Content-Type"), "json") {
 		t.Errorf("Content-Type = %q, want json", rr.Header().Get("Content-Type"))
+	}
+}
+
+func TestSearchFailureDoesNotDiscloseProviderError(t *testing.T) {
+	const sentinel = "SENTINEL-PROVIDER-BODY-DO-NOT-LEAK"
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	cfg := &config.Config{FallbackTimeout: time.Second, SearxngTimeout: 20 * time.Millisecond, MetricsPath: "/metrics", SearxngFailThreshold: 6, SearxngFailCooldown: time.Minute, SufficientMinResults: 1}
+	c, err := cache.New(10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := backends.NewManager()
+	_ = mgr.SetFallbacks(nil)
+	r := newRouter(proxy.New(cfg, &stubSearxng{err: errors.New("all backends failed: provider HTTP 432: " + sentinel)}, c, breaker.New(), mgr), cfg)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/search?q=disclosure", nil))
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rr.Code)
+	}
+	body := rr.Body.String()
+	if strings.Contains(body, sentinel) || strings.Contains(body, "context deadline exceeded") || strings.Contains(body, "all backends failed") {
+		t.Fatalf("provider/internal error disclosed in body: %q", body)
+	}
+	if !strings.Contains(rr.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", rr.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(body, `"error":"search_failed"`) {
+		t.Fatalf("body = %q, want sanitized JSON error", body)
+	}
+	if !strings.Contains(logs.String(), sentinel) {
+		t.Fatalf("server log does not contain provider sentinel: %q", logs.String())
 	}
 }
 
