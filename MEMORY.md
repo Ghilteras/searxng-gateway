@@ -75,3 +75,9 @@ Placement finale FUORI SCOPE (homelab-config): `opencode-self` + `subagent-orche
 ## 2026-09-26 — Post-deploy: soglia premium mai raggiunta, T1 fast path inerte
 
 → journal: search "never reached" · "T1 fast path inert" · "measure activation" · "direct-first cache confound"
+
+---
+
+## 2026-09-29 — Gateway closeout: verification, low-volume alerts, worktree tooling
+
+→ journal: search "verify live artifacts" · "low-volume alerts" · "partial tool catalog" · "canonical worktree guard"
