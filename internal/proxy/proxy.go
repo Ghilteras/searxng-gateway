@@ -29,11 +29,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/sony/gobreaker"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -245,7 +247,7 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	// 6. Fallback loop: all remaining FALLBACK_PROVIDERS (skips already-used).
 	if len(allResults) < p.cfg.SufficientMinResults {
 		fallbackCtx, fallbackSpan := otel.Tracer("sx/internal/proxy").Start(timeoutCtx, "fallback.loop")
-		allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs =
+		allResults, _, _, premiumHadResults, premiumErrMsgs =
 			p.premiumLoop(fallbackCtx, key, allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs)
 		fallbackSpan.SetAttributes(attribute.String("phase", "fallback"), attribute.Int("result_count", len(allResults)), attribute.String("outcome", "complete"))
 		fallbackSpan.End()
@@ -347,9 +349,12 @@ func (p *Proxy) runT1Pass(ctx context.Context, key string) t1PassResult {
 		metrics.RequestDuration.WithLabelValues(premium.Name(), "t1").Observe(elapsed.Seconds())
 
 		if err != nil {
-			if isClientError(err.Error()) {
-				p.breakerMgr.RecordClientError(premium.Name(), err.Error())
+			clientError, category := classifyPremiumError(err)
+			before := p.breakerMgr.State(premium.Name())
+			if clientError {
+				p.breakerMgr.RecordClientError(premium.Name(), category)
 			}
+			logPremiumFailure(premium.Name(), "t1", category, clientError, before, p.breakerMgr.State(premium.Name()))
 			pass.errMsgs = append(pass.errMsgs, fmt.Sprintf("%s: %v", premium.Name(), err))
 			continue
 		}
@@ -393,11 +398,8 @@ func (p *Proxy) premiumLoop(
 	premiumHadResults bool,
 	errMsgs []string,
 ) ([]searxng.Result, map[string]bool, map[string]bool, bool, []string) {
-	for {
+	for len(allResults) < p.cfg.SufficientMinResults {
 		// Stop conditions.
-		if len(allResults) >= p.cfg.SufficientMinResults {
-			break
-		}
 		if ctx.Err() != nil {
 			break
 		}
@@ -434,9 +436,12 @@ func (p *Proxy) premiumLoop(
 		metrics.RequestDuration.WithLabelValues(premium.Name(), "fallback").Observe(elapsed.Seconds())
 
 		if err != nil {
-			if isClientError(err.Error()) {
-				p.breakerMgr.RecordClientError(premium.Name(), err.Error())
+			clientError, category := classifyPremiumError(err)
+			before := p.breakerMgr.State(premium.Name())
+			if clientError {
+				p.breakerMgr.RecordClientError(premium.Name(), category)
 			}
+			logPremiumFailure(premium.Name(), "fallback", category, clientError, before, p.breakerMgr.State(premium.Name()))
 			errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", premium.Name(), err))
 			continue
 		}
@@ -748,4 +753,47 @@ func isClientError(reason string) bool {
 	}
 	// 5xx, timeout, HTTP error (5xx), connection refused = server error
 	return false
+}
+
+// classifyPremiumError uses backend status/type data where available. Text is
+// consulted only for unstructured errors; returned categories are bounded.
+func classifyPremiumError(err error) (bool, string) {
+	var backendErr *backends.BackendError
+	if errors.As(err, &backendErr) {
+		switch {
+		case backendErr.Code >= 400 && backendErr.Code <= 499:
+			return true, "http_4xx"
+		case backendErr.Code == backends.ErrCodeAuth:
+			return true, "auth"
+		case backendErr.Code == backends.ErrCodeRateLimit:
+			return true, "rate_limit"
+		case backendErr.Code >= 500 && backendErr.Code <= 599:
+			return false, "http_5xx"
+		case backendErr.Code == backends.ErrCodeNetwork:
+			return false, "network"
+		case backendErr.Code == backends.ErrCodeInvalidResponse:
+			return false, "invalid_response"
+		case backendErr.Code == backends.ErrCodeUnavailable || backendErr.Code == backends.ErrCodeDegraded:
+			return false, "unavailable"
+		default:
+			return false, "backend_error"
+		}
+	}
+	if isClientError(err.Error()) {
+		return true, "unstructured_client_error"
+	}
+	return false, "unstructured_error"
+}
+
+func logPremiumFailure(provider, phase, category string, clientError bool, before, after gobreaker.State) {
+	action := "continue"
+	if after == gobreaker.StateOpen && before != gobreaker.StateOpen {
+		action = "breaker_open"
+		log.Printf("[WARN] provider_failure provider=%s phase=%s class=%s breaker=%s", provider, phase, category, action)
+		return
+	}
+	if clientError {
+		action = "breaker_recorded"
+	}
+	log.Printf("[INFO] provider_failure provider=%s phase=%s class=%s breaker=%s", provider, phase, category, action)
 }

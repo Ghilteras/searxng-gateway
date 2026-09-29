@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,6 +42,7 @@ type fakeBackend struct {
 	results []backends.SearchResult
 	err     error
 	avail   bool
+	calls   atomic.Int64
 }
 
 type contextBackend struct {
@@ -65,6 +67,7 @@ func (s *contextSearxng) Search(ctx context.Context, _ string) (*searxng.Respons
 func (f *fakeBackend) Name() string      { return f.name }
 func (f *fakeBackend) IsAvailable() bool { return f.avail }
 func (f *fakeBackend) Search(_ backends.SearchOptions) ([]backends.SearchResult, error) {
+	f.calls.Add(1)
 	return f.results, f.err
 }
 
@@ -495,6 +498,84 @@ func TestIsClientError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isClientError(tt.reason); got != tt.want {
 				t.Errorf("isClientError(%q) = %v, want %v", tt.reason, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifyPremiumError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		want     bool
+		category string
+	}{
+		{"typed 432", &backends.BackendError{Backend: "tavily", Code: 432, Err: errors.New("private plan body")}, true, "http_4xx"},
+		{"typed 401", &backends.BackendError{Code: 401}, true, "http_4xx"},
+		{"typed 403", &backends.BackendError{Code: 403}, true, "http_4xx"},
+		{"typed 429", &backends.BackendError{Code: 429}, true, "http_4xx"},
+		{"typed 5xx", &backends.BackendError{Code: 503}, false, "http_5xx"},
+		{"typed network", &backends.BackendError{Code: backends.ErrCodeNetwork}, false, "network"},
+		{"typed invalid response", &backends.BackendError{Code: backends.ErrCodeInvalidResponse}, false, "invalid_response"},
+		{"typed auth", &backends.BackendError{Code: backends.ErrCodeAuth}, true, "auth"},
+		{"typed rate limit", &backends.BackendError{Code: backends.ErrCodeRateLimit}, true, "rate_limit"},
+		{"untyped captcha", errors.New("captcha required"), true, "unstructured_client_error"},
+		{"untyped blocked", errors.New("blocked by policy"), true, "unstructured_client_error"},
+		{"untyped suspension", errors.New("account banned"), true, "unstructured_client_error"},
+		{"generic", errors.New("temporary provider issue"), false, "unstructured_error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, category := classifyPremiumError(tt.err)
+			if got != tt.want || category != tt.category {
+				t.Fatalf("classifyPremiumError() = (%v, %q), want (%v, %q)", got, category, tt.want, tt.category)
+			}
+		})
+	}
+}
+
+func TestTyped432TripsBreakerInBothPremiumPhases(t *testing.T) {
+	for _, phase := range []string{"t1", "fallback"} {
+		t.Run(phase, func(t *testing.T) {
+			const querySecret = "QUERY-SECRET-432"
+			const bodySecret = "PLAN-BODY-432"
+			const keySecret = "API-KEY-432"
+			backend := &fakeBackend{name: "tavily", avail: true, err: &backends.BackendError{
+				Backend: "tavily", Code: 432, Err: errors.New(bodySecret + " " + keySecret),
+			}}
+			cfg := newCfg()
+			cfg.FallbackProviders = []string{"tavily"}
+			cfg.T1PremiumCount = 1
+			bm := breaker.New()
+			c, _ := cache.New(10, 0)
+			p := newTestProxy(cfg, &fakeSearxng{}, c, bm, backend)
+			var logs strings.Builder
+			previous := log.Writer()
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(previous) })
+			if phase == "t1" {
+				p.runT1Pass(context.Background(), querySecret)
+			} else {
+				p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, false, nil)
+			}
+			if !bm.IsOpen("tavily") {
+				t.Fatal("typed 432 did not open Tavily breaker")
+			}
+			if got := bm.LastReason("tavily"); got != "http_4xx" {
+				t.Fatalf("breaker reason = %q, want bounded category http_4xx", got)
+			}
+			if strings.Contains(logs.String(), querySecret) || strings.Contains(logs.String(), bodySecret) || strings.Contains(logs.String(), keySecret) {
+				t.Fatalf("sensitive text leaked in provider log: %q", logs.String())
+			}
+			if strings.Contains(bm.LastReason("tavily"), bodySecret) || strings.Contains(bm.LastReason("tavily"), keySecret) {
+				t.Fatal("sensitive text leaked in breaker reason")
+			}
+			calls := backend.calls.Load()
+			backend.err = nil
+			backend.results = []backends.SearchResult{{URL: "https://recovered", Engine: "tavily"}}
+			p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, false, nil)
+			if got := backend.calls.Load(); got != calls {
+				t.Fatalf("provider call count while breaker open = %d, want %d", got, calls)
 			}
 		})
 	}
