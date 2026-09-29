@@ -64,7 +64,7 @@ func TestSearchOK(t *testing.T) {
 			t.Errorf("q = %q, want k8s", r.URL.Query().Get("q"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"web":{"results":[{"title":"T","url":"https://x","description":"D","age":"2 days ago"}]}}`))
+		_, _ = w.Write([]byte(`{"web":{"results":[{"title":"T","url":"https://x","description":"D","age":"2 days ago"}]}}`))
 	}))
 	defer srv.Close()
 

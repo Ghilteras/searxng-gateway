@@ -33,7 +33,7 @@ func TestBingBackend_Search_ParsesResults(t *testing.T) {
 		if ua := r.Header.Get("User-Agent"); !strings.Contains(ua, "Mozilla") {
 			t.Errorf("expected browser-like User-Agent, got %q", ua)
 		}
-		w.Write([]byte(bingResultsPage))
+		_, _ = w.Write([]byte(bingResultsPage))
 	}))
 	defer server.Close()
 
@@ -59,7 +59,7 @@ func TestBingBackend_Search_ParsesResults(t *testing.T) {
 
 func TestBingBackend_Search_ChallengePage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`<html><body><h1>Verify you are human</h1></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><h1>Verify you are human</h1></body></html>`))
 	}))
 	defer server.Close()
 
@@ -77,7 +77,7 @@ func TestBingBackend_Search_ChallengePage(t *testing.T) {
 
 func TestBingBackend_Search_GenuinelyEmpty(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`<html><body><ol id="b_results"><li class="b_no">No results</li></ol></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><ol id="b_results"><li class="b_no">No results</li></ol></body></html>`))
 	}))
 	defer server.Close()
 
@@ -115,7 +115,7 @@ func TestBingBackend_Search_DecoyResults(t *testing.T) {
 	<div class="b_caption"><p>Filmography of an American actor.</p></div></li>
 	</ol></body></html>`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(decoyPage))
+		_, _ = w.Write([]byte(decoyPage))
 	}))
 	defer server.Close()
 

@@ -51,7 +51,8 @@ fmt-check:
 lint:
     go vet ./...
 
-# Run golangci-lint (install: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest)
+# Run golangci-lint locally. CI pins v2.1.6 (.github/workflows/build.yml);
+# install the same version: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
 lint-golangci:
     golangci-lint run ./...
 

@@ -14,7 +14,7 @@ func TestSearchOK(t *testing.T) {
 			t.Errorf("query = %q, want %q", r.URL.Query().Get("q"), "hello")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"results":[{"title":"t1","url":"u1","content":"c1","engine":"brave","score":0.9},{"title":"t2","url":"u2","content":"c2","engine":"ddg","score":0.8}]}`))
+		_, _ = w.Write([]byte(`{"results":[{"title":"t1","url":"u1","content":"c1","engine":"brave","score":0.9},{"title":"t2","url":"u2","content":"c2","engine":"ddg","score":0.8}]}`))
 	}))
 	defer srv.Close()
 	c := New(srv.URL, 5*time.Second)

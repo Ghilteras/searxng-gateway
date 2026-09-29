@@ -81,7 +81,7 @@ func (t *TavilyBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	if !t.IsAvailable() {
 		return nil, &BackendError{
 			Backend: t.Name(),
-			Err:     fmt.Errorf("Tavily API key not configured"),
+			Err:     fmt.Errorf("tavily API key not configured"),
 			Code:    ErrCodeUnavailable,
 		}
 	}
@@ -134,7 +134,7 @@ func (t *TavilyBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 			Code:    ErrCodeNetwork,
 		}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

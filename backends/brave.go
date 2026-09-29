@@ -70,7 +70,7 @@ func (b *BraveBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	if !b.IsAvailable() {
 		return nil, &BackendError{
 			Backend: b.Name(),
-			Err:     fmt.Errorf("Brave API key not configured"),
+			Err:     fmt.Errorf("brave API key not configured"),
 			Code:    ErrCodeUnavailable,
 		}
 	}
@@ -95,9 +95,10 @@ func (b *BraveBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 
 	// Safe search
 	safeSearch := "moderate"
-	if opts.SafeSearch == "none" {
+	switch opts.SafeSearch {
+	case "none":
 		safeSearch = "off"
-	} else if opts.SafeSearch == "strict" {
+	case "strict":
 		safeSearch = "strict"
 	}
 	params.Set("safesearch", safeSearch)
@@ -130,7 +131,7 @@ func (b *BraveBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 			Code:    ErrCodeNetwork,
 		}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Emit rate-limit Prometheus gauges from response headers.
 	brave.ObserveRateLimitHeaders(resp.Header)

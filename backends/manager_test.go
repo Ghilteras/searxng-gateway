@@ -78,8 +78,8 @@ func TestManager_Search_PrimarySuccess(t *testing.T) {
 
 	mgr.Register(primary)
 	mgr.Register(fallback)
-	mgr.SetPrimary("primary")
-	mgr.SetFallbacks([]string{"fallback"})
+	_ = mgr.SetPrimary("primary")
+	_ = mgr.SetFallbacks([]string{"fallback"})
 
 	results, engine, err := mgr.Search(SearchOptions{Query: "test"})
 	if err != nil {
@@ -111,8 +111,8 @@ func TestManager_Search_FallbackOnPrimaryFailure(t *testing.T) {
 
 	mgr.Register(primary)
 	mgr.Register(fallback)
-	mgr.SetPrimary("primary")
-	mgr.SetFallbacks([]string{"fallback"})
+	_ = mgr.SetPrimary("primary")
+	_ = mgr.SetFallbacks([]string{"fallback"})
 
 	results, engine, err := mgr.Search(SearchOptions{Query: "test"})
 	if err != nil {
@@ -140,8 +140,8 @@ func TestManager_Search_FallbackOnEmptyPrimary(t *testing.T) {
 
 	mgr.Register(primary)
 	mgr.Register(fallback)
-	mgr.SetPrimary("primary")
-	mgr.SetFallbacks([]string{"fallback"})
+	_ = mgr.SetPrimary("primary")
+	_ = mgr.SetFallbacks([]string{"fallback"})
 
 	results, engine, err := mgr.Search(SearchOptions{Query: "test"})
 	if err != nil {
@@ -163,8 +163,8 @@ func TestManager_Search_AllBackendsEmpty(t *testing.T) {
 
 	mgr.Register(primary)
 	mgr.Register(fallback)
-	mgr.SetPrimary("primary")
-	mgr.SetFallbacks([]string{"fallback"})
+	_ = mgr.SetPrimary("primary")
+	_ = mgr.SetFallbacks([]string{"fallback"})
 
 	results, engine, err := mgr.Search(SearchOptions{Query: "test"})
 	if err != nil {
@@ -186,8 +186,8 @@ func TestManager_Search_EmptyErroringPrimaryFallsBackToEmptyFallback(t *testing.
 
 	mgr.Register(primary)
 	mgr.Register(fallback)
-	mgr.SetPrimary("primary")
-	mgr.SetFallbacks([]string{"fallback"})
+	_ = mgr.SetPrimary("primary")
+	_ = mgr.SetFallbacks([]string{"fallback"})
 
 	results, engine, err := mgr.Search(SearchOptions{Query: "test"})
 	if err != nil {
@@ -213,8 +213,8 @@ func TestManager_Search_NoFallbackOnEmptyLaterPage(t *testing.T) {
 
 	mgr.Register(primary)
 	mgr.Register(fallback)
-	mgr.SetPrimary("primary")
-	mgr.SetFallbacks([]string{"fallback"})
+	_ = mgr.SetPrimary("primary")
+	_ = mgr.SetFallbacks([]string{"fallback"})
 
 	results, engine, err := mgr.Search(SearchOptions{Query: "test", PageNo: 2})
 	if err != nil {
@@ -238,8 +238,8 @@ func TestManager_Search_AllBackendsFail(t *testing.T) {
 	mgr.Register(primary)
 	mgr.Register(fb1)
 	mgr.Register(fb2)
-	mgr.SetPrimary("primary")
-	mgr.SetFallbacks([]string{"fb1", "fb2"})
+	_ = mgr.SetPrimary("primary")
+	_ = mgr.SetFallbacks([]string{"fb1", "fb2"})
 
 	_, _, err := mgr.Search(SearchOptions{Query: "test"})
 	if err == nil {
@@ -352,8 +352,8 @@ func TestManager_FallbackOrder(t *testing.T) {
 	mgr.Register(primary)
 	mgr.Register(fb1)
 	mgr.Register(fb2)
-	mgr.SetPrimary("primary")
-	mgr.SetFallbacks([]string{"fb1", "fb2"})
+	_ = mgr.SetPrimary("primary")
+	_ = mgr.SetFallbacks([]string{"fb1", "fb2"})
 
 	results, engine, err := mgr.Search(SearchOptions{Query: "test"})
 	if err != nil {

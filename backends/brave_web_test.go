@@ -40,7 +40,7 @@ func TestBraveWebBackend_Search_ParsesWebResultsOnly(t *testing.T) {
 		if r.URL.Query().Get("q") != "golang" {
 			t.Errorf("expected query 'golang', got %q", r.URL.Query().Get("q"))
 		}
-		w.Write([]byte(braveResultsPage))
+		_, _ = w.Write([]byte(braveResultsPage))
 	}))
 	defer server.Close()
 
@@ -63,7 +63,7 @@ func TestBraveWebBackend_Search_ParsesWebResultsOnly(t *testing.T) {
 
 func TestBraveWebBackend_Search_ChallengePage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`<html><body><h1>Checking your browser...</h1></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><h1>Checking your browser...</h1></body></html>`))
 	}))
 	defer server.Close()
 
@@ -81,7 +81,7 @@ func TestBraveWebBackend_Search_ChallengePage(t *testing.T) {
 
 func TestBraveWebBackend_Search_GenuinelyEmpty(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`<html><body><div id="results"></div></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><div id="results"></div></body></html>`))
 	}))
 	defer server.Close()
 

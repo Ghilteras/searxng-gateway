@@ -83,7 +83,7 @@ func TestBraveBackend_Search_Success(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -113,7 +113,7 @@ func TestBraveBackend_Search_Success(t *testing.T) {
 func TestBraveBackend_Search_AuthError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"error": "invalid key"}`))
+		_, _ = w.Write([]byte(`{"error": "invalid key"}`))
 	}))
 	defer server.Close()
 
@@ -134,7 +134,7 @@ func TestBraveBackend_Search_AuthError(t *testing.T) {
 func TestBraveBackend_Search_RateLimit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		w.Write([]byte(`{"error": "rate limited"}`))
+		_, _ = w.Write([]byte(`{"error": "rate limited"}`))
 	}))
 	defer server.Close()
 
@@ -155,7 +155,7 @@ func TestBraveBackend_Search_RateLimit(t *testing.T) {
 func TestBraveBackend_Search_InvalidJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{invalid json}`))
+		_, _ = w.Write([]byte(`{invalid json}`))
 	}))
 	defer server.Close()
 
@@ -176,7 +176,7 @@ func TestBraveBackend_Search_InvalidJSON(t *testing.T) {
 func TestBraveBackend_Search_ServerError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`internal server error`))
+		_, _ = w.Write([]byte(`internal server error`))
 	}))
 	defer server.Close()
 
@@ -192,7 +192,7 @@ func TestBraveBackend_Search_SafeSearch(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedQuery = r.URL.Query().Get("safesearch")
 		resp := braveSearchResponse{Web: braveWebResults{Results: []braveResult{}}}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -208,7 +208,7 @@ func TestBraveBackend_Search_SafeSearch(t *testing.T) {
 
 	for _, tt := range tests {
 		b := newTestBraveBackend(server.URL, "key")
-		b.Search(SearchOptions{Query: "test", SafeSearch: tt.safeSearch})
+		_, _ = b.Search(SearchOptions{Query: "test", SafeSearch: tt.safeSearch})
 		if capturedQuery != tt.want {
 			t.Errorf("SafeSearch(%q): expected safesearch=%q, got %q", tt.safeSearch, tt.want, capturedQuery)
 		}
@@ -220,12 +220,12 @@ func TestBraveBackend_Search_Pagination(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedOffset = r.URL.Query().Get("offset")
 		resp := braveSearchResponse{Web: braveWebResults{Results: []braveResult{}}}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
 	b := newTestBraveBackend(server.URL, "key")
-	b.Search(SearchOptions{Query: "test", PageNo: 3, NumResults: 10})
+	_, _ = b.Search(SearchOptions{Query: "test", PageNo: 3, NumResults: 10})
 	if capturedOffset != "20" {
 		t.Errorf("expected offset=20 for page 3, got %q", capturedOffset)
 	}

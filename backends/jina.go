@@ -67,7 +67,7 @@ type jinaResult struct {
 
 func (j *JinaBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	if !j.IsAvailable() {
-		return nil, &BackendError{Backend: j.Name(), Err: fmt.Errorf("Jina backend not configured"), Code: ErrCodeUnavailable}
+		return nil, &BackendError{Backend: j.Name(), Err: fmt.Errorf("jina backend not configured"), Code: ErrCodeUnavailable}
 	}
 
 	reqBody := jinaRequest{
@@ -104,7 +104,7 @@ func (j *JinaBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	if err != nil {
 		return nil, &BackendError{Backend: j.Name(), Err: err, Code: ErrCodeNetwork}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

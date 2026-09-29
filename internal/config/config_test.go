@@ -20,7 +20,7 @@ func restoreEnv(prev []string) {
 		if eq < 0 {
 			continue
 		}
-		os.Setenv(kv[:eq], kv[eq+1:])
+		_ = os.Setenv(kv[:eq], kv[eq+1:])
 	}
 }
 
@@ -37,7 +37,7 @@ func TestLoadDefaults(t *testing.T) {
 	prev := saveEnv()
 	defer restoreEnv(prev)
 	os.Clearenv()
-	os.Setenv("BRAVE_API_KEY", "test-key")
+	_ = os.Setenv("BRAVE_API_KEY", "test-key")
 
 	cfg, err := Load()
 	if err != nil {
@@ -85,8 +85,8 @@ func TestLoadEnvOverride(t *testing.T) {
 	prev := saveEnv()
 	defer restoreEnv(prev)
 	os.Clearenv()
-	os.Setenv("BRAVE_API_KEY", "test-key")
-	os.Setenv("SEARXNG_FAIL_THRESHOLD", "10")
+	_ = os.Setenv("BRAVE_API_KEY", "test-key")
+	_ = os.Setenv("SEARXNG_FAIL_THRESHOLD", "10")
 
 	cfg, err := Load()
 	if err != nil {
@@ -119,8 +119,8 @@ func TestLoadInvalidThreshold(t *testing.T) {
 	prev := saveEnv()
 	defer restoreEnv(prev)
 	os.Clearenv()
-	os.Setenv("BRAVE_API_KEY", "test-key")
-	os.Setenv("SEARXNG_FAIL_THRESHOLD", "0")
+	_ = os.Setenv("BRAVE_API_KEY", "test-key")
+	_ = os.Setenv("SEARXNG_FAIL_THRESHOLD", "0")
 
 	if _, err := Load(); err == nil {
 		t.Error("Load() expected error when SEARXNG_FAIL_THRESHOLD is 0")
@@ -131,8 +131,8 @@ func TestLoadInvalidCooldown(t *testing.T) {
 	prev := saveEnv()
 	defer restoreEnv(prev)
 	os.Clearenv()
-	os.Setenv("BRAVE_API_KEY", "test-key")
-	os.Setenv("SEARXNG_FAIL_COOLDOWN_SECONDS", "0")
+	_ = os.Setenv("BRAVE_API_KEY", "test-key")
+	_ = os.Setenv("SEARXNG_FAIL_COOLDOWN_SECONDS", "0")
 
 	if _, err := Load(); err == nil {
 		t.Error("Load() expected error when SEARXNG_FAIL_COOLDOWN_SECONDS is 0")

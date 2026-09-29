@@ -64,7 +64,7 @@ func TestSearxngBackend_Search_GET(t *testing.T) {
 				},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -85,7 +85,7 @@ func TestSearxngBackend_Search_GET(t *testing.T) {
 
 func TestSearxngBackend_Search_EmptyWithUnresponsiveEngines(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"results": [], "unresponsive_engines": [["brave", "Suspended: too many requests"], ["startpage", "Suspended: CAPTCHA"]]}`))
+		_, _ = w.Write([]byte(`{"results": [], "unresponsive_engines": [["brave", "Suspended: too many requests"], ["startpage", "Suspended: CAPTCHA"]]}`))
 	}))
 	defer server.Close()
 
@@ -110,7 +110,7 @@ func TestSearxngBackend_Search_EmptyWithUnresponsiveEngines(t *testing.T) {
 
 func TestSearxngBackend_Search_EmptyWithoutUnresponsiveEngines(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"results": [], "unresponsive_engines": []}`))
+		_, _ = w.Write([]byte(`{"results": [], "unresponsive_engines": []}`))
 	}))
 	defer server.Close()
 
@@ -126,7 +126,7 @@ func TestSearxngBackend_Search_EmptyWithoutUnresponsiveEngines(t *testing.T) {
 
 func TestSearxngBackend_Search_EmptyLaterPageWithUnresponsiveEngines(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"results": [], "unresponsive_engines": [["brave", "Suspended: too many requests"]]}`))
+		_, _ = w.Write([]byte(`{"results": [], "unresponsive_engines": [["brave", "Suspended: too many requests"]]}`))
 	}))
 	defer server.Close()
 
@@ -172,7 +172,7 @@ func TestSearxngBackend_Search_POST(t *testing.T) {
 			t.Errorf("expected form content-type, got %q", r.Header.Get("Content-Type"))
 		}
 
-		r.ParseForm()
+		_ = r.ParseForm()
 		if r.FormValue("q") != "test" {
 			t.Errorf("expected query 'test', got %q", r.FormValue("q"))
 		}
@@ -182,7 +182,7 @@ func TestSearxngBackend_Search_POST(t *testing.T) {
 				{Title: "POST Result", URL: "https://post.com"},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -203,12 +203,12 @@ func TestSearxngBackend_Search_WithBasicAuth(t *testing.T) {
 		capturedUser, capturedPass, _ = r.BasicAuth()
 
 		resp := SearxngResponse{Results: []searxngResult{}}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
 	b := NewSearxngBackend(server.URL, "user", "pass", "GET", 10*time.Second, false, false)
-	b.Search(SearchOptions{Query: "test"})
+	_, _ = b.Search(SearchOptions{Query: "test"})
 
 	if capturedUser != "user" || capturedPass != "pass" {
 		t.Errorf("expected user/pass, got %q/%q", capturedUser, capturedPass)
@@ -220,12 +220,12 @@ func TestSearxngBackend_Search_WithSiteFilter(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedQuery = r.URL.Query().Get("q")
 		resp := SearxngResponse{Results: []searxngResult{}}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
 	b := NewSearxngBackend(server.URL, "", "", "GET", 10*time.Second, false, false)
-	b.Search(SearchOptions{Query: "test", Site: "example.com"})
+	_, _ = b.Search(SearchOptions{Query: "test", Site: "example.com"})
 
 	if capturedQuery != "site:example.com test" {
 		t.Errorf("expected 'site:example.com test', got %q", capturedQuery)
@@ -237,12 +237,12 @@ func TestSearxngBackend_Search_WithCategories(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedCategories = r.URL.Query().Get("categories")
 		resp := SearxngResponse{Results: []searxngResult{}}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
 	b := NewSearxngBackend(server.URL, "", "", "GET", 10*time.Second, false, false)
-	b.Search(SearchOptions{Query: "test", Categories: []string{"news", "social-media"}})
+	_, _ = b.Search(SearchOptions{Query: "test", Categories: []string{"news", "social-media"}})
 
 	if capturedCategories != "news,social media" {
 		t.Errorf("expected 'news,social media', got %q", capturedCategories)
@@ -254,12 +254,12 @@ func TestSearxngBackend_Search_WithTimeRange(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedTimeRange = r.URL.Query().Get("time_range")
 		resp := SearxngResponse{Results: []searxngResult{}}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
 	b := NewSearxngBackend(server.URL, "", "", "GET", 10*time.Second, false, false)
-	b.Search(SearchOptions{Query: "test", TimeRange: "week"})
+	_, _ = b.Search(SearchOptions{Query: "test", TimeRange: "week"})
 
 	if capturedTimeRange != "week" {
 		t.Errorf("expected 'week', got %q", capturedTimeRange)
@@ -269,7 +269,7 @@ func TestSearxngBackend_Search_WithTimeRange(t *testing.T) {
 func TestSearxngBackend_Search_ServerError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("internal error"))
+		_, _ = w.Write([]byte("internal error"))
 	}))
 	defer server.Close()
 
@@ -282,7 +282,7 @@ func TestSearxngBackend_Search_ServerError(t *testing.T) {
 
 func TestSearxngBackend_Search_InvalidJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`not json`))
+		_, _ = w.Write([]byte(`not json`))
 	}))
 	defer server.Close()
 
@@ -298,20 +298,20 @@ func TestSearxngBackend_Search_UserAgent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedUA = r.Header.Get("User-Agent")
 		resp := SearxngResponse{Results: []searxngResult{}}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
 	// With user agent
 	b := NewSearxngBackend(server.URL, "", "", "GET", 10*time.Second, false, false)
-	b.Search(SearchOptions{Query: "test"})
+	_, _ = b.Search(SearchOptions{Query: "test"})
 	if capturedUA != "sx/2.0" {
 		t.Errorf("expected 'sx/2.0', got %q", capturedUA)
 	}
 
 	// Without user agent
 	b = NewSearxngBackend(server.URL, "", "", "GET", 10*time.Second, false, true)
-	b.Search(SearchOptions{Query: "test"})
+	_, _ = b.Search(SearchOptions{Query: "test"})
 	if capturedUA == "sx/2.0" {
 		t.Error("expected no user agent when NoUserAgent=true")
 	}

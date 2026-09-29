@@ -38,22 +38,6 @@ var (
 		[]string{"engine", "reason"},
 	)
 
-	breakerRequestsTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "searxng_gateway_circuit_breaker_requests_total",
-			Help: "Total requests through circuit breaker",
-		},
-		[]string{"engine", "state"},
-	)
-
-	breakerRejectionsTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "searxng_gateway_circuit_breaker_rejections_total",
-			Help: "Total requests rejected by circuit breaker (open state)",
-		},
-		[]string{"engine"},
-	)
-
 	breakerRecoveryTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "searxng_gateway_circuit_breaker_recovery_total",

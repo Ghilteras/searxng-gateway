@@ -64,7 +64,7 @@ func TestJinaBackend_Search_Success(t *testing.T) {
 		// Parse request body
 		body, _ := io.ReadAll(r.Body)
 		var req jinaRequest
-		json.Unmarshal(body, &req)
+		_ = json.Unmarshal(body, &req)
 
 		if req.Query != "golang" {
 			t.Errorf("expected query 'golang', got %q", req.Query)
@@ -80,7 +80,7 @@ func TestJinaBackend_Search_Success(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -114,18 +114,18 @@ func TestJinaBackend_Search_SiteFilter(t *testing.T) {
 		// Verify query doesn't contain site: prefix
 		body, _ := io.ReadAll(r.Body)
 		var req jinaRequest
-		json.Unmarshal(body, &req)
+		_ = json.Unmarshal(body, &req)
 		if req.Query != "test" {
 			t.Errorf("expected clean query 'test', got %q", req.Query)
 		}
 
 		resp := jinaResponse{Data: []jinaResult{}}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
 	b := NewJinaBackend("key", 2*time.Second, false, server.URL)
-	b.Search(SearchOptions{Query: "test", Site: "example.com"})
+	_, _ = b.Search(SearchOptions{Query: "test", Site: "example.com"})
 
 	if capturedSiteHeader != "https://example.com" {
 		t.Errorf("expected X-Site header 'https://example.com', got %q", capturedSiteHeader)
@@ -137,16 +137,16 @@ func TestJinaBackend_Search_Language(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req jinaRequest
-		json.Unmarshal(body, &req)
+		_ = json.Unmarshal(body, &req)
 		capturedLang = req.Language
 
 		resp := jinaResponse{Data: []jinaResult{}}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
 	b := NewJinaBackend("key", 2*time.Second, false, server.URL)
-	b.Search(SearchOptions{Query: "test", Language: "de"})
+	_, _ = b.Search(SearchOptions{Query: "test", Language: "de"})
 
 	if capturedLang != "de" {
 		t.Errorf("expected language 'de', got %q", capturedLang)
@@ -156,7 +156,7 @@ func TestJinaBackend_Search_Language(t *testing.T) {
 func TestJinaBackend_Search_AuthError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"detail": "invalid key"}`))
+		_, _ = w.Write([]byte(`{"detail": "invalid key"}`))
 	}))
 	defer server.Close()
 
@@ -196,7 +196,7 @@ func TestJinaBackend_Search_RateLimit(t *testing.T) {
 
 func TestJinaBackend_Search_InvalidJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`not json`))
+		_, _ = w.Write([]byte(`not json`))
 	}))
 	defer server.Close()
 
@@ -214,7 +214,7 @@ func TestJinaBackend_Search_ContentFallback(t *testing.T) {
 				{Title: "No Desc", URL: "https://example.com", Description: "", Content: "Full page content here"},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 

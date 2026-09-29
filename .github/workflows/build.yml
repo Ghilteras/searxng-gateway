@@ -25,6 +25,11 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Lint
+        uses: golangci/golangci-lint-action@v7.0.1
+        with:
+          version: v2.1.6
+
       - name: Format check
         run: |
           out="$(gofmt -l .)" || exit 1

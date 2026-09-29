@@ -85,7 +85,7 @@ func TestTavilyBackend_Search_Success(t *testing.T) {
 		// Parse request body
 		body, _ := io.ReadAll(r.Body)
 		var req tavilyRequest
-		json.Unmarshal(body, &req)
+		_ = json.Unmarshal(body, &req)
 
 		if req.Query != "golang" {
 			t.Errorf("expected query 'golang', got %q", req.Query)
@@ -104,7 +104,7 @@ func TestTavilyBackend_Search_Success(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -135,7 +135,7 @@ func TestTavilyBackend_Search_WithRawContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req tavilyRequest
-		json.Unmarshal(body, &req)
+		_ = json.Unmarshal(body, &req)
 
 		if !req.IncludeRawContent {
 			t.Error("expected include_raw_content to be true")
@@ -152,7 +152,7 @@ func TestTavilyBackend_Search_WithRawContent(t *testing.T) {
 				},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -173,16 +173,16 @@ func TestTavilyBackend_Search_SiteFilter(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req tavilyRequest
-		json.Unmarshal(body, &req)
+		_ = json.Unmarshal(body, &req)
 		capturedQuery = req.Query
 
 		resp := tavilyResponse{Results: []tavilyResult{}}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
 	b := newTestTavilyBackend(server.URL, "key", "basic", false, false)
-	b.Search(SearchOptions{Query: "test", Site: "example.com"})
+	_, _ = b.Search(SearchOptions{Query: "test", Site: "example.com"})
 
 	if capturedQuery != "site:example.com test" {
 		t.Errorf("expected 'site:example.com test', got %q", capturedQuery)
@@ -192,7 +192,7 @@ func TestTavilyBackend_Search_SiteFilter(t *testing.T) {
 func TestTavilyBackend_Search_AuthError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"detail": {"error": "invalid key"}}`))
+		_, _ = w.Write([]byte(`{"detail": {"error": "invalid key"}}`))
 	}))
 	defer server.Close()
 
@@ -213,7 +213,7 @@ func TestTavilyBackend_Search_AuthError(t *testing.T) {
 func TestTavilyBackend_Search_RateLimit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		w.Write([]byte(`rate limited`))
+		_, _ = w.Write([]byte(`rate limited`))
 	}))
 	defer server.Close()
 
@@ -233,7 +233,7 @@ func TestTavilyBackend_Search_RateLimit(t *testing.T) {
 
 func TestTavilyBackend_Search_InvalidJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`not json at all`))
+		_, _ = w.Write([]byte(`not json at all`))
 	}))
 	defer server.Close()
 
@@ -249,29 +249,29 @@ func TestTavilyBackend_Search_NumResults(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req tavilyRequest
-		json.Unmarshal(body, &req)
+		_ = json.Unmarshal(body, &req)
 		capturedMaxResults = req.MaxResults
 
 		resp := tavilyResponse{Results: []tavilyResult{}}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
 	// Test with valid num
 	b := newTestTavilyBackend(server.URL, "key", "basic", false, false)
-	b.Search(SearchOptions{Query: "test", NumResults: 7})
+	_, _ = b.Search(SearchOptions{Query: "test", NumResults: 7})
 	if capturedMaxResults != 7 {
 		t.Errorf("expected max_results=7, got %d", capturedMaxResults)
 	}
 
 	// Test with 0 (should default to 10)
-	b.Search(SearchOptions{Query: "test", NumResults: 0})
+	_, _ = b.Search(SearchOptions{Query: "test", NumResults: 0})
 	if capturedMaxResults != 10 {
 		t.Errorf("expected default max_results=10, got %d", capturedMaxResults)
 	}
 
 	// Test with >20 (should cap at 10)
-	b.Search(SearchOptions{Query: "test", NumResults: 50})
+	_, _ = b.Search(SearchOptions{Query: "test", NumResults: 50})
 	if capturedMaxResults != 10 {
 		t.Errorf("expected capped max_results=10, got %d", capturedMaxResults)
 	}

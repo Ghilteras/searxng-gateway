@@ -139,8 +139,6 @@ Tracing is **disabled by default**. Set `OTEL_TRACES_EXPORTER` to `console` (str
 | `circuit_breaker_state` | Gauge | `engine` | 0=closed, 1=half-open, 2=open |
 | `circuit_breaker_triggered_at` | Gauge | `engine`, `reason` | Unix timestamp when breaker went open |
 | `circuit_breaker_trips_total` | Counter | `engine`, `reason` | Cumulative CB trips |
-| `circuit_breaker_requests_total` | Counter | `engine`, `state` | Requests per engine per CB state |
-| `circuit_breaker_rejections_total` | Counter | `engine` | Requests rejected (open state) |
 | `circuit_breaker_recovery_total` | Counter | `engine` | Auto-recovery events |
 
 ### SearXNG cooldown metrics

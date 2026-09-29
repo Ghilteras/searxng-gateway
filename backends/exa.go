@@ -105,7 +105,7 @@ func (e *ExaBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 		if strings.TrimSpace(e.MCPURL) != "" {
 			return e.searchMCP(searchContext(opts), query, count)
 		}
-		return nil, &BackendError{Backend: e.Name(), Err: fmt.Errorf("Exa not configured (need API key or MCP URL)"), Code: ErrCodeUnavailable}
+		return nil, &BackendError{Backend: e.Name(), Err: fmt.Errorf("exa not configured (need API key or MCP URL)"), Code: ErrCodeUnavailable}
 	}
 }
 
@@ -125,7 +125,7 @@ type exaAPIResponse struct {
 
 func (e *ExaBackend) searchAPI(ctx context.Context, query string, count int) ([]SearchResult, error) {
 	if strings.TrimSpace(e.APIKey) == "" {
-		return nil, &BackendError{Backend: e.Name(), Err: fmt.Errorf("Exa API key not configured"), Code: ErrCodeUnavailable}
+		return nil, &BackendError{Backend: e.Name(), Err: fmt.Errorf("exa API key not configured"), Code: ErrCodeUnavailable}
 	}
 
 	payload, err := json.Marshal(exaAPIRequest{Query: query, NumResults: count})
@@ -145,7 +145,7 @@ func (e *ExaBackend) searchAPI(ctx context.Context, query string, count int) ([]
 	if err != nil {
 		return nil, &BackendError{Backend: e.Name(), Err: err, Code: ErrCodeNetwork}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -194,7 +194,7 @@ type mcpToolCallResult struct {
 
 func (e *ExaBackend) searchMCP(ctx context.Context, query string, count int) ([]SearchResult, error) {
 	if strings.TrimSpace(e.MCPURL) == "" {
-		return nil, &BackendError{Backend: e.Name(), Err: fmt.Errorf("Exa MCP URL not configured"), Code: ErrCodeUnavailable}
+		return nil, &BackendError{Backend: e.Name(), Err: fmt.Errorf("exa MCP URL not configured"), Code: ErrCodeUnavailable}
 	}
 	client := NewMCPHTTPClient(e.MCPURL, e.Timeout)
 	_ = client.InitializeContext(ctx) // best effort for servers that require initialize first

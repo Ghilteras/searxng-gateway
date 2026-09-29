@@ -87,7 +87,7 @@ func (b *BingBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	if err != nil {
 		return nil, &BackendError{Backend: b.Name(), Err: err, Code: ErrCodeNetwork}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return nil, &BackendError{Backend: b.Name(), Err: fmt.Errorf("rate limited"), Code: ErrCodeRateLimit}
