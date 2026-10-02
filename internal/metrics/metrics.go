@@ -87,7 +87,7 @@ var (
 	)
 
 	// RetryExhaustedTotal counts requests where all retry attempts failed.
-	//   error_class:  5xx, timeout, network, other
+	//   error_class:  network
 	RetryExhaustedTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "searxng_gateway_retry_exhausted_total",

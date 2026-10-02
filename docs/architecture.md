@@ -92,7 +92,7 @@ Premium provider results are normalised to `searxng.Result` at merge time in `pr
 
 ## Retry and error classification
 
-SearXNG requests use up to 3 attempts total with 250ms then 500ms backoff between attempts, all within the `SEARXNG_TIMEOUT_SECONDS` child budget — the short ladder is deliberate so three attempts can fit inside the default 3s stage budget. All error classes are retried — there is no 4xx/5xx distinction for the retry path. Errors are classified for metrics:
+SearXNG requests retry only `network`-class failures, up to 3 attempts total with 250ms then 500ms backoff between attempts, all within the `SEARXNG_TIMEOUT_SECONDS` child budget. `5xx`, `4xx`, `timeout`, and `other` errors are not retried and cannot reach exhaustion, but are still emitted per attempt in `retry_attempts_total`. Errors are classified for metrics:
 
 | Error class | Trigger |
 |-------------|---------|
@@ -155,7 +155,7 @@ The cooldown gauge is cleared lazily: it keeps the expired timestamp until `inCo
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `retry_attempts_total` | Counter | `attempt`, `outcome`, `error_class` | Every retry attempt (including first) |
-| `retry_exhausted_total` | Counter | `error_class` | Requests where all retries failed |
+| `retry_exhausted_total` | Counter | `error_class` | Requests where all network-class retry attempts failed (`network` only) |
 
 ### Cache metrics
 

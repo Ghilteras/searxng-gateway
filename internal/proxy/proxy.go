@@ -20,7 +20,8 @@
 //   - Round-robin premium selection distributes load evenly.
 //   - Cooldown circuit breaker for SearXNG: after SEARXNG_FAIL_THRESHOLD
 //     consecutive failures, SearXNG is skipped entirely until cooldown expires.
-//   - Retry with up to 3 attempts and 1s/2s backoff for SearXNG errors,
+//   - Retry network-class SearXNG failures up to 3 attempts with 250ms/500ms
+//     backoff; stage timeouts and other errors are not retried,
 //     bounded by the SearXNG child timeout.
 //   - URL deduplication across SearXNG and all premium providers.
 package proxy
@@ -543,7 +544,8 @@ func (p *Proxy) observe(r *searxng.Response) {
 //   - attempt 3: after 500ms (final)
 //
 // Returns the last error if all retries fail.
-// All errors are retried — no 4xx/5xx distinction, no circuit breaker.
+// Only network-class failures are retried. Stage timeouts and other errors are
+// returned immediately so premium fallback retains the parent request budget.
 //
 // Metrics (v0.8.1): every attempt is instrumented with attempt, outcome,
 // and error_class. Without per-attempt metrics, the retry path is invisible
@@ -606,13 +608,13 @@ func (p *Proxy) retryWithBackoff(ctx context.Context, parent context.Context, fn
 		attemptSpan.End()
 		lastErr = err
 		lastResp = resp
+		if errClass != "network" {
+			return lastResp, lastErr
+		}
 	}
 
 	// All retry attempts exhausted.
-	errClass := "other"
-	if lastErr != nil {
-		errClass = classifyError(lastErr)
-	}
+	errClass := classifyError(lastErr)
 	metrics.RetryAttemptsTotal.WithLabelValues("final", "exhausted", errClass).Inc()
 	metrics.RetryExhaustedTotal.WithLabelValues(errClass).Inc()
 	return lastResp, lastErr

@@ -120,6 +120,105 @@ func TestSearchSearxngOK(t *testing.T) {
 	}
 }
 
+func TestRetryFastTransientCanSucceedOnSecondAttempt(t *testing.T) {
+	p := &Proxy{}
+	attempt1Before := retryCounter(t, metrics.RetryAttemptsTotal, "1", "error", "network")
+	attempt2Before := retryCounter(t, metrics.RetryAttemptsTotal, "2", "success", "none")
+	calls := 0
+	resp, err := p.retryWithBackoff(context.Background(), context.Background(), func() (*searxng.Response, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("connection refused")
+		}
+		return &searxng.Response{Results: []searxng.Result{{URL: "https://ok"}}}, nil
+	})
+	if err != nil || resp == nil || calls != 2 {
+		t.Fatalf("response=%v err=%v attempts=%d; want success on attempt 2", resp, err, calls)
+	}
+	if got := retryCounter(t, metrics.RetryAttemptsTotal, "1", "error", "network"); got != attempt1Before+1 {
+		t.Fatalf("attempt=1 network failures counter=%v; want %v", got, attempt1Before+1)
+	}
+	if got := retryCounter(t, metrics.RetryAttemptsTotal, "2", "success", "none"); got != attempt2Before+1 {
+		t.Fatalf("attempt=2 success counter=%v; want %v", got, attempt2Before+1)
+	}
+}
+
+func TestRetryLiveTimeoutClassIsNotRetried(t *testing.T) {
+	p := &Proxy{}
+	calls := 0
+	_, err := p.retryWithBackoff(context.Background(), context.Background(), func() (*searxng.Response, error) {
+		calls++
+		return nil, context.DeadlineExceeded
+	})
+	if !errors.Is(err, context.DeadlineExceeded) || calls != 1 {
+		t.Fatalf("err=%v attempts=%d; want one attempt for timeout-class error on live context", err, calls)
+	}
+}
+
+func TestRetryStageTimeoutIsNotRetriedWithinParentBudget(t *testing.T) {
+	p := &Proxy{}
+	parent, cancelParent := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancelParent()
+	stage, cancelStage := context.WithTimeout(parent, 30*time.Millisecond)
+	defer cancelStage()
+	calls := 0
+	started := time.Now()
+	_, err := p.retryWithBackoff(stage, parent, func() (*searxng.Response, error) {
+		calls++
+		<-stage.Done()
+		return nil, stage.Err()
+	})
+	if !errors.Is(err, context.DeadlineExceeded) || calls != 1 {
+		t.Fatalf("err=%v attempts=%d; want one timed-out attempt", err, calls)
+	}
+	if elapsed := time.Since(started); elapsed >= 200*time.Millisecond {
+		t.Fatalf("stage timeout consumed parent budget: elapsed=%s", elapsed)
+	}
+}
+
+func TestRetryExhaustionMakesThreeAttempts(t *testing.T) {
+	p := &Proxy{}
+	calls := 0
+	exhaustedBefore := retryCounter(t, metrics.RetryExhaustedTotal, "network")
+	_, err := p.retryWithBackoff(context.Background(), context.Background(), func() (*searxng.Response, error) {
+		calls++
+		return nil, errors.New("connection reset")
+	})
+	if err == nil || calls != 3 {
+		t.Fatalf("err=%v attempts=%d; want exhausted after three attempts", err, calls)
+	}
+	if got := retryCounter(t, metrics.RetryExhaustedTotal, "network"); got != exhaustedBefore+1 {
+		t.Fatalf("exhausted counter=%v; want %v", got, exhaustedBefore+1)
+	}
+}
+
+func TestRetryOtherErrorIsNotRetried(t *testing.T) {
+	p := &Proxy{}
+	calls := 0
+	attemptBefore := retryCounter(t, metrics.RetryAttemptsTotal, "1", "error", "other")
+	_, err := p.retryWithBackoff(context.Background(), context.Background(), func() (*searxng.Response, error) {
+		calls++
+		return nil, errors.New("searxng: status 503")
+	})
+	if err == nil || calls != 1 {
+		t.Fatalf("err=%v attempts=%d; want one attempt for other-class status error", err, calls)
+	}
+	if got := retryCounter(t, metrics.RetryAttemptsTotal, "1", "error", "other"); got != attemptBefore+1 {
+		t.Fatalf("attempt counter=%v; want %v", got, attemptBefore+1)
+	}
+}
+
+func retryCounter(t *testing.T, counter interface {
+	WithLabelValues(...string) prometheus.Counter
+}, labels ...string) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := counter.WithLabelValues(labels...).Write(metric); err != nil {
+		t.Fatalf("read retry counter: %v", err)
+	}
+	return metric.GetCounter().GetValue()
+}
+
 func TestSufficientSearxngReturnsWithoutWaitingForT1(t *testing.T) {
 	metrics.Init()
 	t1Started := make(chan struct{})
@@ -1200,7 +1299,7 @@ func TestTracingSpanTreeAndSanitization(t *testing.T) {
 	var attempts atomic.Int64
 	sx := &contextSearxng{fn: func(context.Context) (*searxng.Response, error) {
 		if attempts.Add(1) == 1 {
-			return nil, errors.New("secret error body")
+			return nil, errors.New("connection reset: secret error body")
 		}
 		return &searxng.Response{Results: []searxng.Result{{Title: titleSecret, URL: "https://private.example/path?q=hidden", Content: bodySecret, Engine: "engine"}}}, nil
 	}}
