@@ -81,3 +81,9 @@ Placement finale FUORI SCOPE (homelab-config): `opencode-self` + `subagent-orche
 ## 2026-09-29 — Gateway closeout: verification, low-volume alerts, worktree tooling
 
 → journal: search "verify live artifacts" · "low-volume alerts" · "partial tool catalog" · "canonical worktree guard" · "snap Portainer compose path"
+
+---
+
+## 2026-10-02 — SearXNG round: engine audit, latency baseline, retry and deploy pending
+
+→ journal: search "Brave failure chain"
