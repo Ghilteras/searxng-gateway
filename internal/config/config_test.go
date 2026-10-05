@@ -138,30 +138,3 @@ func TestLoadInvalidCooldown(t *testing.T) {
 		t.Error("Load() expected error when SEARXNG_FAIL_COOLDOWN_SECONDS is 0")
 	}
 }
-
-func TestConfig_T1PremiumCount(t *testing.T) {
-	tests := []struct {
-		name     string
-		envValue string
-		want     int
-	}{
-		{"zero", "0", 0},
-		{"one", "1", 1},
-		{"three", "3", 3},
-		{"empty", "", 0},
-		{"invalid", "notanumber", 0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("T1_PREMIUM_COUNT", tt.envValue)
-			cfg, err := Load()
-			if err != nil {
-				t.Fatalf("Load() error: %v", err)
-			}
-			if cfg.T1PremiumCount != tt.want {
-				t.Errorf("T1PremiumCount = %d, want %d", cfg.T1PremiumCount, tt.want)
-			}
-		})
-	}
-}

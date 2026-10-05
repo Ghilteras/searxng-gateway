@@ -1,29 +1,37 @@
 // Package proxy implements the core gateway orchestration:
-// cache check → parallel SearXNG + speculative premium → early return if SearXNG
-// meets the result threshold → round-robin premium loop otherwise.
+// cache check → sequential premium round-robin (primary) until the target
+// result count is reached → bounded SearXNG secondary stage on shortfall →
+// merge, dedupe by URL (premium owns duplicates), and return accumulated
+// nonempty results even below target.
 //
 // The Proxy.Search method orchestrates the stages:
 //  1. Normalise the query and check the LRU cache.
-//  2. Check SearXNG cooldown (binary fallback circuit breaker).
-//  3. Call SearXNG (with retry+backoff) AND the T1 premium pass in parallel.
-//  4. If distinct SearXNG URLs meet SufficientMinResults, return them without
-//     waiting for or merging T1 results; otherwise merge T1 first, then SearXNG.
-//  5. If merged results < SufficientMinResults:
-//     call additional premiums (round-robin, non-repeating) until threshold met,
-//     all premiums exhausted, or FallbackTimeout expires.
+//  2. Run the premium providers via round-robin (primary), each at most once,
+//     until the target distinct-URL count is reached, all providers are
+//     exhausted, or the premium-stage deadline (parent budget minus a reserve
+//     for the secondary stage) expires.
+//  3. If the target was reached, return immediately without calling SearXNG.
+//  4. Otherwise run the bounded SearXNG secondary stage (with retry+backoff)
+//     from the parent's remaining budget capped at SEARXNG_TIMEOUT_SECONDS,
+//     honoring the existing cooldown circuit breaker, and merge its results
+//     after the premium results.
+//  5. Return accumulated nonempty results even below the target; an empty
+//     result set is a timeout at the parent deadline, otherwise a failure.
 //  6. Circuit breaker: premiums where breakerMgr.IsOpen(name) are skipped.
 //     After success: RecordSuccess. After failure: RecordClientError.
 //
 // Community-aligned behaviour (2026):
-//   - Speculatively call configured T1 premiums alongside SearXNG; sufficient
-//     SearXNG results do not wait for or include premium-only results.
-//   - Round-robin premium selection distributes load evenly.
+//   - Premium providers are the primary source; SearXNG is a bounded secondary
+//     reached only when the primary falls short of the target.
+//   - Round-robin premium selection distributes load evenly; premium calls are
+//     serial within the primary stage.
 //   - Cooldown circuit breaker for SearXNG: after SEARXNG_FAIL_THRESHOLD
 //     consecutive failures, SearXNG is skipped entirely until cooldown expires.
 //   - Retry network-class SearXNG failures up to 3 attempts with 250ms/500ms
 //     backoff; stage timeouts and other errors are not retried,
 //     bounded by the SearXNG child timeout.
-//   - URL deduplication across SearXNG and all premium providers.
+//   - URL deduplication across all providers, with premium results taking
+//     precedence on duplicate URLs.
 package proxy
 
 import (
@@ -49,27 +57,20 @@ import (
 	"sx/internal/searxng"
 )
 
-// Proxy orchestrates SearXNG-first search with pluggable fallback providers.
+// Proxy orchestrates premium-first search with a bounded SearXNG secondary and pluggable fallback providers.
 type Proxy struct {
 	cfg        *config.Config
 	sx         searxng.Client
 	c          *cache.Cache
 	breakerMgr *breaker.Manager
 
-	// Fallback chain: tried in order when SearXNG is insufficient.
+	// Fallback chain: premium providers, tried in the primary stage order.
 	fallbackMgr *backends.Manager
 
 	// Cooldown circuit breaker (community pattern: searxng-resilient-router)
 	sxFails       int64        // atomic counter of consecutive failures
 	sxCooldownTil atomic.Int64 // unix nano; 0 = no cooldown
 	mu            sync.Mutex   // guards sxFails/sxCooldownTil updates
-}
-
-type t1PassResult struct {
-	results           []searxng.Result
-	usedPremiums      map[string]bool
-	premiumHadResults bool
-	errMsgs           []string
 }
 
 // New creates a Proxy with the given config, backends and cache.
@@ -80,7 +81,7 @@ func New(cfg *config.Config, sx searxng.Client, c *cache.Cache, breakerMgr *brea
 // Search runs the full orchestration pipeline for a raw query string.
 //
 // Outcome counters (all via RequestsTotal):
-//   - cache_hit:                  entry found in cache, SearXNG not called.
+//   - cache_hit:                  entry found in cache, no provider called.
 //   - searxng_ok:                 only SearXNG contributed results (no premium results).
 //   - premium_ok:                 only premium providers contributed results (SearXNG skipped, errored, or returned empty).
 //   - searxng_plus_premium_ok:    both SearXNG and premium providers contributed results.
@@ -103,15 +104,12 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, p.cfg.FallbackTimeout)
 	defer cancel()
-	sxCtx, cancelSX := context.WithTimeout(timeoutCtx, p.cfg.SearxngTimeout)
-	defer cancelSX()
+	parentDeadline, _ := timeoutCtx.Deadline()
 
-	// 2. Check if SearXNG is in cooldown (skip SearXNG, go premium-only).
+	// 2. SearXNG cooldown is consulted only when the secondary stage is reached.
 	sxSkipped := p.inCooldown()
 
-	// Per-call state. T1 owns its own maps and returns them over a buffered
-	// channel, so a sufficient SearXNG response can cancel and ignore T1 without
-	// racing with the worker or blocking its eventual send.
+	// Per-call accumulators.
 	allResults := make([]searxng.Result, 0)
 	seenURLs := make(map[string]bool)
 	usedPremiums := make(map[string]bool)
@@ -119,77 +117,47 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	searxngHadResults := false
 	var premiumErrMsgs []string
 
-	// 3. Channels for the concurrent SearXNG stage and speculative T1 pass.
-	type sxResult struct {
-		resp *searxng.Response
-		err  error
+	target := p.targetResults()
+
+	// 3. PRIMARY stage: sequential premium round-robin until the target is met.
+	// Reserve the tail of the request budget for the bounded SearXNG secondary
+	// stage so the premium stage cannot consume the whole deadline.
+	reserve := time.Second
+	if half := p.cfg.FallbackTimeout / 2; reserve > half {
+		reserve = half
 	}
-	sxCh := make(chan sxResult, 1)
-	t1Ctx, cancelT1 := context.WithCancel(timeoutCtx)
-	defer cancelT1()
-	t1Ch := make(chan t1PassResult, 1)
+	premiumCtx, cancelPremium := context.WithDeadline(timeoutCtx, parentDeadline.Add(-reserve))
+	defer cancelPremium()
 
-	if !sxSkipped {
-		go func() {
-			start := time.Now()
-			stageCtx, stageSpan := otel.Tracer("sx/internal/proxy").Start(ctx, "searxng.stage")
-			resp, err := p.retryWithBackoff(sxCtx, stageCtx, func() (*searxng.Response, error) {
-				return p.sx.Search(sxCtx, key)
-			})
-			elapsed := time.Since(start)
-			stageSpan.SetAttributes(attribute.String("phase", "searxng"), attribute.String("outcome", searxngOutcome(resp, err)), attribute.Int("result_count", resultCount(resp)))
-			stageSpan.End()
-			metrics.SearxngStageDuration.Observe(elapsed.Seconds())
-			sxCh <- sxResult{resp: resp, err: err}
-		}()
-	} else {
-		// Cooldown active: signal SearXNG skipped.
-		close(sxCh)
-	}
+	allResults, seenURLs, _, premiumHadResults, premiumErrMsgs =
+		p.premiumLoop(premiumCtx, key, allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs)
 
-	// Start T1 concurrently with SearXNG, but do not make its completion a
-	// prerequisite when SearXNG alone already supplies enough distinct URLs.
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				// net/http recovery does not cover goroutines started here.
-				t1Ch <- t1PassResult{
-					usedPremiums: make(map[string]bool),
-					errMsgs:      []string{fmt.Sprintf("t1 pass panic: %v", r)},
-				}
-			}
-		}()
-		t1Ch <- p.runT1Pass(t1Ctx, key)
-	}()
-
-	// 4. Collect SearXNG first. If it is sufficient by itself, cancel the
-	// speculative T1 pass and return SearXNG-only results. Otherwise, wait for
-	// T1 and preserve the existing T1-before-SearXNG merge order.
-	_, waitSpan := otel.Tracer("sx/internal/proxy").Start(ctx, "searxng.result_wait")
-	sxRes, sxAvailable := <-sxCh
-	waitSpan.SetAttributes(attribute.String("phase", "searxng"), attribute.String("outcome", map[bool]string{true: "completed", false: "skipped"}[sxAvailable]))
-	waitSpan.End()
-	sxSucceeded := sxAvailable && sxRes.err == nil && sxRes.resp != nil
-	if sxSucceeded && p.sufficient(sxRes.resp) {
-		cancelT1()
-	} else {
-		t1Res := <-t1Ch
-		usedPremiums = t1Res.usedPremiums
-		premiumHadResults = t1Res.premiumHadResults
-		premiumErrMsgs = append(premiumErrMsgs, t1Res.errMsgs...)
-		for _, r := range t1Res.results {
-			if !seenURLs[r.URL] {
-				seenURLs[r.URL] = true
-				allResults = append(allResults, r)
-			}
+	// 4. SECONDARY stage: bounded SearXNG, only when the primary fell short and
+	// the request context is still live.
+	if len(allResults) < target && !sxSkipped && timeoutCtx.Err() == nil && time.Until(parentDeadline) > 0 {
+		budget := p.cfg.SearxngTimeout
+		budgetCapped := false
+		if remaining := time.Until(parentDeadline); remaining < budget {
+			budget = remaining
+			budgetCapped = true
 		}
-	}
+		sxCtx, cancelSX := context.WithTimeout(timeoutCtx, budget)
 
-	if sxAvailable {
-		if sxSucceeded {
-			// Per-engine metrics from SearXNG response.
+		start := time.Now()
+		stageCtx, stageSpan := otel.Tracer("sx/internal/proxy").Start(ctx, "searxng.stage")
+		resp, err := p.retryWithBackoff(sxCtx, stageCtx, func() (*searxng.Response, error) {
+			return p.sx.Search(sxCtx, key)
+		})
+		elapsed := time.Since(start)
+		stageSpan.SetAttributes(attribute.String("phase", "continuation"), attribute.String("outcome", searxngOutcome(resp, err)), attribute.Int("result_count", resultCount(resp)))
+		stageSpan.End()
+		metrics.SearxngStageDuration.Observe(elapsed.Seconds())
+		cancelSX()
+
+		if err == nil && resp != nil {
+			// Per-engine metrics from the SearXNG response.
 			seenEngines := make(map[string]struct{})
-			for _, result := range sxRes.resp.Results {
+			for _, result := range resp.Results {
 				if result.Engine != "" {
 					metrics.EngineResultsTotal.WithLabelValues(result.Engine).Inc()
 					metrics.EngineStatus.WithLabelValues(result.Engine).Set(1)
@@ -209,7 +177,7 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 			}
 			// Handle unresponsive engines.
 			unresponsiveSet := make(map[string]string)
-			for _, ue := range sxRes.resp.UnresponsiveEngines {
+			for _, ue := range resp.UnresponsiveEngines {
 				if len(ue) >= 2 {
 					unresponsiveSet[ue[0]] = ue[1]
 				}
@@ -225,9 +193,9 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 
 			p.recordSearxngSuccess()
 
-			// Merge SearXNG results into allResults (dedup by URL).
-			// Outcome label is set once at the end (step 7).
-			for _, r := range sxRes.resp.Results {
+			// Merge SearXNG results after the premium results (dedup by URL), so
+			// premium results own duplicate URLs.
+			for _, r := range resp.Results {
 				if !seenURLs[r.URL] {
 					seenURLs[r.URL] = true
 					allResults = append(allResults, r)
@@ -235,26 +203,25 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 				}
 			}
 		} else {
-			// SearXNG failed.
-			if timeoutCtx.Err() == nil {
+			// SearXNG failed. A child deadline capped by the parent's remaining
+			// budget coincides with the parent deadline and says nothing about
+			// SearXNG's health, so it must not count as a SearXNG failure.
+			failureCounts := false
+			if errors.Is(err, context.DeadlineExceeded) {
+				failureCounts = !budgetCapped
+			} else {
+				failureCounts = timeoutCtx.Err() == nil
+			}
+			if failureCounts {
 				p.recordSearxngFailure()
 			}
-			if sxRes.err != nil {
-				premiumErrMsgs = append(premiumErrMsgs, fmt.Sprintf("searxng: %v", sxRes.err))
+			if err != nil {
+				premiumErrMsgs = append(premiumErrMsgs, fmt.Sprintf("searxng: %v", err))
 			}
 		}
 	}
 
-	// 6. Fallback loop: all remaining FALLBACK_PROVIDERS (skips already-used).
-	if len(allResults) < p.cfg.SufficientMinResults {
-		fallbackCtx, fallbackSpan := otel.Tracer("sx/internal/proxy").Start(timeoutCtx, "fallback.loop")
-		allResults, _, _, premiumHadResults, premiumErrMsgs =
-			p.premiumLoop(fallbackCtx, key, allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs)
-		fallbackSpan.SetAttributes(attribute.String("phase", "fallback"), attribute.Int("result_count", len(allResults)), attribute.String("outcome", "complete"))
-		fallbackSpan.End()
-	}
-
-	// 7. Outcome.
+	// 5. Outcome.
 	if len(allResults) == 0 {
 		outcome := "fallback_fail"
 		if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
@@ -286,103 +253,17 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	return mapped, nil
 }
 
-// sufficient returns true when the SearXNG response has at least SufficientMinResults.
-func (p *Proxy) sufficient(r *searxng.Response) bool {
-	if r == nil {
-		return false
+// targetResults is the distinct-URL target for the primary premium stage. A
+// non-positive configured threshold is treated as 1 so it cannot silently
+// suppress the primary loop and turn a recoverable search into a failure.
+func (p *Proxy) targetResults() int {
+	if p.cfg.SufficientMinResults < 1 {
+		return 1
 	}
-	seenURLs := make(map[string]struct{}, len(r.Results))
-	for _, result := range r.Results {
-		seenURLs[result.URL] = struct{}{}
-	}
-	if len(seenURLs) == 0 {
-		// With SUFFICIENT_MIN_RESULTS=0, 0 >= 0 would cancel T1 and skip
-		// fallback, turning a recoverable search into fallback_fail.
-		return false
-	}
-	return len(seenURLs) >= p.cfg.SufficientMinResults
+	return p.cfg.SufficientMinResults
 }
 
-// runT1Pass speculatively queries the configured T1 premium providers in
-// serial round-robin order. Its maps and results are worker-owned; Search only
-// merges the returned value when SearXNG alone is insufficient.
-func (p *Proxy) runT1Pass(ctx context.Context, key string) t1PassResult {
-	pass := t1PassResult{
-		results:      make([]searxng.Result, 0),
-		usedPremiums: make(map[string]bool),
-	}
-	seenURLs := make(map[string]bool)
-	for i := 0; i < p.cfg.T1PremiumCount; i++ {
-		if ctx.Err() != nil {
-			break
-		}
-		premium := p.fallbackMgr.NextAvailable(pass.usedPremiums)
-		if premium == nil || !premium.IsAvailable() || p.breakerMgr.IsOpen(premium.Name()) {
-			continue
-		}
-		pass.usedPremiums[premium.Name()] = true
-		start := time.Now()
-		providerCtx, providerSpan := otel.Tracer("sx/internal/proxy").Start(ctx, "premium.t1")
-		providerSpan.SetAttributes(attribute.String("provider", premium.Name()), attribute.String("phase", "t1"))
-		if ctx.Err() != nil {
-			providerSpan.End()
-			break
-		}
-		var results []backends.SearchResult
-		var err error
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					// net/http recovery does not cover goroutines started here.
-					err = fmt.Errorf("panic: %v", r)
-					results = nil
-				}
-			}()
-			results, err = premium.Search(backends.SearchOptions{
-				Context:    providerCtx,
-				Query:      key,
-				NumResults: 10,
-			})
-		}()
-		providerSpan.SetAttributes(attribute.String("outcome", spanOutcome(err)), attribute.Int("result_count", len(results)))
-		providerSpan.End()
-		elapsed := time.Since(start)
-		metrics.RequestDuration.WithLabelValues(premium.Name(), "t1").Observe(elapsed.Seconds())
-
-		if err != nil {
-			clientError, category := classifyPremiumError(err)
-			before := p.breakerMgr.State(premium.Name())
-			if clientError {
-				p.breakerMgr.RecordClientError(premium.Name(), category)
-			}
-			logPremiumFailure(premium.Name(), "t1", category, clientError, before, p.breakerMgr.State(premium.Name()))
-			pass.errMsgs = append(pass.errMsgs, fmt.Sprintf("%s: %v", premium.Name(), err))
-			continue
-		}
-		if len(results) == 0 {
-			continue
-		}
-
-		p.breakerMgr.RecordSuccess(premium.Name())
-		metrics.EngineResultsTotal.WithLabelValues(premium.Name()).Add(float64(len(results)))
-		for _, r := range results {
-			if !seenURLs[r.URL] {
-				seenURLs[r.URL] = true
-				pass.premiumHadResults = true
-				pass.results = append(pass.results, searxng.Result{
-					Title:   r.Title,
-					URL:     r.URL,
-					Content: r.Content,
-					Engine:  r.Engine,
-					Engines: []string{r.Engine},
-				})
-			}
-		}
-	}
-	return pass
-}
-
-// premiumLoop iterates through premium backends via round-robin until:
+// premiumLoop is the primary premium stage: it iterates through premium backends
 //   - merged results reach SufficientMinResults, OR
 //   - all available premiums have been tried, OR
 //   - the deadline expires.
@@ -399,7 +280,7 @@ func (p *Proxy) premiumLoop(
 	premiumHadResults bool,
 	errMsgs []string,
 ) ([]searxng.Result, map[string]bool, map[string]bool, bool, []string) {
-	for len(allResults) < p.cfg.SufficientMinResults {
+	for len(allResults) < p.targetResults() {
 		// Stop conditions.
 		if ctx.Err() != nil {
 			break
@@ -419,8 +300,8 @@ func (p *Proxy) premiumLoop(
 		}
 
 		// Call the premium backend.
-		providerCtx, providerSpan := otel.Tracer("sx/internal/proxy").Start(ctx, "premium.fallback")
-		providerSpan.SetAttributes(attribute.String("provider", premium.Name()), attribute.String("phase", "fallback"))
+		providerCtx, providerSpan := otel.Tracer("sx/internal/proxy").Start(ctx, "premium.primary")
+		providerSpan.SetAttributes(attribute.String("provider", premium.Name()), attribute.String("phase", "primary"))
 		if ctx.Err() != nil {
 			providerSpan.End()
 			break
@@ -434,7 +315,7 @@ func (p *Proxy) premiumLoop(
 		providerSpan.SetAttributes(attribute.String("outcome", spanOutcome(err)), attribute.Int("result_count", len(results)))
 		providerSpan.End()
 		elapsed := time.Since(start)
-		metrics.RequestDuration.WithLabelValues(premium.Name(), "fallback").Observe(elapsed.Seconds())
+		metrics.RequestDuration.WithLabelValues(premium.Name(), "primary").Observe(elapsed.Seconds())
 
 		if err != nil {
 			clientError, category := classifyPremiumError(err)
@@ -442,7 +323,7 @@ func (p *Proxy) premiumLoop(
 			if clientError {
 				p.breakerMgr.RecordClientError(premium.Name(), category)
 			}
-			logPremiumFailure(premium.Name(), "fallback", category, clientError, before, p.breakerMgr.State(premium.Name()))
+			logPremiumFailure(premium.Name(), "primary", category, clientError, before, p.breakerMgr.State(premium.Name()))
 			errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", premium.Name(), err))
 			continue
 		}
@@ -545,7 +426,7 @@ func (p *Proxy) observe(r *searxng.Response) {
 //
 // Returns the last error if all retries fail.
 // Only network-class failures are retried. Stage timeouts and other errors are
-// returned immediately so premium fallback retains the parent request budget.
+// returned immediately so the premium stage retains the parent request budget.
 //
 // Metrics (v0.8.1): every attempt is instrumented with attempt, outcome,
 // and error_class. Without per-attempt metrics, the retry path is invisible
@@ -565,7 +446,7 @@ func (p *Proxy) retryWithBackoff(ctx context.Context, parent context.Context, fn
 			return lastResp, ctx.Err()
 		}
 		attemptCtx, attemptSpan := otel.Tracer("sx/internal/proxy").Start(parent, "searxng.attempt")
-		attemptSpan.SetAttributes(attribute.Int("attempt", attempt), attribute.String("phase", "searxng"))
+		attemptSpan.SetAttributes(attribute.Int("attempt", attempt), attribute.String("phase", "continuation"))
 		if attempt > 1 {
 			attemptSpan.AddEvent("retry.backoff", trace.WithAttributes(traceAttrs("backoff")...))
 			select {
@@ -587,7 +468,7 @@ func (p *Proxy) retryWithBackoff(ctx context.Context, parent context.Context, fn
 
 		_, callSpan := otel.Tracer("sx/internal/proxy").Start(attemptCtx, "searxng.http")
 		resp, err := fn()
-		callSpan.SetAttributes(attribute.String("phase", "searxng"), attribute.Int("attempt", attempt), attribute.String("outcome", spanOutcome(err)), attribute.Int("result_count", resultCount(resp)))
+		callSpan.SetAttributes(attribute.String("phase", "continuation"), attribute.Int("attempt", attempt), attribute.String("outcome", spanOutcome(err)), attribute.Int("result_count", resultCount(resp)))
 		callSpan.End()
 		outcome := "success"
 		errClass := "none"

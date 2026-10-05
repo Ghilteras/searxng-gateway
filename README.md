@@ -1,6 +1,6 @@
 # searxng-gateway
 
-Decision proxy in front of SearXNG: **speculative execution** — starts SearXNG and the configured premium-provider pass concurrently, selects providers via round-robin, invokes premium providers serially within that pass, merges results with URL dedup, and loops through remaining providers until a configurable threshold is met or timeout expires. Same JSON shape as SearXNG, Prometheus /metrics, in-memory LRU cache.
+Decision proxy in front of SearXNG: **premium-first execution** — runs the configured premium providers serially via round-robin until a configurable distinct-URL target is met, and only on shortfall falls back to a bounded SearXNG secondary stage; results are merged with URL dedup (premium wins duplicate URLs), and accumulated non-empty results are returned even below target. Same JSON shape as SearXNG, Prometheus /metrics, in-memory LRU cache.
 
 🚀 **Works with zero API keys in keyless mode.** See [docs/keyless.md](docs/keyless.md).
 
@@ -28,33 +28,27 @@ curl 'http://localhost:8080/metrics'
 ## Architecture
 
 ```
-Client ───▶ searxng-gateway (:8080) ───▶ SearXNG (Tier 1 free engines)
-                    │                        │
-                    │  ┌─────────────────────┤
-                    │  │ Speculative execution│
-                    │  │ (parallel round-robin)│
-                    │  └─────────────────────┤
-                    │                        ├── Serper (Google via API)
-                    │                        ├── Bing, Wikipedia, GitHub...
-                    │                        └── Circuit breaker per engine
+Client ───▶ searxng-gateway (:8080)
                     │
-                    └──▶ Tier 2 speculative T1 (T1_PREMIUM_COUNT providers)
+                    └──▶ PRIMARY: premium providers (FALLBACK_PROVIDERS)
                     │    ├── Brave ──┐
-                    │    ├── Exa     ├── round-robin alongside SearXNG;
-                    │    ├── Jina    │   serial within the pass.
+                    │    ├── Exa     ├── round-robin, serial within the stage;
+                    │    ├── Jina    │   stops when the target is reached.
                     │    └── Tavily ─┘
-                    │       ignored if SearXNG alone meets the result threshold
                     │
-                    └──▶ Fallback loop (if merged < SUFFICIENT_MIN_RESULTS)
-                         Round-robin through remaining Tier 2 providers
-                         until threshold, exhaustion, or FALLBACK_TIMEOUT
+                    └──▶ SECONDARY: SearXNG (only on shortfall, bounded)
+                         ├── Serper (Google via API)
+                         ├── Bing, Wikipedia, GitHub...
+                         └── Circuit breaker per engine + cooldown
+                         Retry (network-class) up to 3 attempts within
+                         SEARXNG_TIMEOUT_SECONDS; merged after premium results.
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the full design.
 
 ## Supported fallback providers
 
-Set `FALLBACK_PROVIDERS` to a comma-separated list of premium backend names. Each needs its `_API_KEY` env var. **`T1_PREMIUM_COUNT` controls how many providers are started speculatively alongside SearXNG** (round-robin selection). If SearXNG alone returns enough distinct URLs, the gateway cancels/ignores T1 results and returns without waiting for them. Otherwise, it waits for T1 and uses the remaining providers in the fallback loop if the merged result count is still below `SUFFICIENT_MIN_RESULTS`.
+Set `FALLBACK_PROVIDERS` to a comma-separated list of premium backend names. Each needs its `_API_KEY` env var. The premium providers run first, serially via round-robin, until the accumulated distinct-URL count reaches `SUFFICIENT_MIN_RESULTS` (or all providers are tried, or the premium budget expires). SearXNG is only called as a bounded secondary when the premium stage falls short.
 
 | Provider | Env var | Free tier | Production |
 |----------|---------|-----------|------------|
@@ -75,8 +69,8 @@ Keyless mode (no API keys) works out of the box using SearXNG's free engines (Bi
 
 ## Features
 
-- **Speculative execution** — `T1_PREMIUM_COUNT` premium providers are selected via atomic round-robin and invoked while SearXNG runs concurrently; premium calls are **serial within the pass** by deliberate design (see [docs/architecture.md](docs/architecture.md#why-the-premium-pass-is-serial-deliberate)). If SearXNG alone meets the distinct-URL threshold, the gateway returns without waiting for or merging T1 results. Otherwise, results are merged and deduplicated by URL.
-- **Bounded fallback loop** — if merged results < `SUFFICIENT_MIN_RESULTS`, remaining Tier 2 providers are tried via round-robin until threshold, exhaustion, or `FALLBACK_TIMEOUT_SECONDS`.
+- **Premium-first execution** — the configured premium providers are selected via atomic round-robin and invoked **serially** (by deliberate design; see [docs/architecture.md](docs/architecture.md#why-the-premium-pass-is-serial-deliberate)) until the distinct-URL target is met. SearXNG runs only as a bounded secondary on shortfall, and its results are merged after the premium results (premium wins duplicate URLs).
+- **Bounded SearXNG secondary** — if the premium stage falls short of `SUFFICIENT_MIN_RESULTS`, SearXNG is called within the remaining `FALLBACK_TIMEOUT_SECONDS` budget (capped at `SEARXNG_TIMEOUT_SECONDS`) with retry and cooldown; its results are merged after the premium results.
 - **Circuit breaker per engine** — 4xx on an engine opens the circuit for 5 min; auto-recovers
 - **Exponential backoff retry** — up to 3 attempts (250ms/500ms between attempts), bounded by the SearXNG stage budget
 - **Prometheus /metrics** — 15+ gauges and counters prefixed `searxng_gateway_`
@@ -163,8 +157,7 @@ groups:
 | `JINA_API_KEY` | — | no | Jina Search API key |
 | `TAVILY_API_KEY` | — | no | Tavily Search API key |
 | `SUFFICIENT_MIN_RESULTS` | `1` | no | Target distinct-URL result count; loop stops when reached (recommend 10 with premiums) |
-| `T1_PREMIUM_COUNT` | `0` | no | Number of premium providers to call speculatively while SearXNG runs (0 = none; results are ignored if SearXNG alone meets the threshold; serial by design — see [docs/architecture.md](docs/architecture.md#why-the-premium-pass-is-serial-deliberate)) |
-| `FALLBACK_TIMEOUT_SECONDS` | `8` | no | Hard total request budget for speculative execution and the serial fallback loop; accumulated nonempty results are returned at the deadline |
+| `FALLBACK_TIMEOUT_SECONDS` | `8` | no | Hard total request budget: the premium-first stage plus the bounded SearXNG secondary; accumulated nonempty results are returned at the deadline |
 | `SEARXNG_TIMEOUT_SECONDS` | `3` | no | Total SearXNG stage budget shared by the HTTP request and all retries/backoff; the stage is cancelled when it expires. A stage expiry while the parent request budget is still alive counts as a SearXNG failure; a parent-budget expiry or caller cancellation does not |
 | `SEARXNG_FAIL_THRESHOLD` | `6` | no | Consecutive SearXNG failures before cooldown |
 | `SEARXNG_FAIL_COOLDOWN_SECONDS` | `180` | no | Cooldown duration for SearXNG (seconds) |

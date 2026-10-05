@@ -57,7 +57,7 @@ func setupRouter(t *testing.T) http.Handler {
 		MetricsPath:          "/metrics",
 		SearxngFailThreshold: 6,
 		SearxngFailCooldown:  180 * time.Second,
-		SufficientMinResults: 1,
+		SufficientMinResults: 2,
 		FallbackProviders:    []string{"brave"},
 	}
 	c, _ := cache.New(10, 0)

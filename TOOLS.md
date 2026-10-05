@@ -12,7 +12,7 @@ All metrics are Prometheus, emitted by the gateway at /metrics:
 - `searxng_gateway_circuit_breaker_recovery_total{engine="..."}` — half-open recoveries
 - `searxng_gateway_search_request_duration_seconds` — whole `/search` handler latency histogram
 - `searxng_gateway_searxng_stage_duration_seconds` — one sample per attempted SearXNG retry stage, no sample when the stage is skipped (histogram)
-- `searxng_gateway_provider_duration_seconds{provider="...",phase="t1|fallback"}` — premium call latency histogram
+- `searxng_gateway_provider_duration_seconds{provider="...",phase="primary"}` — premium call latency histogram
 - `searxng_gateway_engine_status{engine="..."}` — 0/1 from SearXNG UnresponsiveEngines list (gauge)
 - `searxng_gateway_searxng_failure_streak` — current consecutive SearXNG failures, reset to 0 on success or when an expired cooldown is cleared (gauge, no labels)
 - `searxng_gateway_searxng_cooldown_until_seconds` — Unix timestamp when the current SearXNG cooldown expires, 0 when not in cooldown (gauge, no labels). Cleared lazily by `inCooldown()` on the next request after expiry, so alert with `> time()`, never `> 0`
@@ -42,7 +42,7 @@ Source of truth is `homelab-config:configs/grafana/provisioning/alerting/rules.y
 
 ## Deploy env verification (2026-09-18)
 
-The deployed gateway environment (`T1_PREMIUM_COUNT`, `SUFFICIENT_MIN_RESULTS`, API keys, ...) lives only in Portainer stack 31 (id: `ai`) Env. `homelab-config:stacks/31-ai.yml` is SOPS-encrypted, so deployed values can be verified from neither repo — do not assert production values from repo contents.
+The deployed gateway environment (`SUFFICIENT_MIN_RESULTS`, API keys, ...) lives only in Portainer stack 31 (id: `ai`) Env. `homelab-config:stacks/31-ai.yml` is SOPS-encrypted, so deployed values can be verified from neither repo — do not assert production values from repo contents.
 
 ## Deployed image (verified 2026-09-25)
 
@@ -53,7 +53,7 @@ Live gateway (stack 31, consumer-facing route `searxng-fallback`): revision `934
 - `FALLBACK_TIMEOUT_SECONDS=8` — parent request budget; must stay below the tighter caller (OpenCode `fetch` 10s, OpenClaw 20s — both route to `searxng-fallback`).
 - `SEARXNG_TIMEOUT_SECONDS=3` — whole SearXNG retry stage (250ms/500ms backoff, up to 3 attempts).
 - `BRAVE_TIMEOUT_SECONDS=3` — legacy name; sets the HTTP timeout for **every** premium provider, not just Brave.
-- Other live values: `SUFFICIENT_MIN_RESULTS=25`, `T1_PREMIUM_COUNT=1`, `FALLBACK_PROVIDERS=brave,exa,tavily`, `SEARXNG_FAIL_THRESHOLD=6`, `SEARXNG_FAIL_COOLDOWN_SECONDS=180`.
+- Other live values: `SUFFICIENT_MIN_RESULTS=25`, `FALLBACK_PROVIDERS=brave,exa,tavily`, `SEARXNG_FAIL_THRESHOLD=6`, `SEARXNG_FAIL_COOLDOWN_SECONDS=180`.
 - Tracing is off by default; optional `OTEL_TRACES_EXPORTER` (`console`/`otlp`), `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`), `OTEL_TRACES_SAMPLER_ARG` (default 0.1), `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`. Full table in `README.md`; spans never record query/URL/result/error text.
 
 ## SearXNG settings (verified 2026-09-25)

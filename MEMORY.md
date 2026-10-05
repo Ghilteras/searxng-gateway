@@ -87,3 +87,15 @@ Placement finale FUORI SCOPE (homelab-config): `opencode-self` + `subagent-orche
 ## 2026-10-02 — SearXNG round: engine audit, latency baseline, retry and deploy pending
 
 → journal: search "Brave failure chain"
+
+---
+
+## 2026-10-05 — Premium-first sequential flow; T1_PREMIUM_COUNT retired
+
+→ journal: search "premium-first sequential"
+
+---
+
+## 2026-10-05 — Executor stalls on open-ended refactors; drive it as a mechanical apply-engine
+
+→ journal: search "mechanical apply-engine"

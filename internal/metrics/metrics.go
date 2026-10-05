@@ -24,7 +24,7 @@ var (
 		[]string{"outcome"},
 	)
 
-	// RequestDuration tracks actual premium-provider calls, labeled by provider and phase.
+	// RequestDuration tracks actual premium-provider calls, labeled by provider and phase (primary).
 	RequestDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "searxng_gateway_provider_duration_seconds",
