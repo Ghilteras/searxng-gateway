@@ -2,8 +2,10 @@ package backends
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,6 +37,35 @@ func TestExaBackend_API(t *testing.T) {
 	}
 	if results[0].Title != "Exa A" {
 		t.Fatalf("unexpected title: %s", results[0].Title)
+	}
+}
+
+func TestExaBackend_AutoAPIFailureIsNotReportedAsUnconfigured(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "upstream unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	b := NewExaBackend(ExaModeAuto, "test-key", 2*time.Second, "", "", 10)
+	b.BaseURL = server.URL
+	_, err := b.Search(SearchOptions{Query: "test"})
+	if err == nil {
+		t.Fatal("expected API failure")
+	}
+	if strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("API failure was misreported as configuration failure: %v", err)
+	}
+	var backendErr *BackendError
+	if !errors.As(err, &backendErr) || !strings.Contains(backendErr.Err.Error(), "exa api search failed") {
+		t.Fatalf("expected wrapped API search failure, got %v", err)
+	}
+}
+
+func TestExaBackend_AutoWithoutCredentialsIsNotConfigured(t *testing.T) {
+	b := NewExaBackend(ExaModeAuto, "", 2*time.Second, "", "", 10)
+	_, err := b.Search(SearchOptions{Query: "test"})
+	if err == nil || !strings.Contains(err.Error(), "exa not configured (need API key or MCP URL)") {
+		t.Fatalf("expected not-configured error, got %v", err)
 	}
 }
 

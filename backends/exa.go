@@ -96,14 +96,19 @@ func (e *ExaBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	case ExaModeAuto:
 		fallthrough
 	default:
+		var apiErr error
 		if strings.TrimSpace(e.APIKey) != "" {
 			results, err := e.searchAPI(searchContext(opts), query, count)
 			if err == nil {
 				return results, nil
 			}
+			apiErr = err
 		}
 		if strings.TrimSpace(e.MCPURL) != "" {
 			return e.searchMCP(searchContext(opts), query, count)
+		}
+		if apiErr != nil {
+			return nil, &BackendError{Backend: e.Name(), Err: fmt.Errorf("exa api search failed: %w", apiErr), Code: ErrCodeUnavailable}
 		}
 		return nil, &BackendError{Backend: e.Name(), Err: fmt.Errorf("exa not configured (need API key or MCP URL)"), Code: ErrCodeUnavailable}
 	}
