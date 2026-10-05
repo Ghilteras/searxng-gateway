@@ -9,7 +9,7 @@ import (
 
 // NewFromEnv creates a SearchBackend from environment variables.
 // It reads <NAME>_API_KEY and any provider-specific env vars.
-// Supported names: brave, tavily, exa, jina, bing.
+// Supported names: brave, tavily, exa, jina, bing, parallel.
 func NewFromEnv(name string, timeout time.Duration) (SearchBackend, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	apiKey := os.Getenv(strings.ToUpper(name) + "_API_KEY")
@@ -51,8 +51,13 @@ func NewFromEnv(name string, timeout time.Duration) (SearchBackend, error) {
 		}
 		// NewBingBackend is keyless — takes only timeout
 		return NewBingBackend(timeout), nil
+	case "parallel":
+		if timeout == 0 {
+			timeout = 15 * time.Second
+		}
+		return NewParallelBackend(apiKey, timeout), nil
 	default:
-		return nil, fmt.Errorf("unknown backend: %q (available: brave, tavily, exa, jina, bing)", name)
+		return nil, fmt.Errorf("unknown backend: %q (available: brave, tavily, exa, jina, bing, parallel)", name)
 	}
 }
 
