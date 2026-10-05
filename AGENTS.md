@@ -35,7 +35,7 @@ main.go → cmd/serve.go → internal/proxy/proxy.go (premium-first premiumLoop 
 
 ## Deploy
 - Deploy SOLO via Portainer API (skill portainer-redeploy), MAI docker compose/run/rm.
-- Stack consentito: SOLO stack 31 (id: ai).
+- Stack 31 (id: ai) è il target di deploy ROUTINE di questo repo: un aggiornamento del gateway si deploya come qualsiasi altro stack, SENZA conferma extra.
 - Qualsiasi altro stack → fermati e chiedi ad Angelo di usare homelab-config.
 
 L'immagine si deploya da homelab-config (`stacks/31-ai.yml`): aggiornare il tag e le env var, redeploy stack 31 via Portainer.
