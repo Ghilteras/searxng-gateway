@@ -105,3 +105,9 @@ Placement finale FUORI SCOPE (homelab-config): `opencode-self` + `subagent-orche
 ## 2026-10-06 — Gateway silent-degradation, delegation and deploy lessons
 
 → journal: search "Gateway latency-verify curation lessons"
+
+---
+
+## 2026-10-06 — Delta: Serper enrolled (drained key), pool auto-derive deployed
+
+→ journal: search "Gateway 2026-10-06 delta"
