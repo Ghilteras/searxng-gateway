@@ -17,8 +17,11 @@
 //     after the premium results.
 //  5. Return accumulated nonempty results even below the target; an empty
 //     result set is a timeout at the parent deadline, otherwise a failure.
-//  6. Circuit breaker: premiums where breakerMgr.IsOpen(name) are skipped.
-//     After success: RecordSuccess. After failure: RecordClientError.
+//  6. Circuit breaker: premium providers whose breaker is open are skipped.
+//     Each actual premium call runs inside gobreaker.Execute (real admission)
+//     and records exactly one terminal outcome; genuine provider faults trip
+//     the breaker, non-provider failures (caller cancellation, overall
+//     deadline, query validation, empty results) do not.
 //
 // Community-aligned behaviour (2026):
 //   - Premium providers are the primary source; SearXNG is a bounded secondary
@@ -280,6 +283,10 @@ func (p *Proxy) premiumLoop(
 	premiumHadResults bool,
 	errMsgs []string,
 ) ([]searxng.Result, map[string]bool, map[string]bool, bool, []string) {
+	// Initialise intended-provider visibility before the first use so every
+	// registered provider has an eligibility series and a breaker-state series.
+	p.initProviderEligibility()
+
 	for len(allResults) < p.targetResults() {
 		// Stop conditions.
 		if ctx.Err() != nil {
@@ -293,45 +300,49 @@ func (p *Proxy) premiumLoop(
 		usedPremiums[premium.Name()] = true
 
 		if !premium.IsAvailable() {
+			p.recordProviderSkip(premium.Name(), "missing_key")
 			continue
 		}
-		if p.breakerMgr.IsOpen(premium.Name()) {
+		id := premiumBreakerID(premium.Name())
+		if p.breakerMgr.IsOpen(id) {
+			p.recordProviderSkip(premium.Name(), "breaker_open")
 			continue
 		}
 
-		// Call the premium backend.
+		phase := "primary"
+		if p.breakerMgr.State(id) == gobreaker.StateHalfOpen {
+			phase = "canary"
+		}
+
+		// Call the premium backend under real circuit-breaker admission.
 		providerCtx, providerSpan := otel.Tracer("sx/internal/proxy").Start(ctx, "premium.primary")
-		providerSpan.SetAttributes(attribute.String("provider", premium.Name()), attribute.String("phase", "primary"))
+		providerSpan.SetAttributes(attribute.String("provider", premium.Name()), attribute.String("phase", phase))
 		if ctx.Err() != nil {
 			providerSpan.End()
 			break
 		}
-		start := time.Now()
-		results, err := premium.Search(backends.SearchOptions{
-			Context:    providerCtx,
-			Query:      key,
-			NumResults: 10,
-		})
-		providerSpan.SetAttributes(attribute.String("outcome", spanOutcome(err)), attribute.Int("result_count", len(results)))
+		results, outcome, admitted, callErr := p.admitPremiumCall(providerCtx, key, premium, id, phase)
+		providerSpan.SetAttributes(attribute.String("outcome", outcome), attribute.Int("result_count", len(results)))
 		providerSpan.End()
-		elapsed := time.Since(start)
-		metrics.RequestDuration.WithLabelValues(premium.Name(), "primary").Observe(elapsed.Seconds())
 
-		if err != nil {
-			clientError, category := classifyPremiumError(err)
-			before := p.breakerMgr.State(premium.Name())
-			if clientError {
-				p.breakerMgr.RecordClientError(premium.Name(), category)
-			}
-			logPremiumFailure(premium.Name(), "primary", category, clientError, before, p.breakerMgr.State(premium.Name()))
-			errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", premium.Name(), err))
+		if !admitted {
+			// The breaker opened between the IsOpen check and admission.
+			p.recordProviderSkip(premium.Name(), "breaker_open")
+			continue
+		}
+		// Execute has now observed the terminal call outcome and completed any
+		// trip/recovery transition. Keep the one-hot eligibility gauge current
+		// in the same request, without waiting for a later refresh.
+		p.refreshProviderEligibility(premium)
+		if callErr != nil {
+			logPremiumFailure(premium.Name(), phase, outcome)
+			errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", premium.Name(), callErr))
 			continue
 		}
 		if len(results) == 0 {
-			continue
+			continue // reachable, empty result set: no trip
 		}
 
-		p.breakerMgr.RecordSuccess(premium.Name())
 		metrics.EngineResultsTotal.WithLabelValues(premium.Name()).Add(float64(len(results)))
 
 		// Merge and deduplicate by URL.
@@ -351,6 +362,114 @@ func (p *Proxy) premiumLoop(
 	}
 
 	return allResults, seenURLs, usedPremiums, premiumHadResults, errMsgs
+}
+
+// premiumBreakerID namespaces premium-provider breakers so a SearXNG engine
+// sighting with the same name can never reset a premium API breaker.
+func premiumBreakerID(provider string) string {
+	return "premium:" + provider
+}
+
+// initProviderEligibility seeds eligibility and breaker-state visibility for
+// every registered provider before the first call.
+func (p *Proxy) initProviderEligibility() {
+	for _, name := range p.fallbackMgr.AvailableBackends() {
+		backend, ok := p.fallbackMgr.GetBackend(name)
+		if !ok {
+			continue
+		}
+		p.refreshProviderEligibility(backend)
+		// NextAvailable deliberately filters unconfigured backends out before
+		// selection; account for that exclusion here rather than calling it an
+		// attempt or silently losing the skip reason.
+		if !backend.IsAvailable() {
+			p.recordProviderSkip(name, "missing_key")
+		}
+	}
+}
+
+// refreshProviderEligibility records the current one-hot eligibility reason for
+// a provider. It also ensures the breaker-state gauge series exists without
+// ever resetting an open breaker.
+func (p *Proxy) refreshProviderEligibility(provider backends.SearchBackend) {
+	name := provider.Name()
+	id := premiumBreakerID(name)
+	p.breakerMgr.RecordEngineSeen(id)
+	metrics.SetProviderEligibility(name, func() string {
+		return p.providerEligibilityReason(provider)
+	})
+}
+
+// providerEligibilityReason reads authoritative backend and breaker state at
+// the point the metrics package serializes and applies the one-hot update.
+func (p *Proxy) providerEligibilityReason(provider backends.SearchBackend) string {
+	if !provider.IsAvailable() {
+		return "missing_key"
+	}
+	if p.breakerMgr.IsOpen(premiumBreakerID(provider.Name())) {
+		return "breaker_open"
+	}
+	return "eligible"
+}
+
+// recordProviderSkip counts an exclusion and updates the provider's eligibility.
+// Skips are not attempts: no provider call was made.
+func (p *Proxy) recordProviderSkip(name, reason string) {
+	metrics.ProviderSkipsTotal.WithLabelValues(name, reason).Inc()
+	backend, ok := p.fallbackMgr.GetBackend(name)
+	if !ok {
+		metrics.SetProviderEligibility(name, func() string { return "invalid_config" })
+		return
+	}
+	p.refreshProviderEligibility(backend)
+}
+
+// admitPremiumCall runs one premium provider call inside the real
+// circuit-breaker admission. It records exactly one terminal outcome and the
+// call duration, stores the breaker reason on a trip, and reports whether the
+// breaker admitted the call (admitted=false means no provider call was made).
+func (p *Proxy) admitPremiumCall(
+	ctx context.Context,
+	key string,
+	provider backends.SearchBackend,
+	id string,
+	phase string,
+) (results []backends.SearchResult, outcome string, admitted bool, callErr error) {
+	_, _ = p.breakerMgr.Execute(id, func() (res interface{}, err error) {
+		admitted = true
+		start := time.Now()
+		defer func() {
+			metrics.RequestDuration.WithLabelValues(provider.Name(), phase).Observe(time.Since(start).Seconds())
+		}()
+		defer func() {
+			if r := recover(); r != nil {
+				outcome = "panic"
+				metrics.ProviderAttemptsTotal.WithLabelValues(provider.Name(), phase, outcome).Inc()
+				p.breakerMgr.RecordReason(id, outcome)
+				callErr = fmt.Errorf("provider %s panicked", provider.Name())
+				res, err = nil, callErr
+			}
+		}()
+		results, callErr = provider.Search(backends.SearchOptions{
+			Context:    ctx,
+			Query:      key,
+			NumResults: 10,
+		})
+		outcome = classifyPremiumOutcome(ctx, results, callErr)
+		metrics.ProviderAttemptsTotal.WithLabelValues(provider.Name(), phase, outcome).Inc()
+		switch {
+		case outcome == "success" || outcome == "empty":
+			return results, nil
+		case !premiumTrips(outcome):
+			// Caller cancellation, overall deadline, query validation or an
+			// unconfigured provider must never trip the breaker.
+			return results, breaker.ErrNonProviderFault
+		default:
+			p.breakerMgr.RecordReason(id, outcome)
+			return results, callErr
+		}
+	})
+	return results, outcome, admitted, callErr
 }
 
 // recordSearxngSuccess resets the failure counter and clears any active cooldown.
@@ -638,45 +757,100 @@ func isClientError(reason string) bool {
 	return false
 }
 
-// classifyPremiumError uses backend status/type data where available. Text is
-// consulted only for unstructured errors; returned categories are bounded.
-func classifyPremiumError(err error) (bool, string) {
+// classifyPremiumOutcome maps a premium provider call to exactly one bounded
+// terminal outcome. Context errors are inspected before BackendError.Code, so a
+// caller cancellation or an overall request deadline never trips the breaker
+// while a provider timeout with a live parent request does.
+func classifyPremiumOutcome(parent context.Context, results []backends.SearchResult, err error) string {
+	if err == nil {
+		if len(results) == 0 {
+			return "empty"
+		}
+		return "success"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "cancelled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		if parent != nil && parent.Err() != nil {
+			return "cancelled" // overall request deadline, not a provider fault
+		}
+		return "timeout" // provider timeout while the parent request is live
+	}
 	var backendErr *backends.BackendError
 	if errors.As(err, &backendErr) {
 		switch {
-		case backendErr.Code >= 400 && backendErr.Code <= 499:
-			return true, "http_4xx"
+		case backendErr.Code == backends.ErrCodeUnavailable:
+			return "not_configured"
+		case backendErr.Code == backends.ErrCodeDegraded:
+			return "degraded"
 		case backendErr.Code == backends.ErrCodeAuth:
-			return true, "auth"
+			return "auth"
 		case backendErr.Code == backends.ErrCodeRateLimit:
-			return true, "rate_limit"
-		case backendErr.Code >= 500 && backendErr.Code <= 599:
-			return false, "http_5xx"
+			return "rate_limit"
 		case backendErr.Code == backends.ErrCodeNetwork:
-			return false, "network"
+			return "network"
 		case backendErr.Code == backends.ErrCodeInvalidResponse:
-			return false, "invalid_response"
-		case backendErr.Code == backends.ErrCodeUnavailable || backendErr.Code == backends.ErrCodeDegraded:
-			return false, "unavailable"
+			return "invalid_response"
+		case backendErr.Code == 400 || backendErr.Code == 422:
+			// 400/422 are query-validation errors unless the provider says the
+			// failure is about credits/quota.
+			if isQuotaText(err.Error()) {
+				return "quota"
+			}
+			return "request_error"
+		case backendErr.Code == 401 || backendErr.Code == 403:
+			return "auth"
+		case backendErr.Code == 402:
+			return "quota"
+		case backendErr.Code == 429:
+			return "rate_limit"
+		case backendErr.Code >= 500 && backendErr.Code <= 599:
+			return "http_5xx"
+		case backendErr.Code >= 400 && backendErr.Code <= 499:
+			// Non-standard 4xx (e.g. Tavily 432 plan limit) is an admission
+			// failure, not a query-validation error.
+			return "quota"
 		default:
-			return false, "backend_error"
+			return "other_error"
 		}
 	}
-	if isClientError(err.Error()) {
-		return true, "unstructured_client_error"
+	if isQuotaText(err.Error()) {
+		return "quota"
 	}
-	return false, "unstructured_error"
+	if isClientError(err.Error()) {
+		return "auth"
+	}
+	return "other_error"
 }
 
-func logPremiumFailure(provider, phase, category string, clientError bool, before, after gobreaker.State) {
-	action := "continue"
-	if after == gobreaker.StateOpen && before != gobreaker.StateOpen {
-		action = "breaker_open"
-		log.Printf("[WARN] provider_failure provider=%s phase=%s class=%s breaker=%s", provider, phase, category, action)
+// premiumTrips reports whether a terminal outcome is a provider fault that must
+// trip the circuit breaker.
+func premiumTrips(outcome string) bool {
+	switch outcome {
+	case "auth", "quota", "rate_limit", "network", "timeout", "http_5xx", "degraded", "invalid_response", "panic", "other_error":
+		return true
+	default:
+		return false
+	}
+}
+
+// isQuotaText reports whether an error message describes a credits/quota
+// failure rather than a malformed request.
+func isQuotaText(msg string) bool {
+	low := strings.ToLower(msg)
+	for _, needle := range []string{"credit", "quota", "balance", "insufficient", "payment required", "billing"} {
+		if strings.Contains(low, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func logPremiumFailure(provider, phase, outcome string) {
+	if premiumTrips(outcome) {
+		log.Printf("[WARN] provider_failure provider=%s phase=%s outcome=%s", provider, phase, outcome)
 		return
 	}
-	if clientError {
-		action = "breaker_recorded"
-	}
-	log.Printf("[INFO] provider_failure provider=%s phase=%s class=%s breaker=%s", provider, phase, category, action)
+	log.Printf("[INFO] provider_failure provider=%s phase=%s outcome=%s", provider, phase, outcome)
 }

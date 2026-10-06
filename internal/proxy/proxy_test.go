@@ -13,6 +13,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	"github.com/sony/gobreaker"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -580,7 +581,7 @@ func TestSearchCircuitBreaker(t *testing.T) {
 	cfg := newCfg()
 	cfg.SufficientMinResults = 2
 	bm := breaker.New()
-	bm.RecordClientError("exa", "test trip") // trip exa's breaker
+	bm.RecordClientError("premium:exa", "test trip") // trip exa's premium breaker
 	p := newTestProxy(cfg, sx, c, bm, fb1, fb2)
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
@@ -712,34 +713,53 @@ func TestIsClientError(t *testing.T) {
 	}
 }
 
-func TestClassifyPremiumError(t *testing.T) {
+func TestClassifyPremiumOutcome(t *testing.T) {
 	tests := []struct {
-		name     string
-		err      error
-		want     bool
-		category string
+		name string
+		err  error
+		want string
 	}{
-		{"typed 432", &backends.BackendError{Backend: "tavily", Code: 432, Err: errors.New("private plan body")}, true, "http_4xx"},
-		{"typed 401", &backends.BackendError{Code: 401}, true, "http_4xx"},
-		{"typed 403", &backends.BackendError{Code: 403}, true, "http_4xx"},
-		{"typed 429", &backends.BackendError{Code: 429}, true, "http_4xx"},
-		{"typed 5xx", &backends.BackendError{Code: 503}, false, "http_5xx"},
-		{"typed network", &backends.BackendError{Code: backends.ErrCodeNetwork}, false, "network"},
-		{"typed invalid response", &backends.BackendError{Code: backends.ErrCodeInvalidResponse}, false, "invalid_response"},
-		{"typed auth", &backends.BackendError{Code: backends.ErrCodeAuth}, true, "auth"},
-		{"typed rate limit", &backends.BackendError{Code: backends.ErrCodeRateLimit}, true, "rate_limit"},
-		{"untyped captcha", errors.New("captcha required"), true, "unstructured_client_error"},
-		{"untyped blocked", errors.New("blocked by policy"), true, "unstructured_client_error"},
-		{"untyped suspension", errors.New("account banned"), true, "unstructured_client_error"},
-		{"generic", errors.New("temporary provider issue"), false, "unstructured_error"},
+		{"typed 432 plan limit", &backends.BackendError{Backend: "tavily", Code: 432, Err: errors.New("private plan body")}, "quota"},
+		{"typed 401", &backends.BackendError{Code: 401}, "auth"},
+		{"typed 403", &backends.BackendError{Code: 403}, "auth"},
+		{"typed 402 credits", &backends.BackendError{Code: 402, Err: errors.New("payment required")}, "quota"},
+		{"typed 429", &backends.BackendError{Code: 429}, "rate_limit"},
+		{"typed 400 validation", &backends.BackendError{Code: 400, Err: errors.New("invalid query parameter")}, "request_error"},
+		{"typed 400 credits", &backends.BackendError{Code: 400, Err: errors.New("not enough credits")}, "quota"},
+		{"typed 422 validation", &backends.BackendError{Code: 422, Err: errors.New("unprocessable entity")}, "request_error"},
+		{"typed 5xx", &backends.BackendError{Code: 503}, "http_5xx"},
+		{"typed network", &backends.BackendError{Code: backends.ErrCodeNetwork}, "network"},
+		{"typed invalid response", &backends.BackendError{Code: backends.ErrCodeInvalidResponse}, "invalid_response"},
+		{"typed auth", &backends.BackendError{Code: backends.ErrCodeAuth}, "auth"},
+		{"typed rate limit", &backends.BackendError{Code: backends.ErrCodeRateLimit}, "rate_limit"},
+		{"typed unavailable", &backends.BackendError{Code: backends.ErrCodeUnavailable}, "not_configured"},
+		{"typed degraded", &backends.BackendError{Code: backends.ErrCodeDegraded}, "degraded"},
+		{"caller cancellation", context.Canceled, "cancelled"},
+		{"untyped captcha", errors.New("captcha required"), "auth"},
+		{"untyped blocked", errors.New("blocked by policy"), "auth"},
+		{"generic", errors.New("temporary provider issue"), "other_error"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, category := classifyPremiumError(tt.err)
-			if got != tt.want || category != tt.category {
-				t.Fatalf("classifyPremiumError() = (%v, %q), want (%v, %q)", got, category, tt.want, tt.category)
+			got := classifyPremiumOutcome(context.Background(), nil, tt.err)
+			if got != tt.want {
+				t.Fatalf("classifyPremiumOutcome() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+	if got := classifyPremiumOutcome(context.Background(), []backends.SearchResult{{URL: "https://x"}}, nil); got != "success" {
+		t.Fatalf("non-empty success = %q, want success", got)
+	}
+	if got := classifyPremiumOutcome(context.Background(), nil, nil); got != "empty" {
+		t.Fatalf("empty success = %q, want empty", got)
+	}
+	if got := classifyPremiumOutcome(context.Background(), nil, context.DeadlineExceeded); got != "timeout" {
+		t.Fatalf("provider timeout with live parent = %q, want timeout", got)
+	}
+	deadCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := classifyPremiumOutcome(deadCtx, nil, context.DeadlineExceeded); got != "cancelled" {
+		t.Fatalf("deadline with done parent = %q, want cancelled", got)
 	}
 }
 
@@ -760,16 +780,16 @@ func TestTyped432TripsBreakerInPrimaryPhase(t *testing.T) {
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
 	p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, false, nil)
-	if !bm.IsOpen("tavily") {
+	if !bm.IsOpen("premium:tavily") {
 		t.Fatal("typed 432 did not open Tavily breaker")
 	}
-	if got := bm.LastReason("tavily"); got != "http_4xx" {
-		t.Fatalf("breaker reason = %q, want bounded category http_4xx", got)
+	if got := bm.LastReason("premium:tavily"); got != "quota" {
+		t.Fatalf("breaker reason = %q, want bounded outcome quota", got)
 	}
 	if strings.Contains(logs.String(), querySecret) || strings.Contains(logs.String(), bodySecret) || strings.Contains(logs.String(), keySecret) {
 		t.Fatalf("sensitive text leaked in provider log: %q", logs.String())
 	}
-	if strings.Contains(bm.LastReason("tavily"), bodySecret) || strings.Contains(bm.LastReason("tavily"), keySecret) {
+	if strings.Contains(bm.LastReason("premium:tavily"), bodySecret) || strings.Contains(bm.LastReason("premium:tavily"), keySecret) {
 		t.Fatal("sensitive text leaked in breaker reason")
 	}
 	calls := backend.calls.Load()
@@ -1704,6 +1724,61 @@ func gatherMetricFamily(t *testing.T, name string) []*dto.MetricFamily {
 	return nil
 }
 
+func labelsMatch(m *dto.Metric, wanted map[string]string) bool {
+	labels := map[string]string{}
+	for _, l := range m.GetLabel() {
+		labels[l.GetName()] = l.GetValue()
+	}
+	for k, v := range wanted {
+		if labels[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// counterValueForLabels returns the value of the counter series matching all
+// wanted labels, or 0 when the series does not exist.
+func counterValueForLabels(t *testing.T, name string, wanted map[string]string) float64 {
+	t.Helper()
+	for _, mf := range gatherMetricFamily(t, name) {
+		for _, m := range mf.GetMetric() {
+			if labelsMatch(m, wanted) {
+				return m.GetCounter().GetValue()
+			}
+		}
+	}
+	return 0
+}
+
+// counterSumForLabels sums the counter series matching all wanted labels.
+func counterSumForLabels(t *testing.T, name string, wanted map[string]string) float64 {
+	t.Helper()
+	var total float64
+	for _, mf := range gatherMetricFamily(t, name) {
+		for _, m := range mf.GetMetric() {
+			if labelsMatch(m, wanted) {
+				total += m.GetCounter().GetValue()
+			}
+		}
+	}
+	return total
+}
+
+// gaugeValueForLabels returns the value of the gauge series matching all wanted
+// labels, or 0 when the series does not exist.
+func gaugeValueForLabels(t *testing.T, name string, wanted map[string]string) float64 {
+	t.Helper()
+	for _, mf := range gatherMetricFamily(t, name) {
+		for _, m := range mf.GetMetric() {
+			if labelsMatch(m, wanted) {
+				return m.GetGauge().GetValue()
+			}
+		}
+	}
+	return 0
+}
+
 // TestOutcomeLabels_DeterministicAcrossRepeats verifies that outcome metric
 // labels are deterministic across repeated identical-input calls. For each
 // scenario, 25 fresh iterations are run with a unique query and fresh
@@ -1838,5 +1913,378 @@ func TestOutcomeLabels_DeterministicAcrossRepeats(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Real circuit-breaker admission + one-terminal-outcome observability
+// ---------------------------------------------------------------------------
+
+// Requirement group 1: an open breaker excludes the provider from the
+// round-robin (the Tavily rule).
+func TestOpenBreakerExcludesProviderFromRoundRobin(t *testing.T) {
+	metrics.Init()
+	tavily := &fakeBackend{name: "tavily", avail: true, err: &backends.BackendError{
+		Backend: "tavily", Code: backends.ErrCodeNetwork, Err: errors.New("connection refused"),
+	}}
+	brave := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{{URL: "https://b", Engine: "brave"}}}
+	bm := breaker.New()
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.FallbackProviders = []string{"tavily", "brave"}
+	cfg.SufficientMinResults = 5
+
+	p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, bm, tavily, brave)
+	_, _ = p.Search(context.Background(), "trip-tavily-with-network-fault")
+	if !bm.IsOpen("premium:tavily") {
+		t.Fatal("real network fault did not open Tavily breaker")
+	}
+	tavilyCalls := tavily.calls.Load()
+	braveCalls := brave.calls.Load()
+	tavily.err = nil
+	tavily.results = []backends.SearchResult{{URL: "https://t", Engine: "tavily"}}
+	beforeAttempts := counterSumForLabels(t, "searxng_gateway_provider_attempts_total", map[string]string{"provider": "tavily"})
+	beforeSkips := counterValueForLabels(t, "searxng_gateway_provider_skips_total",
+		map[string]string{"provider": "tavily", "reason": "breaker_open"})
+	if _, err := p.Search(context.Background(), "open-breaker-roundrobin"); err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+	if got := tavily.calls.Load(); got != tavilyCalls {
+		t.Fatalf("tavily calls = %d, want %d while breaker is open", got, tavilyCalls)
+	}
+	if got := brave.calls.Load(); got != braveCalls+1 {
+		t.Fatalf("brave calls delta = %d, want 1 (open breaker must not suppress the others)", got-braveCalls)
+	}
+	if delta := counterValueForLabels(t, "searxng_gateway_provider_skips_total",
+		map[string]string{"provider": "tavily", "reason": "breaker_open"}) - beforeSkips; delta != 1 {
+		t.Fatalf("tavily breaker_open skips delta = %v, want 1", delta)
+	}
+	if delta := counterSumForLabels(t, "searxng_gateway_provider_attempts_total", map[string]string{"provider": "tavily"}) - beforeAttempts; delta != 0 {
+		t.Fatalf("tavily attempt delta while breaker open = %v, want 0", delta)
+	}
+	if got := gaugeValueForLabels(t, "searxng_gateway_provider_eligibility",
+		map[string]string{"provider": "tavily", "reason": "breaker_open"}); got != 1 {
+		t.Fatalf("tavily eligibility breaker_open = %v, want 1", got)
+	}
+}
+
+// Requirement group 2: a credits-exhausted response trips the breaker (the
+// Parallel rule), and the provider is excluded afterwards.
+func TestCreditsExhaustedResponseTripsBreaker(t *testing.T) {
+	metrics.Init()
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"400_credits", &backends.BackendError{Backend: "parallel", Code: 400, Err: errors.New("not enough credits")}},
+		{"402_payment", &backends.BackendError{Backend: "parallel", Code: 402, Err: errors.New("payment required")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &fakeBackend{name: "parallel", avail: true, err: tc.err}
+			bm := breaker.New()
+			c, _ := cache.New(10, 0)
+			cfg := newCfg()
+			cfg.FallbackProviders = []string{"parallel"}
+			cfg.SufficientMinResults = 5
+			beforeQuota := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
+				map[string]string{"provider": "parallel", "phase": "primary", "outcome": "quota"})
+			p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, bm, backend)
+
+			_, _ = p.Search(context.Background(), "credits-exhausted-"+tc.name)
+			if !bm.IsOpen("premium:parallel") {
+				t.Fatal("credits-exhausted response did not trip the Parallel breaker")
+			}
+			if got := gaugeValueForLabels(t, "searxng_gateway_circuit_breaker_state",
+				map[string]string{"engine": "premium:parallel"}); got != 2 {
+				t.Fatalf("breaker state gauge immediately after quota trip = %v, want 2", got)
+			}
+			if got := gaugeValueForLabels(t, "searxng_gateway_provider_eligibility",
+				map[string]string{"provider": "parallel", "reason": "breaker_open"}); got != 1 {
+				t.Fatalf("eligibility immediately after quota trip = %v, want breaker_open one-hot", got)
+			}
+			if delta := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
+				map[string]string{"provider": "parallel", "phase": "primary", "outcome": "quota"}) - beforeQuota; delta != 1 {
+				t.Fatalf("quota outcome delta = %v, want 1", delta)
+			}
+			calls := backend.calls.Load()
+			_, _ = p.Search(context.Background(), "credits-exhausted-"+tc.name+"-again")
+			if got := backend.calls.Load(); got != calls {
+				t.Fatalf("provider called while breaker open: %d, want %d", got, calls)
+			}
+		})
+	}
+}
+
+// Requirement group 4: caller cancellation and overall request deadline never
+// trip; query-validation errors do not trip.
+func TestCancellationAndValidationDoNotTrip(t *testing.T) {
+	metrics.Init()
+	t.Run("caller_cancellation", func(t *testing.T) {
+		beforeCancelled := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
+			map[string]string{"provider": "brave", "phase": "primary", "outcome": "cancelled"})
+		started := make(chan struct{})
+		backend := &contextBackend{name: "brave", fn: func(ctx context.Context) ([]backends.SearchResult, error) {
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}}
+		bm := breaker.New()
+		c, _ := cache.New(10, 0)
+		cfg := newCfg()
+		cfg.FallbackProviders = []string{"brave"}
+		p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, bm, backend)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { _, _ = p.Search(ctx, "cancel-notrip"); close(done) }()
+		<-started
+		cancel()
+		<-done
+		if bm.IsOpen("premium:brave") {
+			t.Fatal("caller cancellation tripped the breaker")
+		}
+		if delta := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
+			map[string]string{"provider": "brave", "phase": "primary", "outcome": "cancelled"}) - beforeCancelled; delta != 1 {
+			t.Fatalf("cancelled attempt delta = %v, want exactly 1", delta)
+		}
+	})
+	t.Run("overall_deadline", func(t *testing.T) {
+		backend := &contextBackend{name: "brave", fn: func(ctx context.Context) ([]backends.SearchResult, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}}
+		bm := breaker.New()
+		c, _ := cache.New(10, 0)
+		cfg := newCfg()
+		cfg.FallbackTimeout = 60 * time.Millisecond
+		cfg.SearxngTimeout = time.Second
+		cfg.FallbackProviders = []string{"brave"}
+		p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, bm, backend)
+		_, _ = p.Search(context.Background(), "deadline-notrip")
+		if bm.IsOpen("premium:brave") {
+			t.Fatal("overall request deadline tripped the breaker")
+		}
+	})
+	t.Run("query_validation", func(t *testing.T) {
+		for _, code := range []int{400, 422} {
+			backend := &fakeBackend{name: "exa", avail: true, err: &backends.BackendError{
+				Backend: "exa", Code: code, Err: errors.New("invalid query parameter"),
+			}}
+			bm := breaker.New()
+			c, _ := cache.New(10, 0)
+			cfg := newCfg()
+			cfg.FallbackProviders = []string{"exa"}
+			beforeReqErr := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
+				map[string]string{"provider": "exa", "phase": "primary", "outcome": "request_error"})
+			p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, bm, backend)
+			_, _ = p.Search(context.Background(), fmt.Sprintf("validation-%d", code))
+			if bm.IsOpen("premium:exa") {
+				t.Fatalf("query-validation %d tripped the breaker", code)
+			}
+			if delta := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
+				map[string]string{"provider": "exa", "phase": "primary", "outcome": "request_error"}) - beforeReqErr; delta != 1 {
+				t.Fatalf("validation %d request_error delta = %v, want 1", code, delta)
+			}
+		}
+	})
+}
+
+// Requirement group 5: an empty result set is an "empty" outcome, does not
+// trip, and is counted exactly once.
+func TestEmptyResultOutcomeNoTrip(t *testing.T) {
+	metrics.Init()
+	backend := &fakeBackend{name: "exa", avail: true, results: nil}
+	bm := breaker.New()
+	c, _ := cache.New(10, 0)
+	cfg := newCfg()
+	cfg.FallbackProviders = []string{"exa"}
+	cfg.SufficientMinResults = 5
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{{URL: "https://sx", Engine: "wikipedia"}}}}
+	beforeEmpty := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
+		map[string]string{"provider": "exa", "phase": "primary", "outcome": "empty"})
+	p := newTestProxy(cfg, sx, c, bm, backend)
+	if _, err := p.Search(context.Background(), "empty-outcome"); err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+	if delta := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
+		map[string]string{"provider": "exa", "phase": "primary", "outcome": "empty"}) - beforeEmpty; delta != 1 {
+		t.Fatalf("empty outcome delta = %v, want exactly 1", delta)
+	}
+	if bm.IsOpen("premium:exa") {
+		t.Fatal("empty result set tripped the breaker")
+	}
+}
+
+// TestProxyHalfOpenAdmitsSingleRealSearchUnderConcurrency verifies admission
+// at the proxy/backend boundary (not just at Manager.Execute): one real Search
+// remains in flight as the half-open probe while concurrent requests are
+// skipped without invoking Search a second time.
+func TestProxyHalfOpenAdmitsSingleRealSearchUnderConcurrency(t *testing.T) {
+	metrics.Init()
+	var calls atomic.Int64
+	probeStarted := make(chan struct{})
+	probeRelease := make(chan struct{})
+	backend := &contextBackend{name: "brave", fn: func(context.Context) ([]backends.SearchResult, error) {
+		invocation := calls.Add(1)
+		if invocation == 1 {
+			return nil, &backends.BackendError{Backend: "brave", Code: backends.ErrCodeNetwork, Err: errors.New("connection refused")}
+		}
+		if invocation == 2 {
+			close(probeStarted)
+			<-probeRelease
+		}
+		return []backends.SearchResult{{URL: "https://probe.example", Engine: "brave"}}, nil
+	}}
+	bm := breaker.NewWithSettings(func(engine string) breaker.EngineSettings {
+		return breaker.EngineSettings{Name: engine, MaxRequests: 1, Timeout: 30 * time.Millisecond}
+	})
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.FallbackProviders = []string{"brave"}
+	cfg.SufficientMinResults = 1
+	sx := &fakeSearxng{resp: &searxng.Response{}}
+	p := newTestProxy(cfg, sx, c, bm, backend)
+	_, _ = p.Search(context.Background(), "prime-breaker-open")
+	if !bm.IsOpen("premium:brave") {
+		t.Fatal("initial network fault did not open breaker")
+	}
+	deadline := time.Now().Add(time.Second)
+	for bm.State("premium:brave") != gobreaker.StateHalfOpen && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if bm.State("premium:brave") != gobreaker.StateHalfOpen {
+		t.Fatal("breaker did not enter half-open")
+	}
+
+	const concurrentRequests = 8
+	beforeSkips := counterValueForLabels(t, "searxng_gateway_provider_skips_total",
+		map[string]string{"provider": "brave", "reason": "breaker_open"})
+	beforeCanary := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
+		map[string]string{"provider": "brave", "phase": "canary", "outcome": "success"})
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < concurrentRequests; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, _ = p.Search(context.Background(), fmt.Sprintf("parallel-probe-%d", i))
+		}(i)
+	}
+	close(start)
+	select {
+	case <-probeStarted:
+	case <-time.After(time.Second):
+		close(probeRelease)
+		t.Fatal("no real provider Search admitted as half-open probe")
+	}
+
+	// Keep the real probe blocked while every other concurrent request gets its
+	// breaker_open skip. This proves there was no second Search call in flight.
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for counterValueForLabels(t, "searxng_gateway_provider_skips_total",
+		map[string]string{"provider": "brave", "reason": "breaker_open"})-beforeSkips < concurrentRequests-1 {
+		select {
+		case <-tick.C:
+		case <-time.After(time.Second):
+			close(probeRelease)
+			t.Fatal("concurrent requests did not all receive breaker_open skips")
+		}
+	}
+	if got := calls.Load(); got != 2 {
+		close(probeRelease)
+		t.Fatalf("provider Search invocations while probe held = %d, want initial fault + one probe", got)
+	}
+	close(probeRelease)
+	wg.Wait()
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("provider Search invocations = %d, want exactly 2", got)
+	}
+	if delta := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
+		map[string]string{"provider": "brave", "phase": "canary", "outcome": "success"}) - beforeCanary; delta != 1 {
+		t.Fatalf("real half-open probe attempt delta = %v, want 1", delta)
+	}
+	if got := gaugeValueForLabels(t, "searxng_gateway_circuit_breaker_state",
+		map[string]string{"engine": "premium:brave"}); got != 0 {
+		t.Fatalf("breaker state gauge after successful probe = %v, want closed (0)", got)
+	}
+	if got := gaugeValueForLabels(t, "searxng_gateway_provider_eligibility",
+		map[string]string{"provider": "brave", "reason": "eligible"}); got != 1 {
+		t.Fatalf("eligibility after successful probe = %v, want eligible one-hot", got)
+	}
+	if got := gaugeValueForLabels(t, "searxng_gateway_provider_eligibility",
+		map[string]string{"provider": "brave", "reason": "breaker_open"}); got != 0 {
+		t.Fatalf("breaker_open eligibility after recovery = %v, want 0", got)
+	}
+	if _, err := p.Search(context.Background(), "call-after-probe-recovery"); err != nil {
+		t.Fatalf("subsequent request after recovered probe: %v", err)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("provider Search calls after recovered probe = %d, want 3 (initial fault, probe, subsequent request)", got)
+	}
+}
+
+// Requirement group 6: every actual call records exactly one terminal outcome;
+// every exclusion has a reason; initialisation cannot reset an open breaker.
+func TestProviderAttemptsOneOutcomeAndSkips(t *testing.T) {
+	metrics.Init()
+	brave := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{{URL: "https://b", Engine: "brave"}}}
+	unavail := &fakeBackend{name: "exa", avail: false}
+	bm := breaker.New()
+	c, _ := cache.New(10, 0)
+	cfg := newCfg()
+	cfg.FallbackProviders = []string{"brave", "exa"}
+	cfg.SufficientMinResults = 5
+
+	beforeSuccess := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
+		map[string]string{"provider": "brave", "phase": "primary", "outcome": "success"})
+	beforeExaAttempts := counterSumForLabels(t, "searxng_gateway_provider_attempts_total",
+		map[string]string{"provider": "exa"})
+	beforeSkip := counterValueForLabels(t, "searxng_gateway_provider_skips_total",
+		map[string]string{"provider": "exa", "reason": "missing_key"})
+	p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, bm, brave, unavail)
+	if _, err := p.Search(context.Background(), "one-outcome"); err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+	if delta := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
+		map[string]string{"provider": "brave", "phase": "primary", "outcome": "success"}) - beforeSuccess; delta != 1 {
+		t.Fatalf("brave success attempts delta = %v, want exactly 1", delta)
+	}
+	if delta := counterValueForLabels(t, "searxng_gateway_provider_skips_total",
+		map[string]string{"provider": "exa", "reason": "missing_key"}) - beforeSkip; delta != 1 {
+		t.Fatalf("exa missing_key skips delta = %v, want 1", delta)
+	}
+	if delta := counterSumForLabels(t, "searxng_gateway_provider_attempts_total",
+		map[string]string{"provider": "exa"}) - beforeExaAttempts; delta != 0 {
+		t.Fatalf("exa attempts delta = %v, want 0 (a skip is not an attempt)", delta)
+	}
+	if got := gaugeValueForLabels(t, "searxng_gateway_provider_eligibility",
+		map[string]string{"provider": "exa", "reason": "missing_key"}); got != 1 {
+		t.Fatalf("exa eligibility missing_key = %v, want 1", got)
+	}
+
+	// Initialisation must not reset an open breaker to zero.
+	faulty := &fakeBackend{name: "jina", avail: true, err: &backends.BackendError{
+		Backend: "jina", Code: backends.ErrCodeAuth, Err: errors.New("invalid api key"),
+	}}
+	cfg2 := newCfg()
+	cfg2.FallbackProviders = []string{"jina"}
+	cfg2.SufficientMinResults = 5
+	p2 := newTestProxy(cfg2, &fakeSearxng{resp: &searxng.Response{}}, c, bm, faulty)
+	_, _ = p2.Search(context.Background(), "init-open-breaker")
+	if !bm.IsOpen("premium:jina") {
+		t.Fatal("auth failure did not open the jina breaker")
+	}
+	if got := gaugeValueForLabels(t, "searxng_gateway_circuit_breaker_state",
+		map[string]string{"engine": "premium:jina"}); got != 2 {
+		t.Fatalf("jina breaker gauge = %v, want 2 (open)", got)
+	}
+	// A second request re-runs initProviderEligibility; the open breaker must
+	// stay at 2, not be reset to 0.
+	_, _ = p2.Search(context.Background(), "init-open-breaker-again")
+	if got := gaugeValueForLabels(t, "searxng_gateway_circuit_breaker_state",
+		map[string]string{"engine": "premium:jina"}); got != 2 {
+		t.Fatalf("initialisation reset an open breaker to %v, want 2", got)
 	}
 }

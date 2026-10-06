@@ -7,12 +7,15 @@ Machine facts for SearXNG Gateway development.
 All metrics are Prometheus, emitted by the gateway at /metrics:
 
 - `searxng_gateway_engine_results_total{engine="..."}` — results per engine (brave, exa, tavily, jina, plus SearXNG engines)
-- `searxng_gateway_circuit_breaker_state{engine="..."}` — 0 closed, 1 open
+- `searxng_gateway_circuit_breaker_state{engine="..."}` — 0 closed, 1 half-open, 2 open; premium breakers use `engine="premium:<provider>"`
 - `searxng_gateway_circuit_breaker_trips_total{engine="...",reason="..."}` — trips
 - `searxng_gateway_circuit_breaker_recovery_total{engine="..."}` — half-open recoveries
 - `searxng_gateway_search_request_duration_seconds` — whole `/search` handler latency histogram
 - `searxng_gateway_searxng_stage_duration_seconds` — one sample per attempted SearXNG retry stage, no sample when the stage is skipped (histogram)
-- `searxng_gateway_provider_duration_seconds{provider="...",phase="primary"}` — premium call latency histogram
+- `searxng_gateway_provider_duration_seconds{provider="...",phase="primary|canary"}` — premium call latency histogram
+- `searxng_gateway_provider_attempts_total{provider="...",phase="...",outcome="..."}` — one terminal outcome per actual premium Search call
+- `searxng_gateway_provider_skips_total{provider="...",reason="..."}` — exclusions; skips are not attempts
+- `searxng_gateway_provider_eligibility{provider="...",reason="..."}` — bounded one-hot intended-provider eligibility
 - `searxng_gateway_engine_status{engine="..."}` — 0/1 from SearXNG UnresponsiveEngines list (gauge)
 - `searxng_gateway_searxng_failure_streak` — current consecutive SearXNG failures, reset to 0 on success or when an expired cooldown is cleared (gauge, no labels)
 - `searxng_gateway_searxng_cooldown_until_seconds` — Unix timestamp when the current SearXNG cooldown expires, 0 when not in cooldown (gauge, no labels). Cleared lazily by `inCooldown()` on the next request after expiry, so alert with `> time()`, never `> 0`

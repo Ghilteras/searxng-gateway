@@ -34,6 +34,40 @@ var (
 		[]string{"provider", "phase"},
 	)
 
+	// ProviderAttemptsTotal counts exactly one terminal outcome per actual
+	// premium-provider Search invocation. Skips are not attempts (see
+	// ProviderSkipsTotal). outcome ∈ {success, empty, auth, quota, rate_limit,
+	// network, timeout, http_5xx, degraded, invalid_response, not_configured,
+	// request_error, cancelled, panic, other_error}; phase ∈ {primary,
+	// continuation, canary}.
+	ProviderAttemptsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "searxng_gateway_provider_attempts_total",
+			Help: "Terminal outcome of each actual premium-provider call",
+		},
+		[]string{"provider", "phase", "outcome"},
+	)
+
+	// ProviderSkipsTotal counts provider exclusions from the premium round-robin
+	// by reason. A skip is not an attempt: no provider call was made.
+	ProviderSkipsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "searxng_gateway_provider_skips_total",
+			Help: "Provider exclusions from the premium round-robin by reason",
+		},
+		[]string{"provider", "reason"},
+	)
+
+	// ProviderEligibility is a bounded one-hot gauge of the current eligibility
+	// reason for each intended provider. Exactly one reason per provider is 1.
+	ProviderEligibility = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "searxng_gateway_provider_eligibility",
+			Help: "One-hot current eligibility reason per provider (1 for the active reason)",
+		},
+		[]string{"provider", "reason"},
+	)
+
 	SearxngStageDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "searxng_gateway_searxng_stage_duration_seconds",
 		Help:    "Duration of a complete SearXNG HTTP retry stage",
@@ -179,12 +213,59 @@ var (
 
 var durationBuckets = []float64{1, 2, 3, 4, 5, 8, 10, 15, 20, 30}
 
+// ProviderEligibilityReasons is the bounded set of eligibility/exclusion
+// reasons exposed by ProviderEligibility. Keeping the set closed prevents
+// label-cardinality drift.
+var ProviderEligibilityReasons = []string{
+	"eligible",
+	"disabled",
+	"missing_key",
+	"invalid_config",
+	"breaker_open",
+	"quota_exhausted",
+}
+
+var providerEligibilityMu sync.Mutex
+
+// SetProviderEligibility records the active eligibility reason for a provider
+// as a one-hot series: the active reason is set to 1 and every other bounded
+// reason to 0. resolveReason runs while updates are serialized, so callers read
+// authoritative state at write time; a delayed writer cannot publish a stale
+// eligibility snapshot after a newer breaker transition.
+func SetProviderEligibility(provider string, resolveReason func() string) {
+	if provider == "" {
+		return
+	}
+	providerEligibilityMu.Lock()
+	defer providerEligibilityMu.Unlock()
+	reason := resolveReason()
+	if !containsProviderEligibilityReason(reason) {
+		reason = "invalid_config"
+	}
+	for _, r := range ProviderEligibilityReasons {
+		v := 0.0
+		if r == reason {
+			v = 1
+		}
+		ProviderEligibility.WithLabelValues(provider, r).Set(v)
+	}
+}
+
+func containsProviderEligibilityReason(reason string) bool {
+	for _, allowed := range ProviderEligibilityReasons {
+		if reason == allowed {
+			return true
+		}
+	}
+	return false
+}
+
 var initOnce sync.Once
 
 // Init registers all Prometheus collectors with the default registerer.
 // It is safe to call multiple times — subsequent calls are no-ops.
 func Init() {
 	initOnce.Do(func() {
-		prometheus.MustRegister(RequestsTotal, RequestDuration, SearxngStageDuration, SearchRequestDuration, SearxngFailureStreak, SearxngCooldownUntilSeconds, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveRateLimitRemaining, BraveRateLimitLimit, BraveRateLimitResetSeconds, SerperSearchesRemaining, SerperSearchesLimit)
+		prometheus.MustRegister(RequestsTotal, RequestDuration, SearxngStageDuration, SearchRequestDuration, SearxngFailureStreak, SearxngCooldownUntilSeconds, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveRateLimitRemaining, BraveRateLimitLimit, BraveRateLimitResetSeconds, SerperSearchesRemaining, SerperSearchesLimit, ProviderAttemptsTotal, ProviderSkipsTotal, ProviderEligibility)
 	})
 }

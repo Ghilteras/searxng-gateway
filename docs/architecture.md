@@ -48,7 +48,7 @@ The premium stage — `premiumLoop` — invokes providers serially. This is a de
 
 Uses `sony/gobreaker`. Each premium provider (and each SearXNG engine) gets its own breaker instance.
 
-- **Trip trigger**: a single 4xx client error (403, 429, rate limit, captcha, access denied) trips the circuit immediately (`ReadyToTrip`: `ConsecutiveFailures >= 1`).
+- **Trip trigger**: a single genuine provider fault trips the premium circuit immediately (`ReadyToTrip`: `ConsecutiveFailures >= 1`): auth, quota, rate limit, network, timeout, 5xx, degraded, invalid response, or unexpected provider error. Caller cancellation, overall deadline, query validation, empty results, and missing configuration do not trip. SearXNG engine breakers still use reported client errors. Premium breaker identities are namespaced as `premium:<provider>`.
 - **Open state**: the engine is excluded from subsequent requests.
 - **Timeout** (default 5 min): circuit enters half-open, sends one probe request.
   - Success → circuit closes; `recovery_total` counter increments.
@@ -110,7 +110,10 @@ All metrics are exposed at `:8080/metrics` (configurable via `METRICS_PATH`), pr
 | `requests_total` | Counter | `outcome` | Exactly one final outcome per request: `cache_hit`, `searxng_ok`, `premium_ok`, `searxng_plus_premium_ok`, `fallback_fail`, or `timeout` (overall budget expired with no results). A SearXNG child-stage timeout that falls back to a result is not a `timeout` request outcome; inspect `retry_attempts_total` for attempt-level timeout/cancellation. |
 | `search_request_duration_seconds` | Histogram | — | Complete `/search` handler duration, including cache hits, validation errors and failures |
 | `searxng_stage_duration_seconds` | Histogram | — | Complete SearXNG retry stage: exactly one sample per attempted stage, including failures and timeouts, independent of how many engines responded |
-| `provider_duration_seconds` | Histogram | `provider`, `phase` | Duration of an actual premium-provider call, labelled by provider and `phase` (`primary`) |
+| `provider_duration_seconds` | Histogram | `provider`, `phase` | Duration of an actual premium-provider call, labelled by provider and phase (`primary`, `canary`) |
+| `provider_attempts_total` | Counter | `provider`, `phase`, `outcome` | Exactly one terminal outcome per actual premium Search call; phases `primary`, `continuation`, `canary`; outcomes are bounded provider results/errors |
+| `provider_skips_total` | Counter | `provider`, `reason` | Provider exclusions, not attempts; reason is bounded (`missing_key`, `breaker_open`, etc.) |
+| `provider_eligibility` | Gauge | `provider`, `reason` | Bounded one-hot current eligibility state per intended provider |
 | `results_count` | Histogram | — | Number of results returned per request |
 | `engines_count` | Gauge | — | Distinct engines in last response |
 
@@ -132,7 +135,7 @@ Tracing is **disabled by default**. Set `OTEL_TRACES_EXPORTER` to `console` (str
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `circuit_breaker_state` | Gauge | `engine` | 0=closed, 1=half-open, 2=open |
+| `circuit_breaker_state` | Gauge | `engine` | 0=closed, 1=half-open, 2=open; premium providers use `premium:<provider>` identities |
 | `circuit_breaker_triggered_at` | Gauge | `engine`, `reason` | Unix timestamp when breaker went open |
 | `circuit_breaker_trips_total` | Counter | `engine`, `reason` | Cumulative CB trips |
 | `circuit_breaker_recovery_total` | Counter | `engine` | Auto-recovery events |

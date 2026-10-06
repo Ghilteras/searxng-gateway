@@ -71,7 +71,7 @@ Keyless mode (no API keys) works out of the box using SearXNG's free engines (Bi
 
 - **Premium-first execution** — the configured premium providers are selected via atomic round-robin and invoked **serially** (by deliberate design; see [docs/architecture.md](docs/architecture.md#why-the-premium-pass-is-serial-deliberate)) until the distinct-URL target is met. SearXNG runs only as a bounded secondary on shortfall, and its results are merged after the premium results (premium wins duplicate URLs).
 - **Bounded SearXNG secondary** — if the premium stage falls short of `SUFFICIENT_MIN_RESULTS`, SearXNG is called within the remaining `FALLBACK_TIMEOUT_SECONDS` budget (capped at `SEARXNG_TIMEOUT_SECONDS`) with retry and cooldown; its results are merged after the premium results.
-- **Circuit breaker per engine** — 4xx on an engine opens the circuit for 5 min; auto-recovers
+- **Circuit breaker per provider/engine** — premium provider faults and SearXNG engine client errors open their circuit for 5 min; auto-recovers
 - **Exponential backoff retry** — up to 3 attempts (250ms/500ms between attempts), bounded by the SearXNG stage budget
 - **Prometheus /metrics** — 15+ gauges and counters prefixed `searxng_gateway_`
 - **LRU cache** — 1000 entries, 1h TTL, in-memory
@@ -92,7 +92,7 @@ The gateway exposes Prometheus metrics at `:8080/metrics`.
 
 ![CB State Timeline](examples/grafana/screenshots/cb-state-timeline.png)
 
-*Each engine gets its own row. 🟢 Closed → 🟡 Half-Open → 🔴 Open. When an engine returns 4xx, the circuit opens for 5 minutes, then auto-recovers.*
+*Each circuit gets its own row. Premium circuits use `premium:<provider>` identities and open on genuine provider faults; SearXNG engine circuits open on reported client errors. 🟢 Closed → 🟡 Half-Open → 🔴 Open. After 5 minutes, exactly one real provider probe is admitted; success closes the circuit and failure reopens it.*
 
 #### Circuit Breaker Trips (cumulative)
 

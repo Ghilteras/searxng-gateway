@@ -1,9 +1,19 @@
-// Package breaker: per-engine circuit breaker for 4xx client errors.
-// 4xx = server is blocking us (403, 429) → skip engine.
-// 5xx/timeout = use retry with backoff (in internal/retry).
+// Package breaker: per-engine circuit breaker for provider faults.
+//
+// Premium providers are admitted through Execute, which runs the actual
+// provider call inside gobreaker.Execute so MaxRequests constrains real
+// half-open probes. Provider faults (auth, quota, rate limit, network, 5xx,
+// degraded, invalid response, provider timeout, panic) trip the breaker;
+// non-provider failures (caller cancellation, overall request deadline,
+// query-validation errors, empty results, missing config) are marked with
+// ErrNonProviderFault and never trip.
+//
+// SearXNG engines keep the synthetic RecordClientError/RecordSuccess path:
+// their outcome is reported by SearXNG in one response, not call-by-call.
 package breaker
 
 import (
+	"errors"
 	"log"
 	"sync"
 	"time"
@@ -13,11 +23,24 @@ import (
 	"github.com/sony/gobreaker"
 )
 
+// ErrNonProviderFault marks a call outcome that must not count as a provider
+// failure for the circuit breaker: caller cancellation, an overall request
+// deadline, a query-validation error, an unconfigured provider, or an empty
+// result set.
+var ErrNonProviderFault = errors.New("breaker: non-provider fault")
+
+// isSuccessful is the gobreaker IsSuccessful policy shared by every breaker.
+// Only nil errors and explicit non-provider faults count as successes; any
+// other error is a provider failure that can trip the breaker.
+func isSuccessful(err error) bool {
+	return err == nil || errors.Is(err, ErrNonProviderFault)
+}
+
 var (
 	breakerState = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "searxng_gateway_circuit_breaker_state",
-			Help: "0=closed, 1=half-open, 2=open. Triggered by 4xx client errors.",
+			Help: "0=closed, 1=half-open, 2=open. Premium providers trip on genuine provider faults; SearXNG engines on client errors.",
 		},
 		[]string{"engine"},
 	)
@@ -33,7 +56,7 @@ var (
 	breakerTripsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "searxng_gateway_circuit_breaker_trips_total",
-			Help: "Total number of times circuit breaker tripped (4xx errors)",
+			Help: "Total number of times circuit breaker tripped (provider faults or client errors)",
 		},
 		[]string{"engine", "reason"},
 	)
@@ -77,6 +100,8 @@ type Manager struct {
 	breakers map[string]*gobreaker.CircuitBreaker
 	reasons  map[string]string
 	reasonMu sync.RWMutex // guards reasons only; never held across cb.Execute
+	// settings resolves per-engine tuning; overridable in tests.
+	settings func(engine string) EngineSettings
 }
 
 // New creates a new Manager.
@@ -84,7 +109,44 @@ func New() *Manager {
 	return &Manager{
 		breakers: make(map[string]*gobreaker.CircuitBreaker),
 		reasons:  make(map[string]string),
+		settings: PerEngineSettings,
 	}
+}
+
+// NewWithSettings creates a Manager whose breakers use settings(engine).
+// It is intended for embedding and deterministic tests; callers must configure
+// it before any breaker is created.
+func NewWithSettings(settings func(engine string) EngineSettings) *Manager {
+	m := New()
+	if settings != nil {
+		m.settings = settings
+	}
+	return m
+}
+
+// Execute admits fn through the circuit breaker for engine. This is the real
+// admission point: the provider call itself runs inside fn, so the breaker's
+// MaxRequests constrains actual half-open probes. fn must return
+// ErrNonProviderFault (directly or wrapped) for outcomes that must not trip the
+// breaker. When the breaker is open, fn is not called and gobreaker.ErrOpenState
+// (or ErrTooManyRequests in half-open) is returned.
+func (m *Manager) Execute(engine string, fn func() (interface{}, error)) (interface{}, error) {
+	if engine == "" {
+		return fn()
+	}
+	return m.getBreaker(engine).Execute(fn)
+}
+
+// RecordReason stores the bounded reason attached to the next trip of engine.
+// It must be called before fn returns the outcome error, so OnStateChange can
+// label the trip.
+func (m *Manager) RecordReason(engine, reason string) {
+	if engine == "" {
+		return
+	}
+	m.reasonMu.Lock()
+	m.reasons[engine] = reason
+	m.reasonMu.Unlock()
 }
 
 // IsOpen returns true if the circuit breaker for engine is open.
@@ -116,7 +178,9 @@ func (m *Manager) LastReason(engine string) string {
 	return m.reasons[engine]
 }
 
-// RecordClientError triggers the breaker on 4xx (client error = blocked/rate-limited).
+// RecordClientError trips the breaker for a SearXNG engine reporting a client
+// error (blocked/rate-limited). Premium providers do not use this path; they
+// admit real calls through Execute.
 func (m *Manager) RecordClientError(engine, reason string) {
 	if engine == "" {
 		return
@@ -131,10 +195,10 @@ func (m *Manager) RecordClientError(engine, reason string) {
 	})
 }
 
-// RecordEngineSeen initializes the circuit breaker state gauge for an engine
-// to closed (=0), without triggering any state transition. Used to ensure
-// the metric series exists for every engine that has been observed, even
-// ones that have not yet tripped the breaker.
+// RecordEngineSeen ensures the circuit breaker state gauge series exists for an
+// engine without triggering a state transition. The gauge is set from the
+// breaker's actual state, so initialisation can never reset an already-open
+// breaker to zero.
 //
 // Lesson MEMORY 2026-07-24 L1: promauto gauges don't emit a series until
 // .Set() is called. Engines like 'serper' that are 4xx-blocked but with
@@ -144,7 +208,9 @@ func (m *Manager) RecordEngineSeen(engine string) {
 	if engine == "" {
 		return
 	}
-	breakerState.WithLabelValues(engine).Set(stateFloat(gobreaker.StateClosed))
+	// Set the gauge from the breaker's actual state so initialisation can never
+	// reset an already-open breaker to zero.
+	breakerState.WithLabelValues(engine).Set(stateFloat(m.State(engine)))
 }
 
 // RecordSuccess feeds a success (closes the breaker if half-open).
@@ -174,17 +240,21 @@ func (m *Manager) getBreaker(engine string) *gobreaker.CircuitBreaker {
 		return cb
 	}
 	settings := PerEngineSettings(engine)
+	if m.settings != nil {
+		settings = m.settings(engine)
+	}
 	name := engine
 	if name == "" {
 		name = "default"
 	}
 	cb = gobreaker.NewCircuitBreaker(gobreaker.Settings{
-		Name:        name,
-		MaxRequests: settings.MaxRequests,
-		Interval:    settings.Interval,
-		Timeout:     settings.Timeout,
+		Name:         name,
+		MaxRequests:  settings.MaxRequests,
+		Interval:     settings.Interval,
+		Timeout:      settings.Timeout,
+		IsSuccessful: isSuccessful,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			// Trip on FIRST 4xx client error
+			// Trip on the FIRST genuine provider failure.
 			return counts.ConsecutiveFailures >= 1
 		},
 		OnStateChange: func(name string, from, to gobreaker.State) {
