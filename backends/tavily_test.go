@@ -5,9 +5,46 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestTavilyInvalidJSONDoesNotExposePayload(t *testing.T) {
+	const marker = "9182736450918273645"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"score":` + marker + `e999}]}`))
+	}))
+	defer srv.Close()
+	b := NewTavilyBackend("key", time.Second, "basic", false, false)
+	b.BaseURL = srv.URL
+	_, err := b.Search(SearchOptions{Query: "q"})
+	be, ok := err.(*BackendError)
+	if !ok || be.Code != ErrCodeInvalidResponse {
+		t.Fatalf("error = %v; want ErrCodeInvalidResponse", err)
+	}
+	if strings.Contains(err.Error(), marker) || !strings.Contains(err.Error(), "invalid JSON response") {
+		t.Fatalf("error = %v; want safe JSON error without payload", err)
+	}
+}
+
+func TestTavilyErrorDoesNotExposeVendorBody(t *testing.T) {
+	const vendorBody = "VENDOR_PRIVATE_TAVILY_BODY_91d7"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(vendorBody))
+	}))
+	defer srv.Close()
+	b := NewTavilyBackend("key", time.Second, "basic", false, false)
+	b.BaseURL = srv.URL
+	_, err := b.Search(SearchOptions{Query: "q"})
+	if err == nil || strings.Contains(err.Error(), vendorBody) {
+		t.Fatalf("error = %v; vendor response body must not be exposed", err)
+	}
+	if !strings.Contains(err.Error(), "HTTP 502") {
+		t.Fatalf("error = %v; want safe HTTP status", err)
+	}
+}
 
 func TestTavilyBackend_Name(t *testing.T) {
 	b := NewTavilyBackend("key", 10*time.Second, "basic", false, false)

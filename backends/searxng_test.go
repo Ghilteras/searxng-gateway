@@ -42,6 +42,23 @@ func TestSearxngBackend_Search_Unavailable(t *testing.T) {
 	}
 }
 
+func TestSearxngErrorDoesNotExposeBody(t *testing.T) {
+	const upstreamBody = "SEARXNG_PRIVATE_BODY_91d7"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(upstreamBody))
+	}))
+	defer srv.Close()
+	b := NewSearxngBackend(srv.URL, "", "", "GET", time.Second, false, false)
+	_, err := b.Search(SearchOptions{Query: "q"})
+	if err == nil || strings.Contains(err.Error(), upstreamBody) {
+		t.Fatalf("error = %v; upstream response body must not be exposed", err)
+	}
+	if !strings.Contains(err.Error(), "HTTP 502") {
+		t.Fatalf("error = %v; want safe HTTP status", err)
+	}
+}
+
 func TestSearxngBackend_Search_GET(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
@@ -85,7 +102,7 @@ func TestSearxngBackend_Search_GET(t *testing.T) {
 
 func TestSearxngBackend_Search_EmptyWithUnresponsiveEngines(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"results": [], "unresponsive_engines": [["brave", "Suspended: too many requests"], ["startpage", "Suspended: CAPTCHA"]]}`))
+		_, _ = w.Write([]byte(`{"results": [], "unresponsive_engines": [["PRIVATE_ENGINE_91d7", "Suspended: too many requests"], ["startpage", "PRIVATE_REASON_91d7"]]}`))
 	}))
 	defer server.Close()
 
@@ -101,10 +118,55 @@ func TestSearxngBackend_Search_EmptyWithUnresponsiveEngines(t *testing.T) {
 	if be.Code != ErrCodeDegraded {
 		t.Errorf("expected ErrCodeDegraded, got %d", be.Code)
 	}
-	for _, want := range []string{"brave (Suspended: too many requests)", "startpage (Suspended: CAPTCHA)"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error should mention %q, got: %v", want, err)
+	if !strings.Contains(err.Error(), "count=2") {
+		t.Errorf("error should include unresponsive engine count, got: %v", err)
+	}
+	for _, marker := range []string{"PRIVATE_ENGINE_91d7", "PRIVATE_REASON_91d7", "startpage", "Suspended: too many requests"} {
+		if strings.Contains(err.Error(), marker) {
+			t.Errorf("error must not expose %q, got: %v", marker, err)
 		}
+	}
+}
+
+func TestSearxngBackend_Search_EmptyUnresponsiveTupleDoesNotDegrade(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[],"unresponsive_engines":[[""]]}`))
+	}))
+	defer server.Close()
+
+	b := NewSearxngBackend(server.URL, "", "", "GET", 10*time.Second, false, false)
+	results, err := b.Search(SearchOptions{Query: "golang"})
+	if err != nil {
+		t.Fatalf("empty unresponsive tuple should not degrade: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected no results, got %v", results)
+	}
+}
+
+func TestSearxngBackend_Search_MultipleEmptyUnresponsiveTuplesPreserveDegraded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[],"unresponsive_engines":[[""],[""]]}`))
+	}))
+	defer server.Close()
+
+	b := NewSearxngBackend(server.URL, "", "", "GET", 10*time.Second, false, false)
+	_, err := b.Search(SearchOptions{Query: "golang"})
+	be, ok := err.(*BackendError)
+	if !ok {
+		t.Fatalf("expected *BackendError, got %T: %v", err, err)
+	}
+	if be.Code != ErrCodeDegraded {
+		t.Errorf("expected ErrCodeDegraded, got %d", be.Code)
+	}
+	if got, want := formatUnresponsiveEngines(json.RawMessage(`[[""],[""]]`)), "count=2"; got != want {
+		t.Errorf("sanitized summary = %q, want %q", got, want)
+	}
+	if !strings.Contains(err.Error(), "count=2") {
+		t.Errorf("error should include safe tuple count, got: %v", err)
+	}
+	if got, want := be.Err.Error(), "no results, upstream engines unresponsive: count=2"; got != want {
+		t.Errorf("error must contain only safe summary text: got %q, want %q", got, want)
 	}
 }
 
@@ -148,9 +210,15 @@ func TestFormatUnresponsiveEngines(t *testing.T) {
 	}{
 		{"empty field", ``, ""},
 		{"empty list", `[]`, ""},
-		{"name and reason", `[["brave", "Suspended: too many requests"]]`, "brave (Suspended: too many requests)"},
-		{"name only", `[["brave"]]`, "brave"},
-		{"extra fields", `[["brave", "rate limited", true]]`, "brave (rate limited, true)"},
+		{"name and reason", `[["brave", "Suspended: too many requests"]]`, "count=1"},
+		{"name only", `[["brave"]]`, "count=1"},
+		{"extra fields", `[["brave", "rate limited", true]]`, "count=1"},
+		{"empty tuples", `[[], null]`, ""},
+		{"one empty part", `[[""]]`, ""},
+		{"two empty parts", `[[""], [""]]`, "count=2"},
+		{"empty fields with delimiters", `[["", ""]]`, "count=1"},
+		{"empty and nonempty parts", `[[""], ["brave"]]`, "count=2"},
+		{"multiple engines", `[["brave"], [], ["startpage", "down"]]`, "count=2"},
 		{"unexpected shape", `{"brave": "down"}`, ""},
 	}
 	for _, tt := range tests {

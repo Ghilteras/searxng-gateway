@@ -138,10 +138,9 @@ func (s *SearxngBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
 		return nil, &BackendError{
 			Backend: s.Name(),
-			Err:     fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body)),
+			Err:     fmt.Errorf("HTTP %d", resp.StatusCode),
 			Code:    resp.StatusCode,
 		}
 	}
@@ -153,7 +152,7 @@ func (s *SearxngBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 
 	var searchResp SearxngResponse
 	if err := json.Unmarshal(body, &searchResp); err != nil {
-		return nil, s.wrapError(fmt.Errorf("failed to parse JSON: %v", err), ErrCodeInvalidResponse)
+		return nil, s.wrapError(fmt.Errorf("invalid JSON response"), ErrCodeInvalidResponse)
 	}
 
 	// An empty first page with unresponsive upstream engines means the
@@ -233,8 +232,8 @@ type SearxngResponse struct {
 
 type searxngResult SearchResult
 
-// formatUnresponsiveEngines renders SearXNG's unresponsive_engines field
-// (a list of [engine, reason, ...] tuples) as "engine (reason), ...".
+// formatUnresponsiveEngines summarizes SearXNG's unresponsive_engines field
+// (a list of [engine, reason, ...] tuples) without exposing upstream content.
 // The field's shape varies across SearXNG versions, so parse leniently
 // and return "" if it can't be decoded.
 func formatUnresponsiveEngines(raw json.RawMessage) string {
@@ -245,21 +244,23 @@ func formatUnresponsiveEngines(raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &entries); err != nil {
 		return ""
 	}
-	parts := make([]string, 0, len(entries))
+	count := 0
+	emptyParts := 0
 	for _, entry := range entries {
-		fields := make([]string, 0, len(entry))
-		for _, v := range entry {
-			fields = append(fields, fmt.Sprintf("%v", v))
+		if len(entry) == 0 {
+			continue
 		}
-		switch len(fields) {
-		case 0:
-		case 1:
-			parts = append(parts, fields[0])
-		default:
-			parts = append(parts, fmt.Sprintf("%s (%s)", fields[0], strings.Join(fields[1:], ", ")))
+		count++
+		if len(entry) == 1 && fmt.Sprint(entry[0]) == "" {
+			emptyParts++
 		}
 	}
-	return strings.Join(parts, ", ")
+	// Two empty parts formerly joined to ", "; preserve that degradation
+	// classification without returning any tuple-derived content.
+	if count == 0 || (count == emptyParts && emptyParts < 2) {
+		return ""
+	}
+	return fmt.Sprintf("count=%d", count)
 }
 
 var safeSearchOptions = map[string]int{

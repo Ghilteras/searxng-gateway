@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,24 @@ import (
 
 	"sx/internal/metrics"
 )
+
+func TestBraveErrorDoesNotExposeVendorBody(t *testing.T) {
+	const vendorBody = "VENDOR_PRIVATE_BRAVE_BODY_91d7"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(vendorBody))
+	}))
+	defer srv.Close()
+	b := NewBraveBackend("key", time.Second)
+	b.BaseURL = srv.URL
+	_, err := b.Search(SearchOptions{Query: "q"})
+	if err == nil || strings.Contains(err.Error(), vendorBody) {
+		t.Fatalf("error = %v; vendor response body must not be exposed", err)
+	}
+	if !strings.Contains(err.Error(), "HTTP 502") {
+		t.Fatalf("error = %v; want safe HTTP status", err)
+	}
+}
 
 func TestBraveBackend_Name(t *testing.T) {
 	b := NewBraveBackend("key", 10*time.Second)

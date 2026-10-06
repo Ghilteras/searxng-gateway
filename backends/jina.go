@@ -112,17 +112,17 @@ func (j *JinaBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return nil, &BackendError{Backend: j.Name(), Err: fmt.Errorf("authentication failed: %s", string(body)), Code: ErrCodeAuth}
+			return nil, &BackendError{Backend: j.Name(), Err: fmt.Errorf("authentication failed (HTTP %d)", resp.StatusCode), Code: ErrCodeAuth}
 		}
 		if resp.StatusCode == http.StatusTooManyRequests {
-			return nil, &BackendError{Backend: j.Name(), Err: fmt.Errorf("rate limited: %s", string(body)), Code: ErrCodeRateLimit}
+			return nil, &BackendError{Backend: j.Name(), Err: fmt.Errorf("rate limited (HTTP %d)", resp.StatusCode), Code: ErrCodeRateLimit}
 		}
-		return nil, &BackendError{Backend: j.Name(), Err: fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body)), Code: resp.StatusCode}
+		return nil, &BackendError{Backend: j.Name(), Err: fmt.Errorf("HTTP %d", resp.StatusCode), Code: resp.StatusCode}
 	}
 
 	var jinaResp jinaResponse
 	if err := json.Unmarshal(body, &jinaResp); err != nil {
-		return nil, &BackendError{Backend: j.Name(), Err: fmt.Errorf("failed to parse JSON: %v", err), Code: ErrCodeInvalidResponse}
+		return nil, &BackendError{Backend: j.Name(), Err: fmt.Errorf("invalid JSON response"), Code: ErrCodeInvalidResponse}
 	}
 
 	// Convert Jina results to SearchResult

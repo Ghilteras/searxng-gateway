@@ -5,9 +5,41 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestJinaErrorDoesNotExposeVendorBody(t *testing.T) {
+	const vendorBody = "VENDOR_PRIVATE_JINA_BODY_91d7"
+	cases := []struct {
+		name       string
+		status     int
+		wantSubstr string
+	}{
+		{"auth", http.StatusUnauthorized, "authentication failed (HTTP 401)"},
+		{"forbidden", http.StatusForbidden, "authentication failed (HTTP 403)"},
+		{"rateLimited", http.StatusTooManyRequests, "rate limited (HTTP 429)"},
+		{"genericStatus", http.StatusBadGateway, "HTTP 502"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(vendorBody))
+			}))
+			defer srv.Close()
+			b := NewJinaBackend("key", time.Second, false, srv.URL)
+			_, err := b.Search(SearchOptions{Query: "q"})
+			if err == nil || strings.Contains(err.Error(), vendorBody) {
+				t.Fatalf("error = %v; vendor response body must not be exposed", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Fatalf("error = %v; want %q in safe error text", err, tc.wantSubstr)
+			}
+		})
+	}
+}
 
 func TestJinaBackend_Name(t *testing.T) {
 	b := NewJinaBackend("key", 2*time.Second, false, "")

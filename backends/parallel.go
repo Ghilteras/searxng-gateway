@@ -137,7 +137,7 @@ func (p *ParallelBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 
 	var parsed parallelAPIResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, &BackendError{Backend: p.Name(), Err: fmt.Errorf("failed to parse JSON: %w", err), Code: ErrCodeInvalidResponse}
+		return nil, &BackendError{Backend: p.Name(), Err: fmt.Errorf("invalid JSON response"), Code: ErrCodeInvalidResponse}
 	}
 
 	results := make([]SearchResult, 0, len(parsed.Results))

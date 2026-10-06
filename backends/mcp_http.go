@@ -68,15 +68,15 @@ func (c *MCPHTTPClient) call(ctx context.Context, method string, id int, params 
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	var rpcResp mcpRPCResponse
 	if err := json.Unmarshal(respBody, &rpcResp); err != nil {
-		return nil, fmt.Errorf("invalid MCP JSON-RPC response: %w", err)
+		return nil, fmt.Errorf("invalid JSON response")
 	}
 	if rpcResp.Error != nil {
-		return nil, fmt.Errorf("MCP error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
+		return nil, fmt.Errorf("MCP error %d", rpcResp.Error.Code)
 	}
 	return rpcResp.Result, nil
 }

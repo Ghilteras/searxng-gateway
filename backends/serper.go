@@ -88,7 +88,7 @@ func (s *SerperBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	}
 	var parsed serperAPIResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, &BackendError{Backend: s.Name(), Err: fmt.Errorf("failed to parse JSON: %w", err), Code: ErrCodeInvalidResponse}
+		return nil, &BackendError{Backend: s.Name(), Err: fmt.Errorf("invalid JSON response"), Code: ErrCodeInvalidResponse}
 	}
 	results := make([]SearchResult, 0, len(parsed.Organic))
 	for _, r := range parsed.Organic {

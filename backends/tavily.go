@@ -150,19 +150,19 @@ func (t *TavilyBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 		case 401, 403:
 			return nil, &BackendError{
 				Backend: t.Name(),
-				Err:     fmt.Errorf("authentication failed: %s", string(respBody)),
+				Err:     fmt.Errorf("authentication failed (HTTP %d)", resp.StatusCode),
 				Code:    ErrCodeAuth,
 			}
 		case 429:
 			return nil, &BackendError{
 				Backend: t.Name(),
-				Err:     fmt.Errorf("rate limited: %s", string(respBody)),
+				Err:     fmt.Errorf("rate limited (HTTP %d)", resp.StatusCode),
 				Code:    ErrCodeRateLimit,
 			}
 		default:
 			return nil, &BackendError{
 				Backend: t.Name(),
-				Err:     fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody)),
+				Err:     fmt.Errorf("HTTP %d", resp.StatusCode),
 				Code:    resp.StatusCode,
 			}
 		}
@@ -172,7 +172,7 @@ func (t *TavilyBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	if err := json.Unmarshal(respBody, &tavilyResp); err != nil {
 		return nil, &BackendError{
 			Backend: t.Name(),
-			Err:     fmt.Errorf("failed to parse JSON: %v", err),
+			Err:     fmt.Errorf("invalid JSON response"),
 			Code:    ErrCodeInvalidResponse,
 		}
 	}

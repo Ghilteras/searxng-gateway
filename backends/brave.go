@@ -150,19 +150,19 @@ func (b *BraveBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 		case 401, 403:
 			return nil, &BackendError{
 				Backend: b.Name(),
-				Err:     fmt.Errorf("authentication failed: %s", string(body)),
+				Err:     fmt.Errorf("authentication failed (HTTP %d)", resp.StatusCode),
 				Code:    ErrCodeAuth,
 			}
 		case 429:
 			return nil, &BackendError{
 				Backend: b.Name(),
-				Err:     fmt.Errorf("rate limited: %s", string(body)),
+				Err:     fmt.Errorf("rate limited (HTTP %d)", resp.StatusCode),
 				Code:    ErrCodeRateLimit,
 			}
 		default:
 			return nil, &BackendError{
 				Backend: b.Name(),
-				Err:     fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body)),
+				Err:     fmt.Errorf("HTTP %d", resp.StatusCode),
 				Code:    resp.StatusCode,
 			}
 		}
@@ -172,7 +172,7 @@ func (b *BraveBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	if err := json.Unmarshal(body, &braveResp); err != nil {
 		return nil, &BackendError{
 			Backend: b.Name(),
-			Err:     fmt.Errorf("failed to parse JSON: %v", err),
+			Err:     fmt.Errorf("invalid JSON response"),
 			Code:    ErrCodeInvalidResponse,
 		}
 	}
