@@ -111,3 +111,4 @@ Placement finale FUORI SCOPE (homelab-config): `opencode-self` + `subagent-orche
 ## 2026-10-06 — Delta: Serper enrolled (drained key), pool auto-derive deployed
 
 → journal: search "Gateway 2026-10-06 delta"
+2026-10-06 — Delta: sanitizzazione risposte backend → journal: search "backend response-body sanitization R2"
