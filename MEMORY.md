@@ -99,3 +99,9 @@ Placement finale FUORI SCOPE (homelab-config): `opencode-self` + `subagent-orche
 ## 2026-10-05 — Executor stalls on open-ended refactors; drive it as a mechanical apply-engine
 
 → journal: search "mechanical apply-engine"
+
+---
+
+## 2026-10-06 — Gateway silent-degradation, delegation and deploy lessons
+
+→ journal: search "Gateway latency-verify curation lessons"
