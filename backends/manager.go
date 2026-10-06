@@ -176,11 +176,20 @@ func (m *Manager) NextAvailable(exclude map[string]bool) SearchBackend {
 	if len(available) == 0 {
 		return nil
 	}
-	sort.Slice(available, func(i, j int) bool {
-		return available[i].Name() < available[j].Name()
+	sort.SliceStable(available, func(i, j int) bool {
+		return poolOrderIndex(available[i].Name()) < poolOrderIndex(available[j].Name())
 	})
 	idx := int(m.rrIdx.Add(1)-1) % len(available)
 	return available[idx]
+}
+
+func poolOrderIndex(name string) int {
+	for i, candidate := range PremiumPoolOrder {
+		if candidate == name {
+			return i
+		}
+	}
+	return len(PremiumPoolOrder)
 }
 
 func (m *Manager) availableNames() string {

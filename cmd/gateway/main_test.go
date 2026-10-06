@@ -58,7 +58,6 @@ func setupRouter(t *testing.T) http.Handler {
 		SearxngFailThreshold: 6,
 		SearxngFailCooldown:  180 * time.Second,
 		SufficientMinResults: 2,
-		FallbackProviders:    []string{"brave"},
 	}
 	c, _ := cache.New(10, 0)
 	metrics.Init()
@@ -73,7 +72,7 @@ func setupRouter(t *testing.T) http.Handler {
 	}
 	mgr := backends.NewManager()
 	mgr.Register(fb)
-	_ = mgr.SetFallbacks(cfg.FallbackProviders)
+	_ = mgr.SetFallbacks([]string{"brave"})
 
 	return newRouter(proxy.New(cfg, sx, c, breaker.New(), mgr), cfg)
 }

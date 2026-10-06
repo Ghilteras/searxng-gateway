@@ -127,11 +127,11 @@ func (p *ParallelBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	if resp.StatusCode != http.StatusOK {
 		switch resp.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden:
-			return nil, &BackendError{Backend: p.Name(), Err: fmt.Errorf("authentication failed: %s", string(body)), Code: ErrCodeAuth}
+			return nil, &BackendError{Backend: p.Name(), Err: fmt.Errorf("authentication failed (HTTP %d)", resp.StatusCode), Code: ErrCodeAuth}
 		case http.StatusTooManyRequests:
-			return nil, &BackendError{Backend: p.Name(), Err: fmt.Errorf("rate limited: %s", string(body)), Code: ErrCodeRateLimit}
+			return nil, &BackendError{Backend: p.Name(), Err: fmt.Errorf("rate limited (HTTP %d)", resp.StatusCode), Code: ErrCodeRateLimit}
 		default:
-			return nil, &BackendError{Backend: p.Name(), Err: fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body)), Code: resp.StatusCode}
+			return nil, &BackendError{Backend: p.Name(), Err: fmt.Errorf("HTTP %d", resp.StatusCode), Code: resp.StatusCode}
 		}
 	}
 

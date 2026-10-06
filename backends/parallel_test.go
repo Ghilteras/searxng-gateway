@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -152,6 +153,24 @@ func TestParallelBackend_RateLimit(t *testing.T) {
 	b.BaseURL = server.URL
 	_, err := b.Search(SearchOptions{Query: "q"})
 	assertBackendCode(t, err, ErrCodeRateLimit)
+}
+
+func TestParallelBackendErrorDoesNotExposeVendorBody(t *testing.T) {
+	const vendorBody = "VENDOR_PRIVATE_ERROR_BODY_91d7"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(vendorBody))
+	}))
+	defer server.Close()
+	b := NewParallelBackend("test-key", 2*time.Second)
+	b.BaseURL = server.URL
+	_, err := b.Search(SearchOptions{Query: "q"})
+	if err == nil || strings.Contains(err.Error(), vendorBody) {
+		t.Fatalf("error = %v; vendor response body must not be exposed", err)
+	}
+	if !strings.Contains(err.Error(), "HTTP 502") {
+		t.Fatalf("error = %v; want safe HTTP status", err)
+	}
 }
 
 func TestParallelBackend_InvalidJSON(t *testing.T) {

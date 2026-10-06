@@ -30,11 +30,12 @@ curl 'http://localhost:8080/metrics'
 ```
 Client ───▶ searxng-gateway (:8080)
                     │
-                    └──▶ PRIMARY: premium providers (FALLBACK_PROVIDERS)
+                    └──▶ PRIMARY: configured premium providers (fixed order)
                     │    ├── Brave ──┐
                     │    ├── Exa     ├── round-robin, serial within the stage;
-                    │    ├── Jina    │   stops when the target is reached.
-                    │    └── Tavily ─┘
+                    │    ├── Parallel │   stops when the target is reached.
+                    │    ├── Tavily   │
+                    │    └── Serper ──┘
                     │
                     └──▶ SECONDARY: SearXNG (only on shortfall, bounded)
                          ├── Serper (Google via API)
@@ -48,21 +49,23 @@ See [docs/architecture.md](docs/architecture.md) for the full design.
 
 ## Supported fallback providers
 
-Set `FALLBACK_PROVIDERS` to a comma-separated list of premium backend names. Each needs its `_API_KEY` env var. The premium providers run first, serially via round-robin, until the accumulated distinct-URL count reaches `SUFFICIENT_MIN_RESULTS` (or all providers are tried, or the premium budget expires). SearXNG is only called as a bounded secondary when the premium stage falls short.
+The premium pool is automatically derived from configured provider API keys, in fixed round-robin order: brave, exa, parallel, tavily, serper. Providers without keys are not enrolled. The premium providers run first, serially until the accumulated distinct-URL count reaches `SUFFICIENT_MIN_RESULTS` (or all providers are tried, or the premium budget expires). SearXNG is only called as a bounded secondary when the premium stage falls short.
 
 | Provider | Env var | Free tier | Production |
 |----------|---------|-----------|------------|
 | Brave | `BRAVE_API_KEY` | $5 credit (1,000/mo) | ✅ Yes |
 | Exa | `EXA_API_KEY` | $20 + $10/mo (~2,800 searches) | ✅ Yes |
-| Jina | `JINA_API_KEY` | 10M tokens, 500 RPM | ✅ Yes |
+| Parallel | `PARALLEL_API_KEY` | Check current plan | No |
 | Tavily | `TAVILY_API_KEY` | 1,000 credits/mo | ✅ Yes |
+| Serper | `SERPER_API_KEY` | Homepage advertises 2,500 free queries; recurrence unverified | Pending key |
 
 Example:
 ```bash
-FALLBACK_PROVIDERS=brave,exa,jina
 BRAVE_API_KEY=xxx
 EXA_API_KEY=xxx
-JINA_API_KEY=xxx
+PARALLEL_API_KEY=xxx
+TAVILY_API_KEY=xxx
+SERPER_API_KEY=xxx
 ```
 
 Keyless mode (no API keys) works out of the box using SearXNG's free engines (Bing, Wikipedia, GitHub, etc.). Premium providers require their respective API keys.
@@ -151,7 +154,6 @@ groups:
 |-----|---------|----------|-------------|
 | `LISTEN_ADDR` | `:8080` | no | HTTP listen address |
 | `SEARXNG_BACKEND_URL` | `http://searxng-primary:8080` | no | SearXNG instance URL |
-| `FALLBACK_PROVIDERS` | `brave` | no | Comma-separated list of premium provider names |
 | `BRAVE_API_KEY` | — | no | Brave Search API key |
 | `EXA_API_KEY` | — | no | Exa Search API key |
 | `JINA_API_KEY` | — | no | Jina Search API key |

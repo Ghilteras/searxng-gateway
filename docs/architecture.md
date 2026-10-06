@@ -7,11 +7,12 @@
 ```
 Client ───▶ searxng-gateway (:8080)
                     │
-                    └──▶ PRIMARY: premium pool (FALLBACK_PROVIDERS)
+                    └──▶ PRIMARY: configured premium pool (fixed order)
                          ├── Brave ──┐
                          ├── Exa     ├── round-robin, serial within the stage;
-                         ├── Jina    │   stops when the target is reached.
-                         └── Tavily ─┘
+                          ├── Parallel │   stops when the target is reached.
+                          ├── Tavily   │
+                          └── Serper ──┘
                          │
                          └──▶ SECONDARY: SearXNG (only on shortfall, bounded)
                               Retry (network-class) up to 3 attempts within
@@ -23,7 +24,7 @@ Client ───▶ searxng-gateway (:8080)
 
 1. **Normalise** the query (lowercase, collapse whitespace) and check the **LRU cache**. Cache hit returns immediately without calling any backend.
 2. **SearXNG cooldown check**: if SearXNG has hit `SEARXNG_FAIL_THRESHOLD` consecutive failures (default 6), it is skipped entirely for `SEARXNG_FAIL_COOLDOWN_SECONDS` (default 180s). Success resets the counter.
-3. **Primary premium stage**: premium providers are selected via atomic round-robin from `FALLBACK_PROVIDERS` and invoked **serially** until the accumulated distinct-URL count reaches `SUFFICIENT_MIN_RESULTS`, all providers have been tried, or the premium-stage deadline (the parent budget minus a reserve for the secondary stage) expires (by design; see [Why the premium pass is serial](#why-the-premium-pass-is-serial-deliberate)).
+3. **Primary premium stage**: keyed providers are selected via atomic round-robin in fixed order (brave, exa, parallel, tavily, serper) and invoked **serially** until the accumulated distinct-URL count reaches `SUFFICIENT_MIN_RESULTS`, all providers have been tried, or the premium-stage deadline (the parent budget minus a reserve for the secondary stage) expires (by design; see [Why the premium pass is serial](#why-the-premium-pass-is-serial-deliberate)).
      - Each premium provider is called at most once; circuit-breaker-open providers are skipped.
      - If the target is reached, SearXNG is not called at all.
 4. **Bounded SearXNG secondary**: only on shortfall, SearXNG is called with up to 3 attempts (250ms/500ms between attempts) within the parent's remaining budget capped at `SEARXNG_TIMEOUT_SECONDS`. Merge its results *after* the premium results (premium owns duplicate URLs) and record per-engine metrics from its `unresponsive_engines` field. The search cooldown after repeated failures is unchanged.
@@ -57,14 +58,15 @@ Uses `sony/gobreaker`. Each premium provider (and each SearXNG engine) gets its 
 
 ## Supported backends
 
-Set `FALLBACK_PROVIDERS` to a comma-separated list. Each needs its `<NAME>_API_KEY` env var (except keyless backends). All listed providers run in the primary premium stage, serially via round-robin, until the target is reached.
+The primary premium pool is derived from configured `<NAME>_API_KEY` variables; missing-key providers are not enrolled. Round-robin order is brave, exa, parallel, tavily, serper. All enrolled providers run in the primary stage serially until the target is reached.
 
 | Backend | Factory name | Key env var | Keyless? | Notes |
 |---------|-------------|-------------|----------|-------|
 | Brave Search API | `brave` | `BRAVE_API_KEY` | No | `$5 credit = ~1,000 queries/mo` |
 | Exa | `exa` | `EXA_API_KEY` | No | Also supports MCP mode (`EXA_MCP_URL`) |
-| Jina | `jina` | `JINA_API_KEY` | Optional | `JINA_ALLOW_KEYLESS=true` by default |
+| Parallel | `parallel` | `PARALLEL_API_KEY` | No | Auto-enrolled when key is configured |
 | Tavily | `tavily` | `TAVILY_API_KEY` | No | `TAVILY_SEARCH_DEPTH=basic\|advanced` |
+| Serper | `serper` | `SERPER_API_KEY` | No | Homepage example; docs page returned 404; free-query recurrence unverified |
 | Bing (HTML scrape) | `bing` | — | Yes | Parses Bing HTML; bot-challenge detection |
 | Brave Web (HTML scrape) | `brave-web` | — | Yes | Parses Brave Search HTML |
 | SearXNG instance | `searxng` | — | Yes | For multi-instance or remote SearXNG backends |
@@ -180,7 +182,6 @@ All configuration is via environment variables. Key variables:
 |----------|---------|-------------|
 | `LISTEN_ADDR` | `:8080` | HTTP listen address |
 | `SEARXNG_BACKEND_URL` | `http://searxng-primary:8080` | SearXNG instance URL |
-| `FALLBACK_PROVIDERS` | `brave` | Comma-separated premium provider names |
 | `SUFFICIENT_MIN_RESULTS` | `1` | Target distinct-URL result count before the premium stage stops (values < 1 are treated as 1) |
 | `FALLBACK_TIMEOUT_SECONDS` | `8` | Hard total budget for the premium stage + bounded SearXNG secondary; returns accumulated results on expiry |
 | `SEARXNG_TIMEOUT_SECONDS` | `3` | Total SearXNG stage budget shared across the request and retries/backoff |

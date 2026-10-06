@@ -29,8 +29,8 @@ main.go → cmd/serve.go → internal/proxy/proxy.go (premium-first premiumLoop 
        IsAvailable() bool
    }
    ```
-2. Registrarlo in `backends/factory.go` nel costruttore `NewManager`
-3. Aggiungerlo a `FALLBACK_PROVIDERS` come env var (`FALLBACK_PROVIDERS=brave,exa,jina`)
+2. Registrarlo in `backends/factory.go` e nell'ordine `PremiumPoolOrder`.
+3. Costruire il backend dalla sua variabile `<NAME>_API_KEY`; i backend con chiave configurata entrano automaticamente nel pool nell'ordine fisso.
 4. Build e push dell'immagine
 
 ## Deploy

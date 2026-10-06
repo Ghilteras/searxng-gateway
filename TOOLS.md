@@ -56,7 +56,7 @@ Live gateway (stack 31, consumer-facing route `searxng-fallback`): revision `934
 - `FALLBACK_TIMEOUT_SECONDS=8` — parent request budget; must stay below the tighter caller (OpenCode `fetch` 10s, OpenClaw 20s — both route to `searxng-fallback`).
 - `SEARXNG_TIMEOUT_SECONDS=3` — whole SearXNG retry stage (250ms/500ms backoff, up to 3 attempts).
 - `BRAVE_TIMEOUT_SECONDS=3` — legacy name; sets the HTTP timeout for **every** premium provider, not just Brave.
-- Other live values: `SUFFICIENT_MIN_RESULTS=25`, `FALLBACK_PROVIDERS=brave,exa,tavily`, `SEARXNG_FAIL_THRESHOLD=6`, `SEARXNG_FAIL_COOLDOWN_SECONDS=180`.
+- Other live values: `SUFFICIENT_MIN_RESULTS=25`, `SEARXNG_FAIL_THRESHOLD=6`, `SEARXNG_FAIL_COOLDOWN_SECONDS=180`. Premium providers auto-enroll by configured API key in order: brave, exa, parallel, tavily, serper.
 - Tracing is off by default; optional `OTEL_TRACES_EXPORTER` (`console`/`otlp`), `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`), `OTEL_TRACES_SAMPLER_ARG` (default 0.1), `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`. Full table in `README.md`; spans never record query/URL/result/error text.
 
 ## SearXNG settings (verified 2026-09-25)

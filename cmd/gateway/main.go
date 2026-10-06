@@ -47,21 +47,18 @@ func main() {
 	sx := searxng.New(cfg.SearxngBackendURL, cfg.SearxngTimeout)
 	breakerMgr := breaker.New()
 
-	// Initialize fallback backends from FALLBACK_PROVIDERS env var
+	// Register providers in the fixed factory order. The enrolled pool is the
+	// ordered subset whose API keys are configured.
 	fallbackMgr := backends.NewManager()
-	for _, name := range cfg.FallbackProviders {
-		timeout := cfg.BraveTimeout // default, overridden per-provider in factory
-		backend, err := backends.NewFromEnv(name, timeout)
-		if err != nil {
-			log.Printf("warning: skipping fallback provider %q: %v", name, err)
-			continue
-		}
+	providers, enrolled, err := backends.ConfiguredPool(cfg.BraveTimeout)
+	if err != nil {
+		log.Fatalf("provider pool: %v", err)
+	}
+	for _, backend := range providers {
 		fallbackMgr.Register(backend)
 	}
-	if len(cfg.FallbackProviders) > 0 {
-		if err := fallbackMgr.SetFallbacks(cfg.FallbackProviders); err != nil {
-			log.Printf("warning: fallback chain setup: %v", err)
-		}
+	if err := fallbackMgr.SetFallbacks(enrolled); err != nil {
+		log.Fatalf("provider pool setup: %v", err)
 	}
 
 	p := proxy.New(cfg, sx, c, breakerMgr, fallbackMgr)

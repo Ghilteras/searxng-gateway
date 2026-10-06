@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -19,8 +18,7 @@ type Config struct {
 	CacheTTL             time.Duration
 	LogLevel             string
 	MetricsPath          string
-	SufficientMinResults int      // minimum SearXNG results before fallback is considered "sufficient"
-	FallbackProviders    []string // parsed from FALLBACK_PROVIDERS env var
+	SufficientMinResults int // minimum SearXNG results before fallback is considered "sufficient"
 	// Community-aligned: binary fallback + cooldown circuit breaker
 	SearxngFailThreshold int           // consecutive failures before cooldown
 	SearxngFailCooldown  time.Duration // duration of cooldown period
@@ -33,7 +31,6 @@ func Load() (*Config, error) {
 		ListenAddr:        getEnv("LISTEN_ADDR", ":8080"),
 		SearxngBackendURL: getEnv("SEARXNG_BACKEND_URL", "http://searxng-primary:8080"),
 		BraveAPIKey:       os.Getenv("BRAVE_API_KEY"),
-		FallbackProviders: parseProviderList(getEnv("FALLBACK_PROVIDERS", "brave")),
 		FallbackTimeout:   time.Duration(getEnvInt("FALLBACK_TIMEOUT_SECONDS", 8)) * time.Second,
 		SearxngTimeout:    time.Duration(getEnvInt("SEARXNG_TIMEOUT_SECONDS", 3)) * time.Second,
 		// BRAVE_TIMEOUT_SECONDS is retained for compatibility and configures every premium backend.
@@ -84,15 +81,4 @@ func getEnvInt(k string, def int) int {
 		return def
 	}
 	return n
-}
-
-func parseProviderList(s string) []string {
-	parts := strings.Split(s, ",")
-	names := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" {
-			names = append(names, strings.ToLower(t))
-		}
-	}
-	return names
 }

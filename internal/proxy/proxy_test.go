@@ -83,17 +83,18 @@ func newCfg() *config.Config {
 		SearxngFailThreshold: 6,
 		SearxngFailCooldown:  180 * time.Second,
 		SufficientMinResults: 10,
-		FallbackProviders:    []string{"brave", "exa"},
 	}
 }
 
 // newTestProxy creates a Proxy with the given fallback backends and breaker.
 func newTestProxy(cfg *config.Config, sx searxng.Client, c *cache.Cache, breakerMgr *breaker.Manager, fbs ...backends.SearchBackend) *Proxy {
 	mgr := backends.NewManager()
+	names := make([]string, 0, len(fbs))
 	for _, fb := range fbs {
 		mgr.Register(fb)
+		names = append(names, fb.Name())
 	}
-	_ = mgr.SetFallbacks(cfg.FallbackProviders)
+	_ = mgr.SetFallbacks(names)
 	return New(cfg, sx, c, breakerMgr, mgr)
 }
 
@@ -662,7 +663,6 @@ func TestSearchT1PremiumTwo(t *testing.T) {
 	c, _ := cache.New(100, 0)
 	cfg := newCfg()
 	cfg.SufficientMinResults = 5
-	cfg.FallbackProviders = []string{"brave", "exa"}
 	p := newTestProxy(cfg, sx, c, breaker.New(), fb1, fb2)
 	out, err := p.Search(context.Background(), "x")
 	if err != nil {
@@ -771,7 +771,6 @@ func TestTyped432TripsBreakerInPrimaryPhase(t *testing.T) {
 		Backend: "tavily", Code: 432, Err: errors.New(bodySecret + " " + keySecret),
 	}}
 	cfg := newCfg()
-	cfg.FallbackProviders = []string{"tavily"}
 	bm := breaker.New()
 	c, _ := cache.New(10, 0)
 	p := newTestProxy(cfg, &fakeSearxng{}, c, bm, backend)
@@ -1143,13 +1142,12 @@ func TestT1PremiumPass_SerialNoOverlap(t *testing.T) {
 	c, _ := cache.New(100, 0)
 	cfg := newCfg()
 	cfg.SufficientMinResults = 3
-	cfg.FallbackProviders = []string{"brave", "exa"}
 
 	// Register overlap backends into a fresh manager via newTestProxy-like construction.
 	mgr := backends.NewManager()
 	mgr.Register(brave)
 	mgr.Register(exa)
-	_ = mgr.SetFallbacks(cfg.FallbackProviders)
+	_ = mgr.SetFallbacks([]string{"brave", "exa"})
 	p := New(cfg, sx, c, breaker.New(), mgr)
 
 	_, err := p.Search(context.Background(), "t1_serial_overlap")
@@ -1203,13 +1201,12 @@ func TestFallbackPremiumLoop_SerialNoOverlapAndEarlyStop(t *testing.T) {
 	c, _ := cache.New(100, 0)
 	cfg := newCfg()
 	cfg.SufficientMinResults = 2
-	cfg.FallbackProviders = []string{"brave", "exa", "jina"}
 
 	mgr := backends.NewManager()
 	mgr.Register(brave)
 	mgr.Register(exa)
 	mgr.Register(jina)
-	_ = mgr.SetFallbacks(cfg.FallbackProviders)
+	_ = mgr.SetFallbacks([]string{"brave", "exa"})
 	p := New(cfg, sx, c, breaker.New(), mgr)
 
 	_, err := p.Search(context.Background(), "fallback_serial_earlystop")
@@ -1268,7 +1265,6 @@ func TestSearchFallsThroughAfterSearxngChildBudget(t *testing.T) {
 	cfg.FallbackTimeout = 500 * time.Millisecond
 	cfg.SearxngTimeout = 40 * time.Millisecond
 	cfg.SufficientMinResults = 1
-	cfg.FallbackProviders = []string{"brave", "exa"}
 	sx := &contextSearxng{fn: func(ctx context.Context) (*searxng.Response, error) { <-ctx.Done(); return nil, ctx.Err() }}
 	fail := &fakeBackend{name: "brave", avail: true, err: errors.New("upstream failure")}
 	second := &fakeBackend{name: "exa", avail: true, results: []backends.SearchResult{{Title: "secondary", URL: "https://secondary.test", Engine: "exa"}}}
@@ -1335,7 +1331,6 @@ func TestSearchDoesNotStartPremiumAfterDeadline(t *testing.T) {
 	cfg := newCfg()
 	cfg.FallbackTimeout = 40 * time.Millisecond
 	cfg.SearxngTimeout = 10 * time.Millisecond
-	cfg.FallbackProviders = []string{"brave", "exa"}
 	var secondCalls atomic.Int64
 	first := &contextBackend{name: "brave", fn: func(ctx context.Context) ([]backends.SearchResult, error) { <-ctx.Done(); return nil, ctx.Err() }}
 	second := &contextBackend{name: "exa", fn: func(context.Context) ([]backends.SearchResult, error) { secondCalls.Add(1); return nil, nil }}
@@ -1355,7 +1350,6 @@ func TestCallerCancellationStopsProviderWork(t *testing.T) {
 	cfg := newCfg()
 	cfg.FallbackTimeout = time.Second
 	cfg.SearxngTimeout = time.Second
-	cfg.FallbackProviders = []string{"brave", "exa"}
 	started := make(chan struct{})
 	first := &contextBackend{name: "brave", fn: func(ctx context.Context) ([]backends.SearchResult, error) {
 		close(started)
@@ -1422,7 +1416,6 @@ func TestTracingSpanTreeAndSanitization(t *testing.T) {
 	cfg := newCfg()
 	cfg.SufficientMinResults = 5
 	cfg.SearxngTimeout = 5 * time.Second
-	cfg.FallbackProviders = []string{"brave", "exa"}
 	p := newTestProxy(cfg, sx, c, breaker.New(), fb, fb2)
 	ctx, request := otel.Tracer("test").Start(context.Background(), "http.server /search")
 	_, err := p.Search(ctx, querySecret)
@@ -1931,7 +1924,6 @@ func TestOpenBreakerExcludesProviderFromRoundRobin(t *testing.T) {
 	bm := breaker.New()
 	c, _ := cache.New(100, 0)
 	cfg := newCfg()
-	cfg.FallbackProviders = []string{"tavily", "brave"}
 	cfg.SufficientMinResults = 5
 
 	p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, bm, tavily, brave)
@@ -1985,7 +1977,6 @@ func TestCreditsExhaustedResponseTripsBreaker(t *testing.T) {
 			bm := breaker.New()
 			c, _ := cache.New(10, 0)
 			cfg := newCfg()
-			cfg.FallbackProviders = []string{"parallel"}
 			cfg.SufficientMinResults = 5
 			beforeQuota := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
 				map[string]string{"provider": "parallel", "phase": "primary", "outcome": "quota"})
@@ -2032,7 +2023,6 @@ func TestCancellationAndValidationDoNotTrip(t *testing.T) {
 		bm := breaker.New()
 		c, _ := cache.New(10, 0)
 		cfg := newCfg()
-		cfg.FallbackProviders = []string{"brave"}
 		p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, bm, backend)
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
@@ -2058,7 +2048,6 @@ func TestCancellationAndValidationDoNotTrip(t *testing.T) {
 		cfg := newCfg()
 		cfg.FallbackTimeout = 60 * time.Millisecond
 		cfg.SearxngTimeout = time.Second
-		cfg.FallbackProviders = []string{"brave"}
 		p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, bm, backend)
 		_, _ = p.Search(context.Background(), "deadline-notrip")
 		if bm.IsOpen("premium:brave") {
@@ -2073,7 +2062,6 @@ func TestCancellationAndValidationDoNotTrip(t *testing.T) {
 			bm := breaker.New()
 			c, _ := cache.New(10, 0)
 			cfg := newCfg()
-			cfg.FallbackProviders = []string{"exa"}
 			beforeReqErr := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
 				map[string]string{"provider": "exa", "phase": "primary", "outcome": "request_error"})
 			p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, bm, backend)
@@ -2097,7 +2085,6 @@ func TestEmptyResultOutcomeNoTrip(t *testing.T) {
 	bm := breaker.New()
 	c, _ := cache.New(10, 0)
 	cfg := newCfg()
-	cfg.FallbackProviders = []string{"exa"}
 	cfg.SufficientMinResults = 5
 	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{{URL: "https://sx", Engine: "wikipedia"}}}}
 	beforeEmpty := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
@@ -2140,7 +2127,6 @@ func TestProxyHalfOpenAdmitsSingleRealSearchUnderConcurrency(t *testing.T) {
 	})
 	c, _ := cache.New(100, 0)
 	cfg := newCfg()
-	cfg.FallbackProviders = []string{"brave"}
 	cfg.SufficientMinResults = 1
 	sx := &fakeSearxng{resp: &searxng.Response{}}
 	p := newTestProxy(cfg, sx, c, bm, backend)
@@ -2234,7 +2220,6 @@ func TestProviderAttemptsOneOutcomeAndSkips(t *testing.T) {
 	bm := breaker.New()
 	c, _ := cache.New(10, 0)
 	cfg := newCfg()
-	cfg.FallbackProviders = []string{"brave", "exa"}
 	cfg.SufficientMinResults = 5
 
 	beforeSuccess := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
@@ -2269,7 +2254,6 @@ func TestProviderAttemptsOneOutcomeAndSkips(t *testing.T) {
 		Backend: "jina", Code: backends.ErrCodeAuth, Err: errors.New("invalid api key"),
 	}}
 	cfg2 := newCfg()
-	cfg2.FallbackProviders = []string{"jina"}
 	cfg2.SufficientMinResults = 5
 	p2 := newTestProxy(cfg2, &fakeSearxng{resp: &searxng.Response{}}, c, bm, faulty)
 	_, _ = p2.Search(context.Background(), "init-open-breaker")
