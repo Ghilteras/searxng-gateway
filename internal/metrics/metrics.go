@@ -24,7 +24,7 @@ var (
 		[]string{"outcome"},
 	)
 
-	// RequestDuration tracks actual premium-provider calls, labeled by provider and phase (primary).
+	// RequestDuration tracks actual premium-provider calls, labeled by provider and phase (primary|canary).
 	RequestDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "searxng_gateway_provider_duration_seconds",
@@ -39,7 +39,7 @@ var (
 	// ProviderSkipsTotal). outcome ∈ {success, empty, auth, quota, rate_limit,
 	// network, timeout, http_5xx, degraded, invalid_response, not_configured,
 	// request_error, cancelled, panic, other_error}; phase ∈ {primary,
-	// continuation, canary}.
+	// canary}.
 	ProviderAttemptsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "searxng_gateway_provider_attempts_total",

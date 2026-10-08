@@ -1,22 +1,30 @@
 // Package proxy implements the core gateway orchestration:
-// cache check → sequential premium round-robin (primary) until the target
-// result count is reached → bounded SearXNG secondary stage on shortfall →
-// merge, dedupe by URL (premium owns duplicates), and return accumulated
-// nonempty results even below target.
+// cache check → bounded SearXNG stage (first; skipped during cooldown) →
+// premium stage (always at least one admitted provider call, further providers
+// round-robin only while the distinct-URL count is below the target) → output
+// with premium results first (premium owns duplicate URLs), returning
+// accumulated nonempty results even below target.
 //
 // The Proxy.Search method orchestrates the stages:
 //  1. Normalise the query and check the LRU cache.
-//  2. Run the premium providers via round-robin (primary), each at most once,
-//     until the target distinct-URL count is reached, all providers are
-//     exhausted, or the premium-stage deadline (parent budget minus a reserve
-//     for the secondary stage) expires.
-//  3. If the target was reached, return immediately without calling SearXNG.
-//  4. Otherwise run the bounded SearXNG secondary stage (with retry+backoff)
-//     from the parent's remaining budget capped at SEARXNG_TIMEOUT_SECONDS,
-//     honoring the existing cooldown circuit breaker, and merge its results
-//     after the premium results.
-//  5. Return accumulated nonempty results even below the target; an empty
-//     result set is a timeout at the parent deadline, otherwise a failure.
+//  2. Seed provider eligibility, then consult the SearXNG cooldown; while in
+//     cooldown the SearXNG stage is skipped entirely and the request is served
+//     by the premium stage alone.
+//  3. Run the bounded SearXNG stage (with retry+backoff) from the parent's
+//     remaining budget capped at SEARXNG_TIMEOUT_SECONDS. Its distinct URLs
+//     count toward the target before the premium stage starts.
+//  4. Run the premium stage on every uncached request whose context is still
+//     live: round-robin, each provider at most once, until at least one
+//     provider call has been admitted (minAdmitted=1) AND the distinct-URL
+//     count (SearXNG + premium) has reached the target, all providers are
+//     exhausted, or the request deadline expires. Skips (missing key, open
+//     breaker, refused admission) are not admitted calls. If SearXNG already
+//     met the target and the single admitted call errors or returns empty, the
+//     stage stops without trying a second provider.
+//  5. Assemble the output: premium results in arrival order, then SearXNG
+//     results whose URL premium did not return. Return accumulated nonempty
+//     results even below the target; an empty result set is a timeout at the
+//     parent deadline, otherwise a failure.
 //  6. Circuit breaker: premium providers whose breaker is open are skipped.
 //     Each actual premium call runs inside gobreaker.Execute (real admission)
 //     and records exactly one terminal outcome; genuine provider faults trip
@@ -24,17 +32,18 @@
 //     deadline, query validation, empty results) do not.
 //
 // Community-aligned behaviour (2026):
-//   - Premium providers are the primary source; SearXNG is a bounded secondary
-//     reached only when the primary falls short of the target.
+//   - SearXNG is queried first; the premium stage guarantees at least one
+//     admitted provider call per uncached request and continues only while the
+//     distinct-URL count is below the target.
 //   - Round-robin premium selection distributes load evenly; premium calls are
-//     serial within the primary stage.
+//     serial within the premium stage.
 //   - Cooldown circuit breaker for SearXNG: after SEARXNG_FAIL_THRESHOLD
 //     consecutive failures, SearXNG is skipped entirely until cooldown expires.
 //   - Retry network-class SearXNG failures up to 3 attempts with 250ms/500ms
 //     backoff; stage timeouts and other errors are not retried,
 //     bounded by the SearXNG child timeout.
-//   - URL deduplication across all providers, with premium results taking
-//     precedence on duplicate URLs.
+//   - URL deduplication across all providers, with premium results listed first
+//     and taking precedence on duplicate URLs.
 package proxy
 
 import (
@@ -60,14 +69,15 @@ import (
 	"sx/internal/searxng"
 )
 
-// Proxy orchestrates premium-first search with a bounded SearXNG secondary and pluggable fallback providers.
+// Proxy orchestrates SearXNG-first search followed by a premium stage (at least one admitted provider call) with pluggable premium providers.
 type Proxy struct {
 	cfg        *config.Config
 	sx         searxng.Client
 	c          *cache.Cache
 	breakerMgr *breaker.Manager
 
-	// Fallback chain: premium providers, tried in the primary stage order.
+	// Premium providers, tried in round-robin order: at least one admitted call per
+	// uncached request, further providers only while below the distinct-URL target.
 	fallbackMgr *backends.Manager
 
 	// Cooldown circuit breaker (community pattern: searxng-resilient-router)
@@ -81,12 +91,15 @@ func New(cfg *config.Config, sx searxng.Client, c *cache.Cache, breakerMgr *brea
 	return &Proxy{cfg: cfg, sx: sx, c: c, breakerMgr: breakerMgr, fallbackMgr: fallbackMgr}
 }
 
-// Search runs the full orchestration pipeline for a raw query string.
+// Search runs the full orchestration pipeline for a raw query string:
+// cache, then SearXNG first (skipped while in cooldown), then the premium stage
+// (at least one admitted provider call, further providers only while below the
+// distinct-URL target). The output lists premium results first.
 //
 // Outcome counters (all via RequestsTotal):
 //   - cache_hit:                  entry found in cache, no provider called.
-//   - searxng_ok:                 only SearXNG contributed results (no premium results).
-//   - premium_ok:                 only premium providers contributed results (SearXNG skipped, errored, or returned empty).
+//   - searxng_ok:                 only SearXNG contributed results (premium errored, returned empty, or had no provider to call).
+//   - premium_ok:                 only premium providers contributed results (SearXNG skipped, errored, returned empty, or returned only URLs premium also returned).
 //   - searxng_plus_premium_ok:    both SearXNG and premium providers contributed results.
 //   - fallback_fail:              all providers exhausted with no results.
 //   - timeout:                    The overall request budget expired before any results were collected.
@@ -105,39 +118,31 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	}
 	span.AddEvent("cache.miss", trace.WithAttributes(traceAttrs("cache_miss")...))
 
+	// Seed and refresh provider eligibility once per uncached request, before
+	// any stage runs, so a request fully served by SearXNG still keeps the
+	// eligibility gauges and missing_key skip counter current.
+	p.initProviderEligibility()
+
 	timeoutCtx, cancel := context.WithTimeout(ctx, p.cfg.FallbackTimeout)
 	defer cancel()
 	parentDeadline, _ := timeoutCtx.Deadline()
 
-	// 2. SearXNG cooldown is consulted only when the secondary stage is reached.
+	// 2. SearXNG cooldown gates the SearXNG stage unconditionally: when in
+	// cooldown the request is served by the premium stage alone.
 	sxSkipped := p.inCooldown()
 
-	// Per-call accumulators.
-	allResults := make([]searxng.Result, 0)
+	// Per-call accumulators. seenURLs is the distinct-URL union of both stages
+	// and only drives the target count; the output is assembled at the end,
+	// premium results first.
+	sxResults := make([]searxng.Result, 0)
 	seenURLs := make(map[string]bool)
 	usedPremiums := make(map[string]bool)
-	premiumHadResults := false
-	searxngHadResults := false
+	var premiumResults []searxng.Result
 	var premiumErrMsgs []string
 
-	target := p.targetResults()
-
-	// 3. PRIMARY stage: sequential premium round-robin until the target is met.
-	// Reserve the tail of the request budget for the bounded SearXNG secondary
-	// stage so the premium stage cannot consume the whole deadline.
-	reserve := time.Second
-	if half := p.cfg.FallbackTimeout / 2; reserve > half {
-		reserve = half
-	}
-	premiumCtx, cancelPremium := context.WithDeadline(timeoutCtx, parentDeadline.Add(-reserve))
-	defer cancelPremium()
-
-	allResults, seenURLs, _, premiumHadResults, premiumErrMsgs =
-		p.premiumLoop(premiumCtx, key, allResults, seenURLs, usedPremiums, premiumHadResults, premiumErrMsgs)
-
-	// 4. SECONDARY stage: bounded SearXNG, only when the primary fell short and
-	// the request context is still live.
-	if len(allResults) < target && !sxSkipped && timeoutCtx.Err() == nil && time.Until(parentDeadline) > 0 {
+	// 3. SearXNG stage (first): bounded, skipped only while in cooldown or when
+	// the request context is already done.
+	if !sxSkipped && timeoutCtx.Err() == nil && time.Until(parentDeadline) > 0 {
 		budget := p.cfg.SearxngTimeout
 		budgetCapped := false
 		if remaining := time.Until(parentDeadline); remaining < budget {
@@ -152,7 +157,7 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 			return p.sx.Search(sxCtx, key)
 		})
 		elapsed := time.Since(start)
-		stageSpan.SetAttributes(attribute.String("phase", "continuation"), attribute.String("outcome", searxngOutcome(resp, err)), attribute.Int("result_count", resultCount(resp)))
+		stageSpan.SetAttributes(attribute.String("phase", "primary"), attribute.String("outcome", searxngOutcome(resp, err)), attribute.Int("result_count", resultCount(resp)))
 		stageSpan.End()
 		metrics.SearxngStageDuration.Observe(elapsed.Seconds())
 		cancelSX()
@@ -196,13 +201,12 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 
 			p.recordSearxngSuccess()
 
-			// Merge SearXNG results after the premium results (dedup by URL), so
-			// premium results own duplicate URLs.
+			// Collect SearXNG's distinct URLs. They count toward the target before
+			// premium starts; in the output they follow the premium results.
 			for _, r := range resp.Results {
 				if !seenURLs[r.URL] {
 					seenURLs[r.URL] = true
-					allResults = append(allResults, r)
-					searxngHadResults = true
+					sxResults = append(sxResults, r)
 				}
 			}
 		} else {
@@ -221,6 +225,34 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 			if err != nil {
 				premiumErrMsgs = append(premiumErrMsgs, fmt.Sprintf("searxng: %v", err))
 			}
+		}
+	}
+
+	// 4. Premium stage (second): round-robin. It runs on EVERY uncached request
+	// whose context is still live: at least one admitted provider call is
+	// always made (minAdmitted=1), and further providers are tried only while
+	// the distinct-URL union (SearXNG + premium) is below the target. Premium is
+	// the last stage, so it runs directly under timeoutCtx.
+	if timeoutCtx.Err() == nil {
+		premiumResults, _, _, premiumErrMsgs =
+			p.premiumLoop(timeoutCtx, key, premiumResults, seenURLs, usedPremiums, premiumErrMsgs, 1)
+	}
+
+	// Assemble the output: premium results in arrival order, then SearXNG
+	// results whose URL premium did not already return, so premium owns duplicate
+	// URLs in the output. The outcome label is derived from this composition.
+	allResults := make([]searxng.Result, 0, len(premiumResults)+len(sxResults))
+	allResults = append(allResults, premiumResults...)
+	premiumURLs := make(map[string]bool, len(premiumResults))
+	for _, r := range premiumResults {
+		premiumURLs[r.URL] = true
+	}
+	premiumHadResults := len(premiumResults) > 0
+	searxngHadResults := false
+	for _, r := range sxResults {
+		if !premiumURLs[r.URL] {
+			allResults = append(allResults, r)
+			searxngHadResults = true
 		}
 	}
 
@@ -256,9 +288,10 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	return mapped, nil
 }
 
-// targetResults is the distinct-URL target for the primary premium stage. A
-// non-positive configured threshold is treated as 1 so it cannot silently
-// suppress the primary loop and turn a recoverable search into a failure.
+// targetResults is the distinct-URL target: once SearXNG + premium distinct URLs
+// reach it, the premium stage stops after its guaranteed minimum of admitted
+// calls. A non-positive configured threshold is treated as 1 so the target is
+// always reachable by a single result.
 func (p *Proxy) targetResults() int {
 	if p.cfg.SufficientMinResults < 1 {
 		return 1
@@ -266,28 +299,37 @@ func (p *Proxy) targetResults() int {
 	return p.cfg.SufficientMinResults
 }
 
-// premiumLoop is the primary premium stage: it iterates through premium backends
-//   - merged results reach SufficientMinResults, OR
-//   - all available premiums have been tried, OR
-//   - the deadline expires.
+// premiumLoop is the premium stage: it iterates through premium backends
+// round-robin and keeps going while EITHER
+//   - the distinct-URL union (len(seenURLs): SearXNG + premium) is below the
+//     target, OR
+//   - fewer than minAdmitted provider calls have been admitted,
 //
+// and stops when all available premiums have been tried or the deadline expires.
+// admittedCalls counts only calls the breaker admitted (whatever the outcome:
+// success, empty or error); skips (missing_key, breaker_open, refused
+// admission) do not count, so the round-robin moves on to the next provider.
 // Each premium is called at most once per request (tracked via usedPremiums).
-// Premiums where the circuit breaker is open are skipped.
-// Returns the updated accumulators.
+// Premium results are appended to premiumResults in arrival order; a URL
+// already returned by premium is not repeated, but a URL that only SearXNG
+// returned is still appended (premium owns duplicate URLs in the output).
+// Returns the updated premium results, accumulators and error messages.
 func (p *Proxy) premiumLoop(
 	ctx context.Context,
 	key string,
-	allResults []searxng.Result,
+	premiumResults []searxng.Result,
 	seenURLs map[string]bool,
 	usedPremiums map[string]bool,
-	premiumHadResults bool,
 	errMsgs []string,
-) ([]searxng.Result, map[string]bool, map[string]bool, bool, []string) {
-	// Initialise intended-provider visibility before the first use so every
-	// registered provider has an eligibility series and a breaker-state series.
-	p.initProviderEligibility()
+	minAdmitted int,
+) ([]searxng.Result, map[string]bool, map[string]bool, []string) {
+	premiumURLs := make(map[string]bool, len(premiumResults))
+	for _, r := range premiumResults {
+		premiumURLs[r.URL] = true
+	}
+	admittedCalls := 0
 
-	for len(allResults) < p.targetResults() {
+	for len(seenURLs) < p.targetResults() || admittedCalls < minAdmitted {
 		// Stop conditions.
 		if ctx.Err() != nil {
 			break
@@ -330,6 +372,7 @@ func (p *Proxy) premiumLoop(
 			p.recordProviderSkip(premium.Name(), "breaker_open")
 			continue
 		}
+		admittedCalls++
 		// Execute has now observed the terminal call outcome and completed any
 		// trip/recovery transition. Keep the one-hot eligibility gauge current
 		// in the same request, without waiting for a later refresh.
@@ -345,23 +388,25 @@ func (p *Proxy) premiumLoop(
 
 		metrics.EngineResultsTotal.WithLabelValues(premium.Name()).Add(float64(len(results)))
 
-		// Merge and deduplicate by URL.
+		// Collect premium results (dedup among premium only); the union set
+		// keeps the target count distinct across both stages.
 		for _, r := range results {
-			if !seenURLs[r.URL] {
-				seenURLs[r.URL] = true
-				premiumHadResults = true
-				allResults = append(allResults, searxng.Result{
-					Title:   r.Title,
-					URL:     r.URL,
-					Content: r.Content,
-					Engine:  r.Engine,
-					Engines: []string{r.Engine},
-				})
+			if premiumURLs[r.URL] {
+				continue
 			}
+			premiumURLs[r.URL] = true
+			seenURLs[r.URL] = true
+			premiumResults = append(premiumResults, searxng.Result{
+				Title:   r.Title,
+				URL:     r.URL,
+				Content: r.Content,
+				Engine:  r.Engine,
+				Engines: []string{r.Engine},
+			})
 		}
 	}
 
-	return allResults, seenURLs, usedPremiums, premiumHadResults, errMsgs
+	return premiumResults, seenURLs, usedPremiums, errMsgs
 }
 
 // premiumBreakerID namespaces premium-provider breakers so a SearXNG engine
@@ -565,7 +610,7 @@ func (p *Proxy) retryWithBackoff(ctx context.Context, parent context.Context, fn
 			return lastResp, ctx.Err()
 		}
 		attemptCtx, attemptSpan := otel.Tracer("sx/internal/proxy").Start(parent, "searxng.attempt")
-		attemptSpan.SetAttributes(attribute.Int("attempt", attempt), attribute.String("phase", "continuation"))
+		attemptSpan.SetAttributes(attribute.Int("attempt", attempt), attribute.String("phase", "primary"))
 		if attempt > 1 {
 			attemptSpan.AddEvent("retry.backoff", trace.WithAttributes(traceAttrs("backoff")...))
 			select {
@@ -587,7 +632,7 @@ func (p *Proxy) retryWithBackoff(ctx context.Context, parent context.Context, fn
 
 		_, callSpan := otel.Tracer("sx/internal/proxy").Start(attemptCtx, "searxng.http")
 		resp, err := fn()
-		callSpan.SetAttributes(attribute.String("phase", "continuation"), attribute.Int("attempt", attempt), attribute.String("outcome", spanOutcome(err)), attribute.Int("result_count", resultCount(resp)))
+		callSpan.SetAttributes(attribute.String("phase", "primary"), attribute.Int("attempt", attempt), attribute.String("outcome", spanOutcome(err)), attribute.Int("result_count", resultCount(resp)))
 		callSpan.End()
 		outcome := "success"
 		errClass := "none"

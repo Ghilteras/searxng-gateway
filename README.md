@@ -1,6 +1,6 @@
 # searxng-gateway
 
-Decision proxy in front of SearXNG: **premium-first execution** — runs the configured premium providers serially via round-robin until a configurable distinct-URL target is met, and only on shortfall falls back to a bounded SearXNG secondary stage; results are merged with URL dedup (premium wins duplicate URLs), and accumulated non-empty results are returned even below target. Same JSON shape as SearXNG, Prometheus /metrics, in-memory LRU cache.
+Decision proxy in front of SearXNG: **SearXNG-first execution with a guaranteed premium call** — runs a bounded SearXNG stage first (skipped during cooldown), then a premium stage that always makes at least one admitted provider call and continues round-robin only while the distinct-URL count is below a configurable target; the response lists premium results first (premium wins duplicate URLs), followed by the SearXNG-only results, and accumulated non-empty results are returned even below target. Same JSON shape as SearXNG, Prometheus /metrics, in-memory LRU cache.
 
 🚀 **Works with zero API keys in keyless mode.** See [docs/keyless.md](docs/keyless.md).
 
@@ -30,26 +30,31 @@ curl 'http://localhost:8080/metrics'
 ```
 Client ───▶ searxng-gateway (:8080)
                     │
-                    └──▶ PRIMARY: configured premium providers (fixed order)
-                    │    ├── Brave ──┐
-                    │    ├── Exa     ├── round-robin, serial within the stage;
-                    │    ├── Parallel │   stops when the target is reached.
-                    │    ├── Tavily   │
-                    │    └── Serper ──┘
+                    ├──▶ 1. SearXNG stage (first; bounded; skipped during cooldown)
+                    │    ├── Serper (Google via API)
+                    │    ├── Bing, Wikipedia, GitHub...
+                    │    └── Circuit breaker per engine + cooldown
+                    │    Retry (network-class) up to 3 attempts within
+                    │    SEARXNG_TIMEOUT_SECONDS; its distinct URLs count
+                    │    toward SUFFICIENT_MIN_RESULTS.
                     │
-                    └──▶ SECONDARY: SearXNG (only on shortfall, bounded)
-                         ├── Serper (Google via API)
-                         ├── Bing, Wikipedia, GitHub...
-                         └── Circuit breaker per engine + cooldown
-                         Retry (network-class) up to 3 attempts within
-                         SEARXNG_TIMEOUT_SECONDS; merged after premium results.
+                    ├──▶ 2. Premium stage (configured providers, fixed order)
+                    │    ├── Brave ──┐
+                    │    ├── Exa     ├── round-robin, serial; always at least
+                    │    ├── Parallel│   one admitted call, then continues only
+                    │    ├── Tavily  │   while distinct URLs < target.
+                    │    └── Serper ─┘
+                    │
+                    └──▶ 3. Response: premium results first, then SearXNG-only
+                         results (a URL both stages returned appears once, at
+                         the premium position).
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the full design.
 
 ## Supported fallback providers
 
-The premium pool is automatically derived from configured provider API keys, in fixed round-robin order: brave, exa, parallel, tavily, serper. Providers without keys are not enrolled. The premium providers run first, serially until the accumulated distinct-URL count reaches `SUFFICIENT_MIN_RESULTS` (or all providers are tried, or the premium budget expires). SearXNG is only called as a bounded secondary when the premium stage falls short.
+The premium pool is automatically derived from configured provider API keys, in fixed round-robin order: brave, exa, parallel, tavily, serper. Providers without keys are not enrolled. SearXNG runs first (bounded, skipped during cooldown). The premium stage then always makes at least one admitted provider call and runs further providers serially only until the accumulated distinct-URL count reaches `SUFFICIENT_MIN_RESULTS` (or all providers are tried, or the request budget expires).
 
 | Provider | Env var | Free tier | Production |
 |----------|---------|-----------|------------|
@@ -72,8 +77,8 @@ Keyless mode (no API keys) works out of the box using SearXNG's free engines (Bi
 
 ## Features
 
-- **Premium-first execution** — the configured premium providers are selected via atomic round-robin and invoked **serially** (by deliberate design; see [docs/architecture.md](docs/architecture.md#why-the-premium-pass-is-serial-deliberate)) until the distinct-URL target is met. SearXNG runs only as a bounded secondary on shortfall, and its results are merged after the premium results (premium wins duplicate URLs).
-- **Bounded SearXNG secondary** — if the premium stage falls short of `SUFFICIENT_MIN_RESULTS`, SearXNG is called within the remaining `FALLBACK_TIMEOUT_SECONDS` budget (capped at `SEARXNG_TIMEOUT_SECONDS`) with retry and cooldown; its results are merged after the premium results.
+- **SearXNG first** — the SearXNG stage runs first, bounded by `SEARXNG_TIMEOUT_SECONDS` (capped by the remaining `FALLBACK_TIMEOUT_SECONDS` budget) with retry, and is skipped entirely while the SearXNG cooldown is active. Its distinct URLs count toward `SUFFICIENT_MIN_RESULTS` before the premium stage starts.
+- **Premium stage, at least one call** — the configured premium providers are selected via atomic round-robin and invoked **serially** (by deliberate design; see [docs/architecture.md](docs/architecture.md#why-the-premium-pass-is-serial-deliberate)). The stage always makes at least one *admitted* provider call (skips such as a missing key or an open breaker do not count), and continues to further providers only while the distinct-URL count is below `SUFFICIENT_MIN_RESULTS`. The response lists premium results first, then SearXNG-only results; a URL returned by both appears once, at the premium position.
 - **Circuit breaker per provider/engine** — premium provider faults and SearXNG engine client errors open their circuit for 5 min; auto-recovers
 - **Exponential backoff retry** — up to 3 attempts (250ms/500ms between attempts), bounded by the SearXNG stage budget
 - **Prometheus /metrics** — 15+ gauges and counters prefixed `searxng_gateway_`
@@ -166,7 +171,7 @@ groups:
 | `TAVILY_INCLUDE_RAW_CONTENT` | `false` | no | Request full page content inline when `true` |
 | `TAVILY_INCLUDE_ANSWER` | `false` | no | Request Tavily's direct answer when `true` |
 | `SUFFICIENT_MIN_RESULTS` | `1` | no | Target distinct-URL result count; loop stops when reached (recommend 10 with premiums) |
-| `FALLBACK_TIMEOUT_SECONDS` | `8` | no | Hard total request budget: the premium-first stage plus the bounded SearXNG secondary; accumulated nonempty results are returned at the deadline |
+| `FALLBACK_TIMEOUT_SECONDS` | `8` | no | Hard total request budget: the bounded SearXNG stage plus the premium stage; accumulated nonempty results are returned at the deadline |
 | `SEARXNG_TIMEOUT_SECONDS` | `3` | no | Total SearXNG stage budget shared by the HTTP request and all retries/backoff; the stage is cancelled when it expires. A stage expiry while the parent request budget is still alive counts as a SearXNG failure; a parent-budget expiry or caller cancellation does not |
 | `SEARXNG_FAIL_THRESHOLD` | `6` | no | Consecutive SearXNG failures before cooldown |
 | `SEARXNG_FAIL_COOLDOWN_SECONDS` | `180` | no | Cooldown duration for SearXNG (seconds) |

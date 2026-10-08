@@ -220,40 +220,152 @@ func retryCounter(t *testing.T, counter interface {
 	return metric.GetCounter().GetValue()
 }
 
-func TestPremiumSufficientReturnsWithoutSearxng(t *testing.T) {
+// TestSearxngSufficientMakesExactlyOnePremiumCall is the money assertion for the
+// A1 policy: SearXNG meets the target, yet the premium stage still makes
+// exactly one admitted provider call (minAdmitted=1) and no second provider is
+// tried. If the owner changes the minimum-call policy, this is the test to edit.
+func TestSearxngSufficientMakesExactlyOnePremiumCall(t *testing.T) {
+	metrics.Init()
+	var sxCalls atomic.Int64
+	results := make([]searxng.Result, 3)
+	for i := range results {
+		results[i] = searxng.Result{Title: fmt.Sprintf("SX%d", i), URL: fmt.Sprintf("https://sx-%d.com", i), Engine: "wikipedia"}
+	}
+	sx := &contextSearxng{fn: func(context.Context) (*searxng.Response, error) {
+		sxCalls.Add(1)
+		return &searxng.Response{Results: results}, nil
+	}}
+	first := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "P", URL: "https://premium-only.com", Engine: "brave"},
+	}}
+	second := &fakeBackend{name: "exa", avail: true, results: []backends.SearchResult{
+		{Title: "P2", URL: "https://premium-two.com", Engine: "exa"},
+	}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 3
+	p := newTestProxy(cfg, sx, c, breaker.New(), first, second)
+	if _, err := p.Search(context.Background(), "sx-sufficient"); err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+	if got := sxCalls.Load(); got != 1 {
+		t.Fatalf("SearXNG calls = %d, want 1", got)
+	}
+	if got := first.calls.Load() + second.calls.Load(); got != 1 {
+		t.Fatalf("premium calls = %d, want exactly 1 when SearXNG meets the target", got)
+	}
+}
+
+// TestSearxngStagePrecedesPremium (a): SearXNG is invoked before any premium
+// backend on a request that falls short.
+func TestSearxngStagePrecedesPremium(t *testing.T) {
+	metrics.Init()
+	var order []string
+	sx := &contextSearxng{fn: func(context.Context) (*searxng.Response, error) {
+		order = append(order, "searxng")
+		return &searxng.Response{Results: []searxng.Result{{Title: "SX", URL: "https://sx.com", Engine: "wikipedia"}}}, nil
+	}}
+	fb := &contextBackend{name: "brave", fn: func(context.Context) ([]backends.SearchResult, error) {
+		order = append(order, "premium")
+		return []backends.SearchResult{{Title: "P", URL: "https://p.com", Engine: "brave"}}, nil
+	}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 2
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+	if _, err := p.Search(context.Background(), "order-first"); err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+	if len(order) != 2 || order[0] != "searxng" || order[1] != "premium" {
+		t.Fatalf("call order = %v, want [searxng premium]", order)
+	}
+}
+
+// TestSearxngShortfallCallsPremiumUntilTarget (c): with SearXNG short of the
+// target, premium providers are called only until the target is met.
+func TestSearxngShortfallCallsPremiumUntilTarget(t *testing.T) {
+	metrics.Init()
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{{Title: "SX", URL: "https://sx.com", Engine: "wikipedia"}}}}
+	brave := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{{Title: "B", URL: "https://b.com", Engine: "brave"}}}
+	exa := &fakeBackend{name: "exa", avail: true, results: []backends.SearchResult{{Title: "E", URL: "https://e.com", Engine: "exa"}}}
+	serper := &fakeBackend{name: "serper", avail: true, results: []backends.SearchResult{{Title: "S", URL: "https://s.com", Engine: "serper"}}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 3
+	p := newTestProxy(cfg, sx, c, breaker.New(), brave, exa, serper)
+	out, err := p.Search(context.Background(), "shortfall-until-target")
+	if err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+	if len(out.Results) != 3 {
+		t.Fatalf("result count = %d, want 3 (SearXNG + two premium)", len(out.Results))
+	}
+	if got := brave.calls.Load() + exa.calls.Load() + serper.calls.Load(); got != 2 {
+		t.Fatalf("premium calls = %d, want 2 (stop once the target is met)", got)
+	}
+}
+
+// TestSearxngCooldownSkipsSearxngAndServesPremium (d): during cooldown SearXNG
+// is not called at all and premium serves the request alone.
+func TestSearxngCooldownSkipsSearxngAndServesPremium(t *testing.T) {
 	metrics.Init()
 	var sxCalls atomic.Int64
 	sx := &contextSearxng{fn: func(context.Context) (*searxng.Response, error) {
 		sxCalls.Add(1)
-		return &searxng.Response{Results: []searxng.Result{{Title: "sx", URL: "https://sx-only.com", Engine: "wikipedia"}}}, nil
+		return nil, errors.New("upstream 500")
 	}}
-	results := make([]backends.SearchResult, 3)
-	for i := range results {
-		results[i] = backends.SearchResult{Title: fmt.Sprintf("P%d", i), URL: fmt.Sprintf("https://premium-%d.com", i), Engine: "brave"}
-	}
-	backend := &fakeBackend{name: "brave", avail: true, results: results}
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{{Title: "P", URL: "https://p.com", Engine: "brave"}}}
 	c, _ := cache.New(100, 0)
 	cfg := newCfg()
-	cfg.SufficientMinResults = 3
-	p := newTestProxy(cfg, sx, c, breaker.New(), backend)
-	out, err := p.Search(context.Background(), "premium-sufficient")
+	cfg.SearxngFailThreshold = 2
+	cfg.SearxngFailCooldown = time.Minute
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+	for i := 0; i < 2; i++ {
+		_, _ = p.Search(context.Background(), fmt.Sprintf("cooldown-warmup-%d", i))
+	}
+	if !p.inCooldown() {
+		t.Fatal("precondition: expected SearXNG in cooldown after threshold failures")
+	}
+	sxCalls.Store(0)
+	out, err := p.Search(context.Background(), "cooldown-request")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
 	}
 	if got := sxCalls.Load(); got != 0 {
-		t.Fatalf("SearXNG called %d times, want 0 when premium reaches the target", got)
+		t.Fatalf("SearXNG calls during cooldown = %d, want 0", got)
 	}
-	if len(out.Results) != 3 {
-		t.Fatalf("result count = %d, want 3 premium results", len(out.Results))
-	}
-	for _, r := range out.Results {
-		if r.URL == "https://sx-only.com" {
-			t.Fatal("included SearXNG result when premium was sufficient")
-		}
+	if len(out.Results) != 1 || out.Results[0].Engine != "brave" {
+		t.Fatalf("results = %+v, want premium-only during cooldown", out.Results)
 	}
 }
 
-func TestShortfallRunsSearxngSecondaryPremiumWinsDedup(t *testing.T) {
+// TestSearxngErrorPremiumStillServes (e): a SearXNG error does not prevent
+// premium from serving the request.
+func TestSearxngErrorPremiumStillServes(t *testing.T) {
+	metrics.Init()
+	sx := &fakeSearxng{err: errors.New("upstream down")}
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "P1", URL: "https://p1.com", Engine: "brave"},
+		{Title: "P2", URL: "https://p2.com", Engine: "brave"},
+	}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 2
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+	beforePremium := outcomeCounter(t, "premium_ok")
+	out, err := p.Search(context.Background(), "sx-error-premium-serves")
+	if err != nil {
+		t.Fatalf("Search error = %v, want premium results", err)
+	}
+	if len(out.Results) != 2 {
+		t.Fatalf("result count = %d, want 2 premium results", len(out.Results))
+	}
+	if got := outcomeCounter(t, "premium_ok") - beforePremium; got != 1 {
+		t.Errorf("premium_ok delta = %v, want 1", got)
+	}
+}
+
+func TestShortfallPremiumOwnsDuplicateURLs(t *testing.T) {
 	shared := "https://shared.com"
 	var sxCalls atomic.Int64
 	sx := &contextSearxng{fn: func(context.Context) (*searxng.Response, error) {
@@ -275,7 +387,7 @@ func TestShortfallRunsSearxngSecondaryPremiumWinsDedup(t *testing.T) {
 		t.Fatalf("Search error = %v", err)
 	}
 	if got := sxCalls.Load(); got == 0 {
-		t.Fatal("SearXNG secondary was not reached on shortfall")
+		t.Fatal("SearXNG stage was not called")
 	}
 	sharedCount := 0
 	sharedEngine := ""
@@ -289,10 +401,10 @@ func TestShortfallRunsSearxngSecondaryPremiumWinsDedup(t *testing.T) {
 		t.Fatalf("shared URL count = %d, want 1", sharedCount)
 	}
 	if sharedEngine != "brave" {
-		t.Fatalf("surviving shared URL engine = %q, want premium (brave) to win dedup", sharedEngine)
+		t.Fatalf("surviving shared URL engine = %q, want premium (brave) to own the output duplicate", sharedEngine)
 	}
 	if len(out.Results) != 2 {
-		t.Fatalf("result count = %d, want 2 (brave + sx-extra)", len(out.Results))
+		t.Fatalf("result count = %d, want 2 (premium shared + sx-extra)", len(out.Results))
 	}
 }
 
@@ -475,7 +587,7 @@ func TestSufficientThresholdUsesDistinctSearxngURLs(t *testing.T) {
 		t.Fatalf("result count = %d, want 3 distinct URLs including T1", len(out.Results))
 	}
 	if out.Results[0].URL != "https://premium-only.com" {
-		t.Errorf("first URL = %q, want T1-first merge order", out.Results[0].URL)
+		t.Errorf("first URL = %q, want premium-first output order", out.Results[0].URL)
 	}
 }
 
@@ -618,7 +730,7 @@ func TestSearchAllFail(t *testing.T) {
 	}
 }
 
-// TestSearchT1Premium — one premium provider runs in the primary stage, then SearXNG supplements the shortfall.
+// TestSearchT1Premium — SearXNG runs first, then one premium provider; both contribute and the output lists the premium result first.
 func TestSearchT1Premium(t *testing.T) {
 	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
 		{Title: "SX", URL: "https://sx1.com", Engine: "wikipedia"},
@@ -649,7 +761,7 @@ func TestSearchT1Premium(t *testing.T) {
 	}
 }
 
-// TestSearchT1PremiumTwo — two premium providers run in the primary stage, then SearXNG supplements.
+// TestSearchT1PremiumTwo — SearXNG runs first, then two premium providers run (still below target); all contribute.
 func TestSearchT1PremiumTwo(t *testing.T) {
 	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
 		{Title: "SX", URL: "https://sx1.com", Engine: "wikipedia"},
@@ -778,8 +890,8 @@ func TestTyped432TripsBreakerInPrimaryPhase(t *testing.T) {
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
-	p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, false, nil)
-	p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, false, nil)
+	p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, nil, 1)
+	p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, nil, 1)
 	if !bm.IsOpen("premium:tavily") {
 		t.Fatal("typed 432 did not open Tavily breaker")
 	}
@@ -795,7 +907,7 @@ func TestTyped432TripsBreakerInPrimaryPhase(t *testing.T) {
 	calls := backend.calls.Load()
 	backend.err = nil
 	backend.results = []backends.SearchResult{{URL: "https://recovered", Engine: "tavily"}}
-	p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, false, nil)
+	p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, nil, 1)
 	if got := backend.calls.Load(); got != calls {
 		t.Fatalf("provider call count while breaker open = %d, want %d", got, calls)
 	}
@@ -986,9 +1098,9 @@ func TestOutcomeLabels_SearxngSufficientOnly(t *testing.T) {
 	}
 }
 
-// TestOutcomeLabels_PremiumDuplicatesSearxng — SearXNG returns results;
-// the premium backend returns ONLY URLs that SearXNG already returned (pure
-// duplicates). Premium contributed nothing new → outcome must be "searxng_ok".
+// TestOutcomeLabels_PremiumDuplicatesSearxng — SearXNG returns results; the
+// premium backend returns the SAME URLs. Premium owns the output duplicates and
+// SearXNG contributes nothing new -> outcome must be "premium_ok".
 func TestOutcomeLabels_PremiumDuplicatesSearxng(t *testing.T) {
 	metrics.Init()
 	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
@@ -996,7 +1108,6 @@ func TestOutcomeLabels_PremiumDuplicatesSearxng(t *testing.T) {
 		{Title: "SX_D2", URL: "https://dup-shared-b.com", Engine: "wikipedia"},
 		{Title: "SX_D3", URL: "https://dup-shared-c.com", Engine: "wikipedia"},
 	}}}
-	// Premium returns ONLY URLs that SearXNG already has.
 	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
 		{Title: "BR_D1", URL: "https://dup-shared-a.com", Content: "d", Engine: "brave"},
 		{Title: "BR_D2", URL: "https://dup-shared-b.com", Content: "d", Engine: "brave"},
@@ -1004,7 +1115,7 @@ func TestOutcomeLabels_PremiumDuplicatesSearxng(t *testing.T) {
 	}}
 	c, _ := cache.New(100, 0)
 	cfg := newCfg()
-	cfg.SufficientMinResults = 10 // force fallback loop to run
+	cfg.SufficientMinResults = 10
 	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
 
 	beforeSxOk := outcomeCounter(t, "searxng_ok")
@@ -1016,63 +1127,51 @@ func TestOutcomeLabels_PremiumDuplicatesSearxng(t *testing.T) {
 		t.Fatalf("Search error = %v", err)
 	}
 
-	afterSxOk := outcomeCounter(t, "searxng_ok")
-	afterSxPlus := outcomeCounter(t, "searxng_plus_premium_ok")
-	afterPremOk := outcomeCounter(t, "premium_ok")
-
-	if delta := afterSxOk - beforeSxOk; delta != 0 {
-		t.Errorf("searxng_ok delta = %v, want 0 (premium ran first and contributed)", delta)
-	}
-	if delta := afterSxPlus - beforeSxPlus; delta != 0 {
-		t.Errorf("searxng_plus_premium_ok delta = %v, want 0", delta)
-	}
-	if delta := afterPremOk - beforePremOk; delta != 1 {
+	if delta := outcomeCounter(t, "premium_ok") - beforePremOk; delta != 1 {
 		t.Errorf("premium_ok delta = %v, want 1 (premium owns the shared URLs)", delta)
+	}
+	if delta := outcomeCounter(t, "searxng_ok") - beforeSxOk; delta != 0 {
+		t.Errorf("searxng_ok delta = %v, want 0", delta)
+	}
+	if delta := outcomeCounter(t, "searxng_plus_premium_ok") - beforeSxPlus; delta != 0 {
+		t.Errorf("searxng_plus_premium_ok delta = %v, want 0", delta)
 	}
 }
 
-// TestOutcomeLabels_SearxngDuplicatesPremium — the premium backend returns
-// results and SearXNG returns ONLY those same URLs. Premium appended them
-// first (T1 path); SearXNG added nothing new → outcome must be "premium_ok".
-func TestOutcomeLabels_SearxngDuplicatesPremium(t *testing.T) {
+// TestOutcomeLabels_SearxngPlusPremiumComposition (f): SearXNG contributes a
+// URL and the premium stage adds a distinct one -> "searxng_plus_premium_ok".
+func TestOutcomeLabels_SearxngPlusPremiumComposition(t *testing.T) {
 	metrics.Init()
-	// SearXNG returns URLs that are all duplicates of premium results.
 	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
-		{Title: "SX_DUP1", URL: "https://dup-prem-a.com", Engine: "wikipedia"},
-		{Title: "SX_DUP2", URL: "https://dup-prem-b.com", Engine: "wikipedia"},
-		{Title: "SX_DUP3", URL: "https://dup-prem-c.com", Engine: "wikipedia"},
+		{Title: "SX", URL: "https://comp-sx.com", Engine: "wikipedia"},
 	}}}
 	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
-		{Title: "BR_DUP1", URL: "https://dup-prem-a.com", Content: "d", Engine: "brave"},
-		{Title: "BR_DUP2", URL: "https://dup-prem-b.com", Content: "d", Engine: "brave"},
-		{Title: "BR_DUP3", URL: "https://dup-prem-c.com", Content: "d", Engine: "brave"},
+		{Title: "BR", URL: "https://comp-brave.com", Content: "d", Engine: "brave"},
 	}}
 	c, _ := cache.New(100, 0)
 	cfg := newCfg()
-	cfg.SufficientMinResults = 10 // force fallback loop
+	cfg.SufficientMinResults = 2
 	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
 
-	beforePremOk := outcomeCounter(t, "premium_ok")
-	beforeSxPlus := outcomeCounter(t, "searxng_plus_premium_ok")
+	beforePlus := outcomeCounter(t, "searxng_plus_premium_ok")
 	beforeSxOk := outcomeCounter(t, "searxng_ok")
+	beforePremOk := outcomeCounter(t, "premium_ok")
 
-	_, err := p.Search(context.Background(), "outcome_dup_prem")
+	out, err := p.Search(context.Background(), "outcome_composition_both")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
 	}
-
-	afterPremOk := outcomeCounter(t, "premium_ok")
-	afterSxPlus := outcomeCounter(t, "searxng_plus_premium_ok")
-	afterSxOk := outcomeCounter(t, "searxng_ok")
-
-	if delta := afterPremOk - beforePremOk; delta != 1 {
-		t.Errorf("premium_ok delta = %v, want 1 (premium contributed)", delta)
+	if len(out.Results) != 2 {
+		t.Fatalf("result count = %d, want 2", len(out.Results))
 	}
-	if delta := afterSxPlus - beforeSxPlus; delta != 0 {
-		t.Errorf("searxng_plus_premium_ok delta = %v, want 0 (SearXNG added nothing new)", delta)
+	if delta := outcomeCounter(t, "searxng_plus_premium_ok") - beforePlus; delta != 1 {
+		t.Errorf("searxng_plus_premium_ok delta = %v, want 1", delta)
 	}
-	if delta := afterSxOk - beforeSxOk; delta != 0 {
+	if delta := outcomeCounter(t, "searxng_ok") - beforeSxOk; delta != 0 {
 		t.Errorf("searxng_ok delta = %v, want 0", delta)
+	}
+	if delta := outcomeCounter(t, "premium_ok") - beforePremOk; delta != 0 {
+		t.Errorf("premium_ok delta = %v, want 0", delta)
 	}
 }
 
@@ -1295,7 +1394,8 @@ func TestSearchDeadlineCancelsPremiumAndReturnsPartialOrError(t *testing.T) {
 				close(canceled)
 				return nil, ctx.Err()
 			}}
-			sx := &contextSearxng{fn: func(ctx context.Context) (*searxng.Response, error) { <-ctx.Done(); return nil, ctx.Err() }}
+			// SearXNG (primary) fails fast so the premium stage owns the budget.
+			sx := &fakeSearxng{err: errors.New("upstream down")}
 			if withResults {
 				fb.fn = func(ctx context.Context) ([]backends.SearchResult, error) {
 					close(started)
@@ -1351,40 +1451,40 @@ func TestCallerCancellationStopsProviderWork(t *testing.T) {
 	cfg := newCfg()
 	cfg.FallbackTimeout = time.Second
 	cfg.SearxngTimeout = time.Second
-	started := make(chan struct{})
-	first := &contextBackend{name: "brave", fn: func(ctx context.Context) ([]backends.SearchResult, error) {
-		close(started)
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}}
-	var secondCalls atomic.Int64
-	second := &contextBackend{name: "exa", fn: func(context.Context) ([]backends.SearchResult, error) { secondCalls.Add(1); return nil, nil }}
-	var sxCalls atomic.Int64
+	// Threshold 1: a SearXNG failure counted for the cancellation would trip the
+	// cooldown immediately, so the assertions below can actually fail.
+	cfg.SearxngFailThreshold = 1
+	// SearXNG is the primary stage, so it is the in-flight call when the caller cancels.
+	sxStarted := make(chan struct{})
 	sxCanceled := make(chan struct{})
+	var sxCalls atomic.Int64
 	sx := &contextSearxng{fn: func(ctx context.Context) (*searxng.Response, error) {
 		sxCalls.Add(1)
+		close(sxStarted)
 		<-ctx.Done()
 		close(sxCanceled)
 		return nil, ctx.Err()
 	}}
-	p := newTestProxy(cfg, sx, c, breaker.New(), first, second)
+	var premiumCalls atomic.Int64
+	first := &contextBackend{name: "brave", fn: func(context.Context) ([]backends.SearchResult, error) {
+		premiumCalls.Add(1)
+		return nil, nil
+	}}
+	p := newTestProxy(cfg, sx, c, breaker.New(), first)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { _, err := p.Search(ctx, "cancel-provider"); done <- err }()
-	<-started
+	<-sxStarted
 	cancel()
 	if err := <-done; err == nil {
 		t.Fatal("expected canceled request error")
 	}
-	if sxCalls.Load() > 0 {
-		select {
-		case <-sxCanceled:
-		default:
-			t.Fatal("in-flight SearXNG work did not observe cancellation")
-		}
+	<-sxCanceled
+	if got := premiumCalls.Load(); got != 0 {
+		t.Fatalf("premium provider started after cancellation: %d", got)
 	}
-	if got := secondCalls.Load(); got != 0 {
-		t.Fatalf("second provider started after cancellation: %d", got)
+	if got := atomic.LoadInt64(&p.sxFails); got != 0 {
+		t.Fatalf("SearXNG failure streak = %d, want 0 (caller cancellation is not a SearXNG failure)", got)
 	}
 	if p.inCooldown() {
 		t.Fatal("caller cancellation tripped SearXNG cooldown")
@@ -1789,8 +1889,8 @@ func TestOutcomeLabels_DeterministicAcrossRepeats(t *testing.T) {
 		{Title: "D3", URL: "https://det-c.com", Engine: "wikipedia"},
 	}
 
-	// --- (i) Premium-first path: premium returns the URLs first and SearXNG's
-	// set is entirely duplicate, so only premium contributes. ---
+	// --- (i) Duplicate path: SearXNG and premium return the same URLs; premium
+	// owns the output duplicates, so only premium contributes -> "premium_ok". ---
 	var firstURLs []string
 	for i := 0; i < iterations; i++ {
 		sx := &fakeSearxng{resp: &searxng.Response{Results: urls}}
@@ -1849,15 +1949,14 @@ func TestOutcomeLabels_DeterministicAcrossRepeats(t *testing.T) {
 		}
 	}
 
-	// --- (ii) Premium-first path: premium returns the URLs first and SearXNG's
-	// set is entirely duplicate, so only premium contributes. ---
+	// --- (ii) Composition path: SearXNG supplies the URLs and premium adds one
+	// new URL (still below target) -> "searxng_plus_premium_ok". ---
 	var firstURLsFB []string
 	for i := 0; i < iterations; i++ {
 		sx := &fakeSearxng{resp: &searxng.Response{Results: urls}}
 		fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
 			{Title: "D1", URL: "https://det-a.com", Content: "d", Engine: "brave"},
-			{Title: "D2", URL: "https://det-b.com", Content: "d", Engine: "brave"},
-			{Title: "D3", URL: "https://det-c.com", Content: "d", Engine: "brave"},
+			{Title: "D4", URL: "https://det-d.com", Content: "d", Engine: "brave"},
 		}}
 		c, _ := cache.New(100, 0)
 		cfg := newCfg()
@@ -1881,11 +1980,11 @@ func TestOutcomeLabels_DeterministicAcrossRepeats(t *testing.T) {
 		if delta := afterSxOk - beforeSxOk; delta != 0 {
 			t.Errorf("FB iter %d: searxng_ok delta = %v, want 0", i, delta)
 		}
-		if delta := afterPrem - beforePrem; delta != 1 {
-			t.Errorf("FB iter %d: premium_ok delta = %v, want 1", i, delta)
+		if delta := afterPrem - beforePrem; delta != 0 {
+			t.Errorf("FB iter %d: premium_ok delta = %v, want 0", i, delta)
 		}
-		if delta := afterSxPlus - beforeSxPlus; delta != 0 {
-			t.Errorf("FB iter %d: searxng_plus_premium_ok delta = %v, want 0", i, delta)
+		if delta := afterSxPlus - beforeSxPlus; delta != 1 {
+			t.Errorf("FB iter %d: searxng_plus_premium_ok delta = %v, want 1", i, delta)
 		}
 
 		// Record URL order for determinism check.
@@ -2276,4 +2375,276 @@ func TestProviderAttemptsOneOutcomeAndSkips(t *testing.T) {
 		map[string]string{"engine": "premium:jina"}); got != 2 {
 		t.Fatalf("initialisation reset an open breaker to %v, want 2", got)
 	}
+}
+
+// TestEligibilitySeededOnSearxngOnlyRequest: when SearXNG meets the target the
+// premium stage makes only its single forced call, yet the eligibility gauge of
+// a configured provider must still be refreshed (eligible=1) and an unconfigured
+// provider's missing_key skip must be counted EXACTLY once per uncached request.
+// Seeding runs once per uncached request before the SearXNG stage, so doubled
+// seeding (delta 2 after one request) fails here.
+func TestEligibilitySeededOnSearxngOnlyRequest(t *testing.T) {
+	metrics.Init()
+	metrics.SetProviderEligibility("serper", func() string { return "missing_key" })
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
+		{Title: "SX1", URL: "https://elig-sx1.com", Engine: "wikipedia"},
+		{Title: "SX2", URL: "https://elig-sx2.com", Engine: "wikipedia"},
+	}}}
+	forced := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "P", URL: "https://elig-premium.com", Engine: "brave"},
+	}}
+	untouched := &fakeBackend{name: "serper", avail: true, results: []backends.SearchResult{
+		{Title: "S", URL: "https://elig-serper.com", Engine: "serper"},
+	}}
+	unconfigured := &fakeBackend{name: "tavily", avail: false}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 2
+	p := newTestProxy(cfg, sx, c, breaker.New(), forced, untouched, unconfigured)
+	skipLabels := map[string]string{"provider": "tavily", "reason": "missing_key"}
+	serperEligible := map[string]string{"provider": "serper", "reason": "eligible"}
+
+	before := counterValueForLabels(t, "searxng_gateway_provider_skips_total", skipLabels)
+	for i := 1; i <= 2; i++ {
+		if _, err := p.Search(context.Background(), fmt.Sprintf("eligibility-searxng-only-%d", i)); err != nil {
+			t.Fatalf("Search %d error = %v", i, err)
+		}
+		if got := counterValueForLabels(t, "searxng_gateway_provider_skips_total", skipLabels) - before; got != float64(i) {
+			t.Fatalf("after %d uncached request(s): tavily missing_key skips delta = %v, want exactly %d (once per request)", i, got, i)
+		}
+		if i == 1 {
+			// Request 1's single forced call goes to brave (round-robin index 0), so
+			// serper is untouched and its gauge can only have been flipped by seeding.
+			if got := gaugeValueForLabels(t, "searxng_gateway_provider_eligibility", serperEligible); got != 1 {
+				t.Fatalf("serper eligible gauge after request 1 = %v, want 1 from per-request seeding", got)
+			}
+		}
+	}
+	// Round-robin rotates across requests, so the forced call may land on either
+	// premium provider; the invariant is exactly one admitted call per request.
+	if got := forced.calls.Load() + untouched.calls.Load(); got != 2 {
+		t.Fatalf("premium calls over 2 requests = %d, want exactly 2 (one admitted call each)", got)
+	}
+}
+
+// TestEligibilitySeededWhenPremiumStageNeverRuns: seeding happens before any
+// stage, so it is counted even when SearXNG consumes the whole request budget
+// and the premium stage never starts. Seeding inside the premium loop would
+// leave this delta at 0.
+func TestEligibilitySeededWhenPremiumStageNeverRuns(t *testing.T) {
+	metrics.Init()
+	sx := &contextSearxng{fn: func(ctx context.Context) (*searxng.Response, error) { <-ctx.Done(); return nil, ctx.Err() }}
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{{Title: "P", URL: "https://never.com", Engine: "brave"}}}
+	unconfigured := &fakeBackend{name: "tavily", avail: false}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.FallbackTimeout = 40 * time.Millisecond
+	cfg.SearxngTimeout = time.Second // capped to the remaining parent budget
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb, unconfigured)
+	skipLabels := map[string]string{"provider": "tavily", "reason": "missing_key"}
+	before := counterValueForLabels(t, "searxng_gateway_provider_skips_total", skipLabels)
+	if _, err := p.Search(context.Background(), "eligibility-premium-never-runs"); err == nil {
+		t.Fatal("expected an error: SearXNG consumed the whole budget")
+	}
+	if got := fb.calls.Load(); got != 0 {
+		t.Fatalf("premium calls = %d, want 0 (budget exhausted before the premium stage)", got)
+	}
+	if got := counterValueForLabels(t, "searxng_gateway_provider_skips_total", skipLabels) - before; got != 1 {
+		t.Fatalf("tavily missing_key skips delta = %v, want exactly 1 even though premium never ran", got)
+	}
+}
+
+// sufficientSearxng returns a fake SearXNG that alone meets a target of 2.
+func sufficientSearxng() *fakeSearxng {
+	return &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
+		{Title: "SX1", URL: "https://forced-sx1.com", Engine: "wikipedia"},
+		{Title: "SX2", URL: "https://forced-sx2.com", Engine: "wikipedia"},
+	}}}
+}
+
+// TestForcedPremiumCallFailureDoesNotTriggerSecondCall: SearXNG met the target
+// and the one forced premium call errors -> stop, no second provider.
+func TestForcedPremiumCallFailureDoesNotTriggerSecondCall(t *testing.T) {
+	metrics.Init()
+	first := &fakeBackend{name: "brave", avail: true, err: errors.New("upstream failure")}
+	second := &fakeBackend{name: "exa", avail: true, results: []backends.SearchResult{{Title: "E", URL: "https://forced-e.com", Engine: "exa"}}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 2
+	p := newTestProxy(cfg, sufficientSearxng(), c, breaker.New(), first, second)
+	out, err := p.Search(context.Background(), "forced-call-error")
+	if err != nil {
+		t.Fatalf("Search error = %v, want SearXNG results served", err)
+	}
+	if got := first.calls.Load(); got != 1 {
+		t.Fatalf("first provider calls = %d, want 1", got)
+	}
+	if got := second.calls.Load(); got != 0 {
+		t.Fatalf("second provider calls = %d, want 0 after a failed forced call", got)
+	}
+	if len(out.Results) != 2 {
+		t.Fatalf("result count = %d, want 2 SearXNG results", len(out.Results))
+	}
+}
+
+// TestForcedPremiumCallEmptyDoesNotTriggerSecondCall: same as above, but the
+// forced premium call returns an empty result set.
+func TestForcedPremiumCallEmptyDoesNotTriggerSecondCall(t *testing.T) {
+	metrics.Init()
+	first := &fakeBackend{name: "brave", avail: true, results: nil}
+	second := &fakeBackend{name: "exa", avail: true, results: []backends.SearchResult{{Title: "E", URL: "https://forced-e2.com", Engine: "exa"}}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 2
+	p := newTestProxy(cfg, sufficientSearxng(), c, breaker.New(), first, second)
+	out, err := p.Search(context.Background(), "forced-call-empty")
+	if err != nil {
+		t.Fatalf("Search error = %v, want SearXNG results served", err)
+	}
+	if got := first.calls.Load(); got != 1 {
+		t.Fatalf("first provider calls = %d, want 1", got)
+	}
+	if got := second.calls.Load(); got != 0 {
+		t.Fatalf("second provider calls = %d, want 0 after an empty forced call", got)
+	}
+	if len(out.Results) != 2 {
+		t.Fatalf("result count = %d, want 2 SearXNG results", len(out.Results))
+	}
+}
+
+// TestSkippedProviderDoesNotCountAsForcedCall: a provider that is skipped AFTER
+// selection (open breaker; admission refused) is not an admitted call, so the
+// round-robin moves to the next provider and exactly one admitted call happens.
+// (An unconfigured provider cannot reach this branch: NextAvailable filters it
+// out before selection; its missing_key accounting is pinned in
+// TestEligibilitySeededOnSearxngOnlyRequest.)
+func TestSkippedProviderDoesNotCountAsForcedCall(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// prep readies the "premium:brave" breaker and returns a cleanup.
+		prep func(t *testing.T, bm *breaker.Manager) (cleanup func())
+	}{
+		// IsOpen(id) is true: skipped before admission.
+		{"breaker_open", func(t *testing.T, bm *breaker.Manager) func() {
+			for i := 0; i < 2; i++ {
+				_, _ = bm.Execute("premium:brave", func() (interface{}, error) { return nil, errors.New("fault") })
+			}
+			if !bm.IsOpen("premium:brave") {
+				t.Fatal("precondition: expected the brave breaker to be open")
+			}
+			return func() {}
+		}},
+		// Half-open with its single probe slot held: IsOpen is false, so the
+		// provider is selected and sent to admission, which refuses it
+		// (admitted==false): skipped AFTER selection and admission.
+		{"admission_refused", func(t *testing.T, bm *breaker.Manager) func() {
+			for i := 0; i < 2; i++ {
+				_, _ = bm.Execute("premium:brave", func() (interface{}, error) { return nil, errors.New("fault") })
+			}
+			deadline := time.Now().Add(time.Second)
+			for bm.State("premium:brave") != gobreaker.StateHalfOpen && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			if bm.State("premium:brave") != gobreaker.StateHalfOpen {
+				t.Fatal("precondition: breaker did not enter half-open")
+			}
+			held := make(chan struct{})
+			release := make(chan struct{})
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				_, _ = bm.Execute("premium:brave", func() (interface{}, error) {
+					close(held)
+					<-release
+					return nil, nil
+				})
+			}()
+			<-held
+			if bm.IsOpen("premium:brave") {
+				t.Fatal("precondition: half-open breaker must not report open")
+			}
+			return func() { close(release); <-done }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			metrics.Init()
+			first := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{{Title: "B", URL: "https://skip-b.com", Engine: "brave"}}}
+			second := &fakeBackend{name: "exa", avail: true, results: []backends.SearchResult{{Title: "E", URL: "https://skip-e.com", Engine: "exa"}}}
+			third := &fakeBackend{name: "serper", avail: true, results: []backends.SearchResult{{Title: "S", URL: "https://skip-s.com", Engine: "serper"}}}
+			bm := breaker.NewWithSettings(func(engine string) breaker.EngineSettings {
+				return breaker.EngineSettings{Name: engine, MaxRequests: 1, Timeout: 30 * time.Millisecond}
+			})
+			if tc.name == "breaker_open" {
+				// Keep the breaker open for the whole request.
+				bm = breaker.New()
+			}
+			cleanup := tc.prep(t, bm)
+			defer cleanup()
+			c, _ := cache.New(100, 0)
+			cfg := newCfg()
+			cfg.SufficientMinResults = 2
+			p := newTestProxy(cfg, sufficientSearxng(), c, bm, first, second, third)
+			beforeSkips := counterValueForLabels(t, "searxng_gateway_provider_skips_total",
+				map[string]string{"provider": "brave", "reason": "breaker_open"})
+			if _, err := p.Search(context.Background(), "skipped-"+tc.name); err != nil {
+				t.Fatalf("Search error = %v", err)
+			}
+			if got := first.calls.Load(); got != 0 {
+				t.Fatalf("skipped provider calls = %d, want 0", got)
+			}
+			if delta := counterValueForLabels(t, "searxng_gateway_provider_skips_total",
+				map[string]string{"provider": "brave", "reason": "breaker_open"}) - beforeSkips; delta != 1 {
+				t.Fatalf("brave breaker_open skip delta = %v, want 1 (the skip branch must be exercised)", delta)
+			}
+			// Round-robin picks the next non-skipped provider; which of the two
+			// remaining is chosen depends on the rotating index, so assert the
+			// invariant: exactly one admitted call across them.
+			if got := second.calls.Load() + third.calls.Load(); got != 1 {
+				t.Fatalf("admitted calls after the skipped provider = %d, want exactly 1", got)
+			}
+		})
+	}
+}
+
+// TestOutputOrderingPremiumFirst: premium results come first in arrival order,
+// then SearXNG results; a URL both stages returned appears once, at the premium
+// position.
+func TestOutputOrderingPremiumFirst(t *testing.T) {
+	metrics.Init()
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
+		{Title: "SX-shared", URL: "https://order-shared.com", Engine: "wikipedia"},
+		{Title: "SX-only", URL: "https://order-sx-only.com", Engine: "wikipedia"},
+	}}}
+	fb := &fakeBackend{name: "brave", avail: true, results: []backends.SearchResult{
+		{Title: "P1", URL: "https://order-p1.com", Engine: "brave"},
+		{Title: "P-shared", URL: "https://order-shared.com", Engine: "brave"},
+	}}
+	c, _ := cache.New(100, 0)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 3
+	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+	out, err := p.Search(context.Background(), "ordering-premium-first")
+	if err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+	want := []string{"https://order-p1.com", "https://order-shared.com", "https://order-sx-only.com"}
+	if len(out.Results) != len(want) {
+		t.Fatalf("result count = %d, want %d", len(out.Results), len(want))
+	}
+	for i, u := range want {
+		if out.Results[i].URL != u {
+			t.Fatalf("result[%d] = %q, want %q (full order %v)", i, out.Results[i].URL, u, resultURLs(out.Results))
+		}
+	}
+	if out.Results[1].Engine != "brave" {
+		t.Fatalf("shared URL engine = %q, want premium (brave) at the premium position", out.Results[1].Engine)
+	}
+}
+
+func resultURLs(rs []searxng.Result) []string {
+	urls := make([]string, len(rs))
+	for i, r := range rs {
+		urls[i] = r.URL
+	}
+	return urls
 }

@@ -11,7 +11,7 @@ Proxy HTTP davanti a SearXNG: forward a SearXNG, fallback a provider esterni (Br
 ## Architettura
 
 ```
-cmd/gateway/main.go → internal/proxy/proxy.go (premium-first premiumLoop + bounded SearXNG secondary)
+cmd/gateway/main.go → internal/proxy/proxy.go (SearXNG-first bounded stage, then premiumLoop with a guaranteed minimum of one admitted call; premium-first output order)
                         → internal/breaker/breaker.go (circuit breaker per engine, isClientError gate)
                         → internal/quota/ (Brave quota tracking)
                         → backends/manager.go (GetAvailable, NextAvailable — round-robin atomico)
