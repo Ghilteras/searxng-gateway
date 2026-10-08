@@ -31,7 +31,7 @@ func ConfiguredPool(timeout time.Duration) ([]SearchBackend, []string, error) {
 	return all, enrolled, nil
 }
 
-// Supported names: brave, tavily, exa, jina, bing, parallel, serper.
+// Supported names: brave, tavily, exa, parallel, serper.
 func NewFromEnv(name string, timeout time.Duration) (SearchBackend, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	apiKey := os.Getenv(strings.ToUpper(name) + "_API_KEY")
@@ -60,19 +60,6 @@ func NewFromEnv(name string, timeout time.Duration) (SearchBackend, error) {
 		numResults := 10
 		// NewExaBackend signature: (mode, apiKey, timeout, mcpURL, mcpTool, numResults)
 		return NewExaBackend(mode, apiKey, timeout, mcpURL, mcpTool, numResults), nil
-	case "jina":
-		if timeout == 0 {
-			timeout = 30 * time.Second
-		}
-		allowKeyless := os.Getenv("JINA_ALLOW_KEYLESS") != "false"
-		baseURL := os.Getenv("JINA_BASE_URL")
-		return NewJinaBackend(apiKey, timeout, allowKeyless, baseURL), nil
-	case "bing":
-		if timeout == 0 {
-			timeout = 10 * time.Second
-		}
-		// NewBingBackend is keyless — takes only timeout
-		return NewBingBackend(timeout), nil
 	case "parallel":
 		if timeout == 0 {
 			timeout = 15 * time.Second
@@ -84,6 +71,6 @@ func NewFromEnv(name string, timeout time.Duration) (SearchBackend, error) {
 		}
 		return NewSerperBackend(apiKey, timeout), nil
 	default:
-		return nil, fmt.Errorf("unknown backend: %q (available: brave, tavily, exa, jina, bing, parallel, serper)", name)
+		return nil, fmt.Errorf("unknown backend: %q (available: brave, tavily, exa, parallel, serper)", name)
 	}
 }

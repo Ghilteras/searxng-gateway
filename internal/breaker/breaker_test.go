@@ -61,15 +61,22 @@ func TestExecuteRealAdmissionCooldownProbeRecoveryAndReopen(t *testing.T) {
 		calls.Add(1)
 		return nil, providerFailure
 	})
+	if !errors.Is(err, providerFailure) || m.State("premium:tavily") != gobreaker.StateClosed {
+		t.Fatalf("first provider fault: err=%v state=%v, want closed", err, m.State("premium:tavily"))
+	}
+	_, err = m.Execute("premium:tavily", func() (interface{}, error) {
+		calls.Add(1)
+		return nil, providerFailure
+	})
 	if !errors.Is(err, providerFailure) || m.State("premium:tavily") != gobreaker.StateOpen {
-		t.Fatalf("first provider fault: err=%v state=%v, want open", err, m.State("premium:tavily"))
+		t.Fatalf("second consecutive provider fault: err=%v state=%v, want open", err, m.State("premium:tavily"))
 	}
 	_, err = m.Execute("premium:tavily", func() (interface{}, error) {
 		calls.Add(1)
 		return "unexpected", nil
 	})
-	if !errors.Is(err, gobreaker.ErrOpenState) || calls.Load() != 1 {
-		t.Fatalf("open breaker admission: err=%v calls=%d, want ErrOpenState and 1 call", err, calls.Load())
+	if !errors.Is(err, gobreaker.ErrOpenState) || calls.Load() != 2 {
+		t.Fatalf("open breaker admission: err=%v calls=%d, want ErrOpenState and 2 calls", err, calls.Load())
 	}
 
 	// Wait for the configured cooldown, then race several callers. Exactly one
@@ -132,8 +139,15 @@ func TestExecuteRealAdmissionCooldownProbeRecoveryAndReopen(t *testing.T) {
 		calls.Add(1)
 		return nil, providerFailure
 	})
+	if !errors.Is(err, providerFailure) || m.State("premium:tavily") != gobreaker.StateClosed {
+		t.Fatalf("first genuine fault after recovery: err=%v state=%v, want closed", err, m.State("premium:tavily"))
+	}
+	_, err = m.Execute("premium:tavily", func() (interface{}, error) {
+		calls.Add(1)
+		return nil, providerFailure
+	})
 	if !errors.Is(err, providerFailure) || m.State("premium:tavily") != gobreaker.StateOpen {
-		t.Fatalf("second genuine fault: err=%v state=%v, want reopened", err, m.State("premium:tavily"))
+		t.Fatalf("second consecutive fault after recovery: err=%v state=%v, want reopened", err, m.State("premium:tavily"))
 	}
 	deadline = time.Now().Add(time.Second)
 	for m.State("premium:tavily") != gobreaker.StateHalfOpen && time.Now().Before(deadline) {

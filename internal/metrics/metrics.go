@@ -191,24 +191,6 @@ var (
 		},
 		[]string{"period"},
 	)
-
-	// SerperSearchesRemaining tracks the remaining Serper API searches this month.
-	SerperSearchesRemaining = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "searxng_gateway_serper_searches_remaining",
-			Help: "Serper API searches remaining this month",
-		},
-		[]string{"period"},
-	)
-
-	// SerperSearchesLimit tracks the Serper API searches limit this month.
-	SerperSearchesLimit = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "searxng_gateway_serper_searches_limit",
-			Help: "Serper API searches limit this month",
-		},
-		[]string{"period"},
-	)
 )
 
 var durationBuckets = []float64{1, 2, 3, 4, 5, 8, 10, 15, 20, 30}
@@ -266,6 +248,6 @@ var initOnce sync.Once
 // It is safe to call multiple times — subsequent calls are no-ops.
 func Init() {
 	initOnce.Do(func() {
-		prometheus.MustRegister(RequestsTotal, RequestDuration, SearxngStageDuration, SearchRequestDuration, SearxngFailureStreak, SearxngCooldownUntilSeconds, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveRateLimitRemaining, BraveRateLimitLimit, BraveRateLimitResetSeconds, SerperSearchesRemaining, SerperSearchesLimit, ProviderAttemptsTotal, ProviderSkipsTotal, ProviderEligibility)
+		prometheus.MustRegister(RequestsTotal, RequestDuration, SearxngStageDuration, SearchRequestDuration, SearxngFailureStreak, SearxngCooldownUntilSeconds, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveRateLimitRemaining, BraveRateLimitLimit, BraveRateLimitResetSeconds, ProviderAttemptsTotal, ProviderSkipsTotal, ProviderEligibility)
 	})
 }

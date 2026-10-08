@@ -254,8 +254,8 @@ func (m *Manager) getBreaker(engine string) *gobreaker.CircuitBreaker {
 		Timeout:      settings.Timeout,
 		IsSuccessful: isSuccessful,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			// Trip on the FIRST genuine provider failure.
-			return counts.ConsecutiveFailures >= 1
+			// Require two consecutive genuine provider failures before tripping.
+			return counts.ConsecutiveFailures >= 2
 		},
 		OnStateChange: func(name string, from, to gobreaker.State) {
 			breakerState.WithLabelValues(name).Set(stateFloat(to))

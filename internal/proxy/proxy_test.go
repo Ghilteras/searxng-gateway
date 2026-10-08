@@ -779,6 +779,7 @@ func TestTyped432TripsBreakerInPrimaryPhase(t *testing.T) {
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
 	p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, false, nil)
+	p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, false, nil)
 	if !bm.IsOpen("premium:tavily") {
 		t.Fatal("typed 432 did not open Tavily breaker")
 	}
@@ -1928,6 +1929,7 @@ func TestOpenBreakerExcludesProviderFromRoundRobin(t *testing.T) {
 
 	p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, bm, tavily, brave)
 	_, _ = p.Search(context.Background(), "trip-tavily-with-network-fault")
+	_, _ = p.Search(context.Background(), "trip-tavily-with-network-fault-again")
 	if !bm.IsOpen("premium:tavily") {
 		t.Fatal("real network fault did not open Tavily breaker")
 	}
@@ -1983,6 +1985,7 @@ func TestCreditsExhaustedResponseTripsBreaker(t *testing.T) {
 			p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, bm, backend)
 
 			_, _ = p.Search(context.Background(), "credits-exhausted-"+tc.name)
+			_, _ = p.Search(context.Background(), "credits-exhausted-"+tc.name+"-again")
 			if !bm.IsOpen("premium:parallel") {
 				t.Fatal("credits-exhausted response did not trip the Parallel breaker")
 			}
@@ -1995,8 +1998,8 @@ func TestCreditsExhaustedResponseTripsBreaker(t *testing.T) {
 				t.Fatalf("eligibility immediately after quota trip = %v, want breaker_open one-hot", got)
 			}
 			if delta := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
-				map[string]string{"provider": "parallel", "phase": "primary", "outcome": "quota"}) - beforeQuota; delta != 1 {
-				t.Fatalf("quota outcome delta = %v, want 1", delta)
+				map[string]string{"provider": "parallel", "phase": "primary", "outcome": "quota"}) - beforeQuota; delta != 2 {
+				t.Fatalf("quota outcome delta = %v, want 2 consecutive failures", delta)
 			}
 			calls := backend.calls.Load()
 			_, _ = p.Search(context.Background(), "credits-exhausted-"+tc.name+"-again")
@@ -2113,10 +2116,10 @@ func TestProxyHalfOpenAdmitsSingleRealSearchUnderConcurrency(t *testing.T) {
 	probeRelease := make(chan struct{})
 	backend := &contextBackend{name: "brave", fn: func(context.Context) ([]backends.SearchResult, error) {
 		invocation := calls.Add(1)
-		if invocation == 1 {
+		if invocation <= 2 {
 			return nil, &backends.BackendError{Backend: "brave", Code: backends.ErrCodeNetwork, Err: errors.New("connection refused")}
 		}
-		if invocation == 2 {
+		if invocation == 3 {
 			close(probeStarted)
 			<-probeRelease
 		}
@@ -2131,6 +2134,7 @@ func TestProxyHalfOpenAdmitsSingleRealSearchUnderConcurrency(t *testing.T) {
 	sx := &fakeSearxng{resp: &searxng.Response{}}
 	p := newTestProxy(cfg, sx, c, bm, backend)
 	_, _ = p.Search(context.Background(), "prime-breaker-open")
+	_, _ = p.Search(context.Background(), "prime-breaker-open-again")
 	if !bm.IsOpen("premium:brave") {
 		t.Fatal("initial network fault did not open breaker")
 	}
@@ -2178,14 +2182,14 @@ func TestProxyHalfOpenAdmitsSingleRealSearchUnderConcurrency(t *testing.T) {
 			t.Fatal("concurrent requests did not all receive breaker_open skips")
 		}
 	}
-	if got := calls.Load(); got != 2 {
+	if got := calls.Load(); got != 3 {
 		close(probeRelease)
-		t.Fatalf("provider Search invocations while probe held = %d, want initial fault + one probe", got)
+		t.Fatalf("provider Search invocations while probe held = %d, want two initial failures + one probe", got)
 	}
 	close(probeRelease)
 	wg.Wait()
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("provider Search invocations = %d, want exactly 2", got)
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("provider Search invocations = %d, want exactly 3", got)
 	}
 	if delta := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
 		map[string]string{"provider": "brave", "phase": "canary", "outcome": "success"}) - beforeCanary; delta != 1 {
@@ -2206,8 +2210,8 @@ func TestProxyHalfOpenAdmitsSingleRealSearchUnderConcurrency(t *testing.T) {
 	if _, err := p.Search(context.Background(), "call-after-probe-recovery"); err != nil {
 		t.Fatalf("subsequent request after recovered probe: %v", err)
 	}
-	if got := calls.Load(); got != 3 {
-		t.Fatalf("provider Search calls after recovered probe = %d, want 3 (initial fault, probe, subsequent request)", got)
+	if got := calls.Load(); got != 4 {
+		t.Fatalf("provider Search calls after recovered probe = %d, want 4 (two initial faults, probe, subsequent request)", got)
 	}
 }
 
@@ -2257,6 +2261,7 @@ func TestProviderAttemptsOneOutcomeAndSkips(t *testing.T) {
 	cfg2.SufficientMinResults = 5
 	p2 := newTestProxy(cfg2, &fakeSearxng{resp: &searxng.Response{}}, c, bm, faulty)
 	_, _ = p2.Search(context.Background(), "init-open-breaker")
+	_, _ = p2.Search(context.Background(), "init-open-breaker-consecutive")
 	if !bm.IsOpen("premium:jina") {
 		t.Fatal("auth failure did not open the jina breaker")
 	}
