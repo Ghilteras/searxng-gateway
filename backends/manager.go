@@ -9,7 +9,6 @@ import (
 
 // Manager coordinates search across multiple backends with fallback support
 type Manager struct {
-	primary   SearchBackend
 	fallbacks []SearchBackend
 	registry  map[string]SearchBackend
 	// Round-robin index for NextAvailable — advances atomically across calls.
