@@ -156,8 +156,15 @@ groups:
 | `SEARXNG_BACKEND_URL` | `http://searxng-primary:8080` | no | SearXNG instance URL |
 | `BRAVE_API_KEY` | — | no | Brave Search API key |
 | `EXA_API_KEY` | — | no | Exa Search API key |
-| `JINA_API_KEY` | — | no | Jina Search API key |
+| `EXA_MODE` | `auto` | no | Select Exa `api`, `mcp`, or `auto` (API first, MCP fallback) |
+| `EXA_MCP_URL` | — | no | Exa MCP HTTP endpoint; enables MCP mode or fallback |
+| `EXA_MCP_TOOL` | `exa-web-search` | no | MCP tool name used for Exa searches |
+| `PARALLEL_API_KEY` | — | no | Parallel Search API key |
+| `SERPER_API_KEY` | — | no | Serper API key for the SearXNG Serper engine |
 | `TAVILY_API_KEY` | — | no | Tavily Search API key |
+| `TAVILY_SEARCH_DEPTH` | `basic` | no | Tavily search depth (`basic` or `advanced`) |
+| `TAVILY_INCLUDE_RAW_CONTENT` | `false` | no | Request full page content inline when `true` |
+| `TAVILY_INCLUDE_ANSWER` | `false` | no | Request Tavily's direct answer when `true` |
 | `SUFFICIENT_MIN_RESULTS` | `1` | no | Target distinct-URL result count; loop stops when reached (recommend 10 with premiums) |
 | `FALLBACK_TIMEOUT_SECONDS` | `8` | no | Hard total request budget: the premium-first stage plus the bounded SearXNG secondary; accumulated nonempty results are returned at the deadline |
 | `SEARXNG_TIMEOUT_SECONDS` | `3` | no | Total SearXNG stage budget shared by the HTTP request and all retries/backoff; the stage is cancelled when it expires. A stage expiry while the parent request budget is still alive counts as a SearXNG failure; a parent-budget expiry or caller cancellation does not |
@@ -174,7 +181,7 @@ groups:
 | `OTEL_RESOURCE_ATTRIBUTES` | *(empty)* | no | Extra standard resource attributes, e.g. `deployment.environment=homelab` |
 | `CACHE_SIZE` | `1000` | no | LRU cache entries (in-memory) |
 | `CACHE_TTL_SECONDS` | `3600` | no | Cache entry TTL (seconds) |
-| `LOG_LEVEL` | `info` | no | Log level (debug, info, warn, error) |
+| `LOG_LEVEL` | `info` | no | Application log level |
 | `METRICS_PATH` | `/metrics` | no | Prometheus metrics endpoint path |
 
 ### Adding a new provider

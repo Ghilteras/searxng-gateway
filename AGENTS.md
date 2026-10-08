@@ -2,7 +2,7 @@
 
 Proxy HTTP davanti a SearXNG: forward a SearXNG, fallback a provider esterni (Brave, Exa, Tavily, Jina) quando i risultati sono insufficienti. Circuit breaker per engine bloccati, metriche Prometheus, cache, quota tracking.
 
-- **Linguaggio**: Go 1.23+
+- **Linguaggio**: Go 1.25.0
 - **Build**: automatica via GitHub Actions su push main e tag `v*` — `.github/workflows/build.yml` (`docker/build-push-action@v6`, platforms `linux/amd64,linux/arm64`, cache gha, push su GHCR). NIENTE build locale multi-arch: il builder buildx `multiarch` è stato rimosso dal homelab (2026-08-04).
 - **Test**: `go test ./...`
 - **Lint**: `golangci-lint run`
@@ -11,12 +11,12 @@ Proxy HTTP davanti a SearXNG: forward a SearXNG, fallback a provider esterni (Br
 ## Architettura
 
 ```
-main.go → cmd/serve.go → internal/proxy/proxy.go (premium-first premiumLoop + bounded SearXNG secondary)
+cmd/gateway/main.go → internal/proxy/proxy.go (premium-first premiumLoop + bounded SearXNG secondary)
                         → internal/breaker/breaker.go (circuit breaker per engine, isClientError gate)
                         → internal/quota/ (Brave quota tracking)
                         → backends/manager.go (GetAvailable, NextAvailable — round-robin atomico)
                         → backends/ (provider esterni: brave.go, exa.go, tavily.go, jina.go)
-                        → history.go, search.go, cache (golang-lru/v2 in-memory, TTL da CACHE_TTL_SECONDS)
+                        → internal/cache/cache.go (golang-lru/v2 in-memory, TTL da CACHE_TTL_SECONDS)
 ```
 
 ## Aggiungere un nuovo backend

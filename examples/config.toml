@@ -3,11 +3,11 @@
 # sx configuration file
 # Copy to $XDG_CONFIG_HOME/sx/config.toml (typically ~/.config/sx/config.toml)
 
-# Primary search engine (searxng, exa, jina, brave, tavily)
+# Primary search engine (searxng, exa, brave, tavily)
 engine = "searxng"
 
 # Fallback engines tried in order if primary fails
-fallback_engines = ["exa", "jina", "brave", "tavily"]
+fallback_engines = ["exa", "brave", "tavily"]
 
 # Primary SearXNG instance URL (required when engine = "searxng")
 searxng_url = "https://searxng.example.com"
@@ -81,14 +81,6 @@ mcp_url = ""                  # optional MCP endpoint URL (e.g. https://mcp.exa.
 mcp_tool = "exa-web-search"   # MCP tool to call
 num_results = 10
 
-# Jina Search (keyless or API key)
-[engines_jina]
-api_key = ""                  # optional, or set JINA_API_KEY env var
-allow_keyless = true
-base_url = "https://s.jina.ai"
-
-# Brave Search API (https://api.search.brave.com/)
-# Free tier: 2,000 requests/month
 [engines_brave]
 api_key = ""                  # optional, or set BRAVE_API_KEY env var
 

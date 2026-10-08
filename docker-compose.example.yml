@@ -5,7 +5,7 @@
 #   BRAVE_API_KEY   — Brave Search API key (free tier: $5 credit = 1000 queries/month)
 #   SERPER_API_KEY  — Serper.dev API key (free tier: 2,500 queries/month, optional)
 #
-# Keyless mode: omitting both keys works — the gateway falls back to Tier 2 engines only.
+# Keyless mode: omitting both keys works — the gateway uses its configured fallback backends.
 #
 # SearXNG settings are mounted as an explicit file (not a directory) so the
 # container can create required runtime files alongside the config.
@@ -40,13 +40,18 @@ services:
       - BRAVE_API_KEY=${BRAVE_API_KEY:-}
       - SERPER_API_KEY=${SERPER_API_KEY:-}
       - LISTEN_ADDR=:8080
-      - SUFFICIENT_MIN_RESULTS=25
+      - SUFFICIENT_MIN_RESULTS=10 # distinct-URL target for the premium stage (code default is 1; homelab stack runs 15)
       - CACHE_SIZE=1000
       - CACHE_TTL_SECONDS=3600
       - LOG_LEVEL=info
       - METRICS_PATH=/metrics
     depends_on:
       - searxng
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/metrics || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     deploy:
       resources:
         limits:

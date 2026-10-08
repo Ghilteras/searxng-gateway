@@ -67,7 +67,6 @@ The primary premium pool is derived from configured `<NAME>_API_KEY` variables; 
 | Parallel | `parallel` | `PARALLEL_API_KEY` | No | Auto-enrolled when key is configured |
 | Tavily | `tavily` | `TAVILY_API_KEY` | No | `TAVILY_SEARCH_DEPTH=basic\|advanced` |
 | Serper | `serper` | `SERPER_API_KEY` | No | Homepage example; docs page returned 404; free-query recurrence unverified |
-| Bing (HTML scrape) | `bing` | — | Yes | Parses Bing HTML; bot-challenge detection |
 | Brave Web (HTML scrape) | `brave-web` | — | Yes | Parses Brave Search HTML |
 | SearXNG instance | `searxng` | — | Yes | For multi-instance or remote SearXNG backends |
 
