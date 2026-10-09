@@ -1,0 +1,21 @@
+# Lefthook config (https://lefthook.dev/configuration/)
+# main-guard parity with homelab-config: blocks commits/merges on main and raw pushes to main.
+# Bypass: forbidden (no --no-verify / LEFTHOOK=0); closeout goes through the sanctioned landing boundary.
+
+min-version: 2.1.10
+
+pre-commit:
+  commands:
+    main-guard:
+      run: bash scripts/main-guard.sh
+
+pre-merge-commit:
+  commands:
+    main-guard:
+      run: bash scripts/main-guard.sh
+
+pre-push:
+  commands:
+    main-guard:
+      use_stdin: true
+      run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR bash scripts/main-guard.sh pre-push
