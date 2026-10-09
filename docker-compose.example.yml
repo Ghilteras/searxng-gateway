@@ -40,7 +40,7 @@ services:
       - BRAVE_API_KEY=${BRAVE_API_KEY:-}
       - SERPER_API_KEY=${SERPER_API_KEY:-}
       - LISTEN_ADDR=:8080
-      - SUFFICIENT_MIN_RESULTS=10 # distinct-URL target for the premium stage (code default is 1; homelab stack runs 15)
+      - SUFFICIENT_MIN_RESULTS=10 # distinct-URL target for the premium stage (code default is 1; homelab stack runs 10)
       - CACHE_SIZE=1000
       - CACHE_TTL_SECONDS=3600
       - LOG_LEVEL=info

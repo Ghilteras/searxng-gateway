@@ -382,7 +382,7 @@ func TestShortfallPremiumOwnsDuplicateURLs(t *testing.T) {
 	cfg := newCfg()
 	cfg.SufficientMinResults = 3
 	p := newTestProxy(cfg, sx, c, breaker.New(), backend)
-	out, err := p.Search(context.Background(), "shortfall-secondary")
+	out, err := p.Search(context.Background(), "shortfall-premium-owns-duplicate")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
 	}
@@ -584,7 +584,7 @@ func TestSufficientThresholdUsesDistinctSearxngURLs(t *testing.T) {
 		t.Fatalf("Search error = %v", err)
 	}
 	if len(out.Results) != 3 {
-		t.Fatalf("result count = %d, want 3 distinct URLs including T1", len(out.Results))
+		t.Fatalf("result count = %d, want 3 distinct URLs across SearXNG and premium", len(out.Results))
 	}
 	if out.Results[0].URL != "https://premium-only.com" {
 		t.Errorf("first URL = %q, want premium-first output order", out.Results[0].URL)
@@ -730,8 +730,8 @@ func TestSearchAllFail(t *testing.T) {
 	}
 }
 
-// TestSearchT1Premium — SearXNG runs first, then one premium provider; both contribute and the output lists the premium result first.
-func TestSearchT1Premium(t *testing.T) {
+// TestSearchSearxngThenOnePremiumBothContribute — SearXNG runs first, then one premium provider; both SearXNG and premium results are present in the output.
+func TestSearchSearxngThenOnePremiumBothContribute(t *testing.T) {
 	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
 		{Title: "SX", URL: "https://sx1.com", Engine: "wikipedia"},
 	}}}
@@ -761,8 +761,8 @@ func TestSearchT1Premium(t *testing.T) {
 	}
 }
 
-// TestSearchT1PremiumTwo — SearXNG runs first, then two premium providers run (still below target); all contribute.
-func TestSearchT1PremiumTwo(t *testing.T) {
+// TestSearchSearxngThenTwoPremiumsAllContribute — SearXNG runs first, then two premium providers run (still below target); all three engines contribute.
+func TestSearchSearxngThenTwoPremiumsAllContribute(t *testing.T) {
 	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
 		{Title: "SX", URL: "https://sx1.com", Engine: "wikipedia"},
 	}}}
@@ -1210,9 +1210,9 @@ func (o *overlapBackend) Search(_ backends.SearchOptions) ([]backends.SearchResu
 	return o.results, nil
 }
 
-// TestT1PremiumPass_SerialNoOverlap verifies the T1 hot-path loop calls
+// TestPremiumPass_SerialNoOverlap verifies the premium-stage loop calls
 // providers serially (max overlap == 1) and in round-robin selection order.
-func TestT1PremiumPass_SerialNoOverlap(t *testing.T) {
+func TestPremiumPass_SerialNoOverlap(t *testing.T) {
 	var inFlight atomic.Int64
 	var maxSeen atomic.Int64
 	var mu sync.Mutex
@@ -1235,7 +1235,7 @@ func TestT1PremiumPass_SerialNoOverlap(t *testing.T) {
 		mu:        &mu,
 	}
 
-	// SearXNG returns 1 result, so T1 must run; together they meet the threshold.
+	// SearXNG returns 1 result; brave's result keeps the count below 3, so the premium stage continues to exa and together they meet the threshold.
 	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
 		{Title: "SX", URL: "https://sx.com", Engine: "wikipedia"},
 	}}}
@@ -1250,7 +1250,7 @@ func TestT1PremiumPass_SerialNoOverlap(t *testing.T) {
 	_ = mgr.SetFallbacks([]string{"brave", "exa"})
 	p := New(cfg, sx, c, breaker.New(), mgr)
 
-	_, err := p.Search(context.Background(), "t1_serial_overlap")
+	_, err := p.Search(context.Background(), "premium_serial_overlap")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
 	}
@@ -1273,10 +1273,10 @@ func TestT1PremiumPass_SerialNoOverlap(t *testing.T) {
 	}
 }
 
-// TestFallbackPremiumLoop_SerialNoOverlapAndEarlyStop verifies the fallback
+// TestPremiumLoop_SerialNoOverlapAndEarlyStop verifies the premium-stage
 // loop calls providers serially (max overlap == 1) and stops the moment the
 // SufficientMinResults threshold is met — no speculative extra calls.
-func TestFallbackPremiumLoop_SerialNoOverlapAndEarlyStop(t *testing.T) {
+func TestPremiumLoop_SerialNoOverlapAndEarlyStop(t *testing.T) {
 	var inFlight atomic.Int64
 	var maxSeen atomic.Int64
 	var mu sync.Mutex
@@ -1296,7 +1296,7 @@ func TestFallbackPremiumLoop_SerialNoOverlapAndEarlyStop(t *testing.T) {
 	exa := mkOverlap("exa", "https://e.com")
 	jina := mkOverlap("jina", "https://j.com")
 
-	// SearXNG returns 0 → fallback loop must run.
+	// SearXNG returns 0 → the premium stage keeps calling until the target is met.
 	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{}}}
 	c, _ := cache.New(100, 0)
 	cfg := newCfg()
@@ -1309,12 +1309,12 @@ func TestFallbackPremiumLoop_SerialNoOverlapAndEarlyStop(t *testing.T) {
 	_ = mgr.SetFallbacks([]string{"brave", "exa"})
 	p := New(cfg, sx, c, breaker.New(), mgr)
 
-	_, err := p.Search(context.Background(), "fallback_serial_earlystop")
+	_, err := p.Search(context.Background(), "premium_serial_earlystop")
 	if err != nil {
 		t.Fatalf("Search error = %v", err)
 	}
 	if got := maxSeen.Load(); got != 1 {
-		t.Errorf("max observed overlap = %d, want 1 (serial fallback loop)", got)
+		t.Errorf("max observed overlap = %d, want 1 (serial premium stage)", got)
 	}
 	mu.Lock()
 	gotOrder := make([]string, len(order))
@@ -1331,7 +1331,7 @@ func TestFallbackPremiumLoop_SerialNoOverlapAndEarlyStop(t *testing.T) {
 	}
 }
 
-func TestSearchReturnsT1PartialWhileSearxngChildBudgetExpires(t *testing.T) {
+func TestSearchReturnsPremiumPartialAfterSearxngChildBudgetExpires(t *testing.T) {
 	metrics.Init()
 	beforeTimeout := outcomeCounter(t, "timeout")
 	beforePremium := outcomeCounter(t, "premium_ok")
@@ -1908,10 +1908,10 @@ func TestOutcomeLabels_DeterministicAcrossRepeats(t *testing.T) {
 		beforeSxOk := outcomeCounter(t, "searxng_ok")
 		beforeSxPlus := outcomeCounter(t, "searxng_plus_premium_ok")
 
-		query := fmt.Sprintf("det_t1_iter_%d_%d", time.Now().UnixNano(), i)
+		query := fmt.Sprintf("det_dup_iter_%d_%d", time.Now().UnixNano(), i)
 		resp, err := p.Search(context.Background(), query)
 		if err != nil {
-			t.Fatalf("T1 iter %d: Search error = %v", i, err)
+			t.Fatalf("duplicate-path iter %d: Search error = %v", i, err)
 		}
 
 		afterPrem := outcomeCounter(t, "premium_ok")
@@ -1919,13 +1919,13 @@ func TestOutcomeLabels_DeterministicAcrossRepeats(t *testing.T) {
 		afterSxPlus := outcomeCounter(t, "searxng_plus_premium_ok")
 
 		if delta := afterPrem - beforePrem; delta != 1 {
-			t.Errorf("T1 iter %d: premium_ok delta = %v, want 1", i, delta)
+			t.Errorf("duplicate-path iter %d: premium_ok delta = %v, want 1", i, delta)
 		}
 		if delta := afterSxOk - beforeSxOk; delta != 0 {
-			t.Errorf("T1 iter %d: searxng_ok delta = %v, want 0", i, delta)
+			t.Errorf("duplicate-path iter %d: searxng_ok delta = %v, want 0", i, delta)
 		}
 		if delta := afterSxPlus - beforeSxPlus; delta != 0 {
-			t.Errorf("T1 iter %d: searxng_plus_premium_ok delta = %v, want 0", i, delta)
+			t.Errorf("duplicate-path iter %d: searxng_plus_premium_ok delta = %v, want 0", i, delta)
 		}
 
 		// Record URL order for determinism check.
@@ -1937,11 +1937,11 @@ func TestOutcomeLabels_DeterministicAcrossRepeats(t *testing.T) {
 			firstURLs = iterURLs
 		} else {
 			if len(iterURLs) != len(firstURLs) {
-				t.Errorf("T1 iter %d: URL count = %d, want %d", i, len(iterURLs), len(firstURLs))
+				t.Errorf("duplicate-path iter %d: URL count = %d, want %d", i, len(iterURLs), len(firstURLs))
 			} else {
 				for j := range firstURLs {
 					if iterURLs[j] != firstURLs[j] {
-						t.Errorf("T1 iter %d: URL[%d] = %q, want %q (nondeterministic)", i, j, iterURLs[j], firstURLs[j])
+						t.Errorf("duplicate-path iter %d: URL[%d] = %q, want %q (nondeterministic)", i, j, iterURLs[j], firstURLs[j])
 						break
 					}
 				}

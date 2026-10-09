@@ -18,7 +18,7 @@ type Config struct {
 	CacheTTL             time.Duration
 	LogLevel             string
 	MetricsPath          string
-	SufficientMinResults int // minimum SearXNG results before fallback is considered "sufficient"
+	SufficientMinResults int // distinct-URL target: the premium stage keeps making provider calls until this many distinct URLs are reached, and always makes at least one admitted call
 	// Community-aligned: binary fallback + cooldown circuit breaker
 	SearxngFailThreshold int           // consecutive failures before cooldown
 	SearxngFailCooldown  time.Duration // duration of cooldown period

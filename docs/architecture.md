@@ -185,7 +185,7 @@ All configuration is via environment variables. Key variables:
 |----------|---------|-------------|
 | `LISTEN_ADDR` | `:8080` | HTTP listen address |
 | `SEARXNG_BACKEND_URL` | `http://searxng-primary:8080` | SearXNG instance URL |
-| `SUFFICIENT_MIN_RESULTS` | `1` | Target distinct-URL result count before the premium stage stops (values < 1 are treated as 1) |
+| `SUFFICIENT_MIN_RESULTS` | `1` | Target distinct-URL result count before the premium stage stops (values < 1 are treated as 1). Code default is 1 (`internal/config/config.go`); the homelab deployment sets it to 10 |
 | `FALLBACK_TIMEOUT_SECONDS` | `8` | Hard total budget for the bounded SearXNG stage + premium stage; returns accumulated results on expiry |
 | `SEARXNG_TIMEOUT_SECONDS` | `3` | Total SearXNG stage budget shared across the request and retries/backoff |
 | `BRAVE_TIMEOUT_SECONDS` | `3` | HTTP timeout applied to every premium provider (legacy name) |

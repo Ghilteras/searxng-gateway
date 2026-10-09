@@ -368,7 +368,9 @@ func (p *Proxy) premiumLoop(
 		providerSpan.End()
 
 		if !admitted {
-			// The breaker opened between the IsOpen check and admission.
+			// Not admitted: either the breaker opened between the IsOpen check and
+			// admission, or it is half-open and the single probe slot is already
+			// taken (gobreaker returns ErrTooManyRequests and fn never runs).
 			p.recordProviderSkip(premium.Name(), "breaker_open")
 			continue
 		}
