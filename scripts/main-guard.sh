@@ -2,7 +2,8 @@
 # main-guard.sh — lefthook guard: blocca git write su main.
 # Backstop che vede anche il bash degli agent (l'unico strato che intercetta bash).
 # - pre-push: legge i ref da stdin (lefthook use_stdin); blocca push a main/master,
-#   salvo landing FF autorizzato dal gate git-write tramite OPENCODE_CLOSEOUT=1.
+#   salvo landing FF autorizzato tramite OPENCODE_CLOSEOUT=1: il gate git-write del primary
+#   oppure homelab-pin-sync (commit pin-only generati; .opencode/plans/chamber-agent-pins.md).
 # - pre-commit/pre-merge-commit: blocca solo dal MAIN checkout (git-dir==common-dir)
 #   sul branch main; nei worktree (branch != main) passa sempre.
 # Backstop contro incidenti, non identità/autorizzazione; --no-verify può aggirarlo.
