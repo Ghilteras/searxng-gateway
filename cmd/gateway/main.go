@@ -1,4 +1,8 @@
-// Gateway — HTTP search gateway with SearXNG primary + Brave fallback.
+// Gateway — HTTP search gateway in front of SearXNG and a pool of premium
+// providers (brave, exa, parallel, tavily, serper). Per uncached request the
+// bounded SearXNG stage and the guaranteed first premium call run
+// concurrently; a serial premium top-up follows only while the distinct-URL
+// count is below SUFFICIENT_MIN_RESULTS. Premium results are listed first.
 package main
 
 import (
@@ -49,7 +53,7 @@ func main() {
 	// Register providers in the fixed factory order. The enrolled pool is the
 	// ordered subset whose API keys are configured.
 	fallbackMgr := backends.NewManager()
-	providers, enrolled, err := backends.ConfiguredPool(cfg.BraveTimeout)
+	providers, enrolled, err := backends.ConfiguredPool(cfg.BraveTimeout, cfg.ExaTimeout)
 	if err != nil {
 		log.Fatalf("provider pool: %v", err)
 	}

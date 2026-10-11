@@ -1,6 +1,6 @@
 # SearXNG Gateway — proxy con fallback e circuit breaker
 
-Proxy HTTP davanti a SearXNG: forward a SearXNG, fallback a provider esterni (Brave, Exa, Tavily, Jina) quando i risultati sono insufficienti. Circuit breaker per engine bloccati, metriche Prometheus, cache, quota tracking.
+Proxy HTTP davanti a SearXNG: stage SearXNG e primo provider premium (Brave, Exa, Parallel, Serper, Tavily) in parallelo, poi top-up premium seriale finché i risultati sono insufficienti. Circuit breaker per engine bloccati, metriche Prometheus, cache.
 
 - **Linguaggio**: Go 1.25.0
 - **Build**: automatica via GitHub Actions su push main e tag `v*` — `.github/workflows/build.yml` (`docker/build-push-action@v6`, platforms `linux/amd64,linux/arm64`, cache gha, push su GHCR). NIENTE build locale multi-arch: il builder buildx `multiarch` è stato rimosso dal homelab (2026-08-04).
@@ -11,11 +11,10 @@ Proxy HTTP davanti a SearXNG: forward a SearXNG, fallback a provider esterni (Br
 ## Architettura
 
 ```
-cmd/gateway/main.go → internal/proxy/proxy.go (SearXNG-first bounded stage, then premiumLoop with a guaranteed minimum of one admitted call; premium-first output order)
+cmd/gateway/main.go → internal/proxy/proxy.go (bounded SearXNG stage and the guaranteed first admitted premium call run concurrently; serial premiumLoop top-up only while distinct URLs < target; premium-first output order)
                         → internal/breaker/breaker.go (circuit breaker per engine, isClientError gate)
-                        → internal/quota/ (Brave quota tracking)
                         → backends/manager.go (GetAvailable, NextAvailable — round-robin atomico)
-                        → backends/ (provider esterni: brave.go, exa.go, tavily.go, jina.go)
+                        → backends/ (provider esterni: brave.go, exa.go, parallel.go, serper.go, tavily.go; the Brave rate-limit header gauges live in backends/brave.go)
                         → internal/cache/cache.go (golang-lru/v2 in-memory, TTL da CACHE_TTL_SECONDS)
 ```
 
@@ -37,5 +36,6 @@ cmd/gateway/main.go → internal/proxy/proxy.go (SearXNG-first bounded stage, th
 - Deploy SOLO via Portainer API (skill portainer-redeploy), MAI docker compose/run/rm.
 - Stack 31 (id: ai) è il target di deploy ROUTINE di questo repo: un aggiornamento del gateway si deploya come qualsiasi altro stack, SENZA conferma extra.
 - Qualsiasi altro stack → fermati e chiedi ad Angelo di usare homelab-config.
+- Routine: improvements ship as releases without waiting for a go; stack 31 deploy is routine (owner standing rule, 2026-10-11).
 
 L'immagine si deploya da homelab-config (`stacks/31-ai.yml`): aggiornare il tag e le env var, redeploy stack 31 via Portainer.

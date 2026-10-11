@@ -73,6 +73,44 @@ var (
 		Help:    "Duration of a complete SearXNG HTTP retry stage",
 		Buckets: durationBuckets,
 	})
+	// SearxngStageTotal counts the SearXNG stage of each uncached request exactly
+	// once. outcome ∈ {success, timeout, error, skipped_cooldown, budget_capped}:
+	// timeout = the stage's own SEARXNG_TIMEOUT_SECONDS expired while the parent
+	// budget was alive; budget_capped = the stage was cut short (or could not
+	// start) because the parent request budget was the smaller bound; error =
+	// any other failure or caller cancellation.
+	SearxngStageTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "searxng_gateway_searxng_stage_total",
+			Help: "SearXNG stage outcome per uncached request",
+		},
+		[]string{"outcome"},
+	)
+	// PremiumStageDuration is the active premium time of an uncached request:
+	// the first (concurrent) premium call plus the serial top-up, excluding any
+	// time spent waiting for the SearXNG stage.
+	PremiumStageDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "searxng_gateway_premium_stage_duration_seconds",
+		Help:    "Active duration of the premium stage (first call plus serial top-up)",
+		Buckets: durationBuckets,
+	})
+	// SearchResultsTotal counts results included in a freshly assembled
+	// response by source ∈ {searxng, brave, exa, parallel, serper, tavily}.
+	// Cache hits are not counted.
+	SearchResultsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "searxng_gateway_search_results_total",
+			Help: "Results included in the final response by source",
+		},
+		[]string{"source"},
+	)
+	// PremiumCallsPerRequest observes the number of admitted premium calls of
+	// each uncached request after it completes (0 when no call was admitted).
+	PremiumCallsPerRequest = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "searxng_gateway_premium_calls_per_request",
+		Help:    "Admitted premium-provider calls per uncached request",
+		Buckets: []float64{0, 1, 2, 3, 4, 5},
+	})
 	SearchRequestDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "searxng_gateway_search_request_duration_seconds",
 		Help:    "Duration of the complete /search handler including response writing",
@@ -193,7 +231,7 @@ var (
 	)
 )
 
-var durationBuckets = []float64{1, 2, 3, 4, 5, 8, 10, 15, 20, 30}
+var durationBuckets = []float64{0.1, 0.25, 0.5, 0.75, 1, 2, 3, 4, 5, 8, 10, 15, 20, 30}
 
 // ProviderEligibilityReasons is the bounded set of eligibility/exclusion
 // reasons exposed by ProviderEligibility. Keeping the set closed prevents
@@ -248,6 +286,6 @@ var initOnce sync.Once
 // It is safe to call multiple times — subsequent calls are no-ops.
 func Init() {
 	initOnce.Do(func() {
-		prometheus.MustRegister(RequestsTotal, RequestDuration, SearxngStageDuration, SearchRequestDuration, SearxngFailureStreak, SearxngCooldownUntilSeconds, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveRateLimitRemaining, BraveRateLimitLimit, BraveRateLimitResetSeconds, ProviderAttemptsTotal, ProviderSkipsTotal, ProviderEligibility)
+		prometheus.MustRegister(RequestsTotal, RequestDuration, SearxngStageDuration, SearchRequestDuration, SearxngFailureStreak, SearxngCooldownUntilSeconds, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveRateLimitRemaining, BraveRateLimitLimit, BraveRateLimitResetSeconds, ProviderAttemptsTotal, ProviderSkipsTotal, ProviderEligibility, SearxngStageTotal, PremiumStageDuration, SearchResultsTotal, PremiumCallsPerRequest)
 	})
 }

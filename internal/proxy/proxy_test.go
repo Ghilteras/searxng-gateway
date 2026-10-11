@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -256,28 +257,43 @@ func TestSearxngSufficientMakesExactlyOnePremiumCall(t *testing.T) {
 	}
 }
 
-// TestSearxngStagePrecedesPremium (a): SearXNG is invoked before any premium
-// backend on a request that falls short.
-func TestSearxngStagePrecedesPremium(t *testing.T) {
+// TestSearxngStagePrecedesSecondPremiumCall (a): the guaranteed first premium
+// call runs concurrently with SearXNG, but the serial top-up (second and later
+// providers) starts only after the SearXNG stage has finished.
+func TestSearxngStagePrecedesSecondPremiumCall(t *testing.T) {
 	metrics.Init()
+	var mu sync.Mutex
 	var order []string
+	mark := func(ev string) {
+		mu.Lock()
+		order = append(order, ev)
+		mu.Unlock()
+	}
 	sx := &contextSearxng{fn: func(context.Context) (*searxng.Response, error) {
-		order = append(order, "searxng")
+		time.Sleep(60 * time.Millisecond) // let a (wrongly) early second call overtake it
+		mark("searxng-done")
 		return &searxng.Response{Results: []searxng.Result{{Title: "SX", URL: "https://sx.com", Engine: "wikipedia"}}}, nil
 	}}
-	fb := &contextBackend{name: "brave", fn: func(context.Context) ([]backends.SearchResult, error) {
-		order = append(order, "premium")
+	brave := &contextBackend{name: "brave", fn: func(context.Context) ([]backends.SearchResult, error) {
+		mark("brave")
 		return []backends.SearchResult{{Title: "P", URL: "https://p.com", Engine: "brave"}}, nil
+	}}
+	exa := &contextBackend{name: "exa", fn: func(context.Context) ([]backends.SearchResult, error) {
+		mark("exa")
+		return []backends.SearchResult{{Title: "P2", URL: "https://p2.com", Engine: "exa"}}, nil
 	}}
 	c, _ := cache.New(100, 0)
 	cfg := newCfg()
-	cfg.SufficientMinResults = 2
-	p := newTestProxy(cfg, sx, c, breaker.New(), fb)
+	cfg.SufficientMinResults = 3
+	p := newTestProxy(cfg, sx, c, breaker.New(), brave, exa)
 	if _, err := p.Search(context.Background(), "order-first"); err != nil {
 		t.Fatalf("Search error = %v", err)
 	}
-	if len(order) != 2 || order[0] != "searxng" || order[1] != "premium" {
-		t.Fatalf("call order = %v, want [searxng premium]", order)
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"brave", "searxng-done", "exa"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("event order = %v, want %v (first premium overlaps SearXNG; second waits for it)", order, want)
 	}
 }
 
@@ -890,8 +906,8 @@ func TestTyped432TripsBreakerInPrimaryPhase(t *testing.T) {
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
-	p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, nil, 1)
-	p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, nil, 1)
+	p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, nil, 1, 0)
+	p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, nil, 1, 0)
 	if !bm.IsOpen("premium:tavily") {
 		t.Fatal("typed 432 did not open Tavily breaker")
 	}
@@ -907,7 +923,7 @@ func TestTyped432TripsBreakerInPrimaryPhase(t *testing.T) {
 	calls := backend.calls.Load()
 	backend.err = nil
 	backend.results = []backends.SearchResult{{URL: "https://recovered", Engine: "tavily"}}
-	p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, nil, 1)
+	p.premiumLoop(context.Background(), querySecret, nil, map[string]bool{}, map[string]bool{}, nil, 1, 0)
 	if got := backend.calls.Load(); got != calls {
 		t.Fatalf("provider call count while breaker open = %d, want %d", got, calls)
 	}
@@ -1454,34 +1470,42 @@ func TestCallerCancellationStopsProviderWork(t *testing.T) {
 	// Threshold 1: a SearXNG failure counted for the cancellation would trip the
 	// cooldown immediately, so the assertions below can actually fail.
 	cfg.SearxngFailThreshold = 1
-	// SearXNG is the primary stage, so it is the in-flight call when the caller cancels.
+	// SearXNG and the first premium call are both in flight when the caller cancels.
 	sxStarted := make(chan struct{})
 	sxCanceled := make(chan struct{})
-	var sxCalls atomic.Int64
 	sx := &contextSearxng{fn: func(ctx context.Context) (*searxng.Response, error) {
-		sxCalls.Add(1)
 		close(sxStarted)
 		<-ctx.Done()
 		close(sxCanceled)
 		return nil, ctx.Err()
 	}}
-	var premiumCalls atomic.Int64
-	first := &contextBackend{name: "brave", fn: func(context.Context) ([]backends.SearchResult, error) {
-		premiumCalls.Add(1)
+	premiumStarted := make(chan struct{})
+	premiumCanceled := make(chan struct{})
+	first := &contextBackend{name: "brave", fn: func(ctx context.Context) ([]backends.SearchResult, error) {
+		close(premiumStarted)
+		<-ctx.Done()
+		close(premiumCanceled)
+		return nil, ctx.Err()
+	}}
+	var secondCalls atomic.Int64
+	second := &contextBackend{name: "exa", fn: func(context.Context) ([]backends.SearchResult, error) {
+		secondCalls.Add(1)
 		return nil, nil
 	}}
-	p := newTestProxy(cfg, sx, c, breaker.New(), first)
+	p := newTestProxy(cfg, sx, c, breaker.New(), first, second)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { _, err := p.Search(ctx, "cancel-provider"); done <- err }()
 	<-sxStarted
+	<-premiumStarted
 	cancel()
 	if err := <-done; err == nil {
 		t.Fatal("expected canceled request error")
 	}
 	<-sxCanceled
-	if got := premiumCalls.Load(); got != 0 {
-		t.Fatalf("premium provider started after cancellation: %d", got)
+	<-premiumCanceled
+	if got := secondCalls.Load(); got != 0 {
+		t.Fatalf("second premium provider started after cancellation: %d", got)
 	}
 	if got := atomic.LoadInt64(&p.sxFails); got != 0 {
 		t.Fatalf("SearXNG failure streak = %d, want 0 (caller cancellation is not a SearXNG failure)", got)
@@ -2439,15 +2463,18 @@ func TestEligibilitySeededWhenPremiumStageNeverRuns(t *testing.T) {
 	c, _ := cache.New(100, 0)
 	cfg := newCfg()
 	cfg.FallbackTimeout = 40 * time.Millisecond
-	cfg.SearxngTimeout = time.Second // capped to the remaining parent budget
+	cfg.SearxngTimeout = time.Second
 	p := newTestProxy(cfg, sx, c, breaker.New(), fb, unconfigured)
 	skipLabels := map[string]string{"provider": "tavily", "reason": "missing_key"}
 	before := counterValueForLabels(t, "searxng_gateway_provider_skips_total", skipLabels)
-	if _, err := p.Search(context.Background(), "eligibility-premium-never-runs"); err == nil {
-		t.Fatal("expected an error: SearXNG consumed the whole budget")
+	// The request context is already cancelled: neither stage may start.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.Search(cancelled, "eligibility-premium-never-runs"); err == nil {
+		t.Fatal("expected an error: the request context was already done")
 	}
 	if got := fb.calls.Load(); got != 0 {
-		t.Fatalf("premium calls = %d, want 0 (budget exhausted before the premium stage)", got)
+		t.Fatalf("premium calls = %d, want 0 (premium stage never runs on a dead context)", got)
 	}
 	if got := counterValueForLabels(t, "searxng_gateway_provider_skips_total", skipLabels) - before; got != 1 {
 		t.Fatalf("tavily missing_key skips delta = %v, want exactly 1 even though premium never ran", got)

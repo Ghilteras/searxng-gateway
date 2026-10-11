@@ -14,6 +14,7 @@ type Config struct {
 	FallbackTimeout      time.Duration
 	SearxngTimeout       time.Duration
 	BraveTimeout         time.Duration
+	ExaTimeout           time.Duration // EXA_TIMEOUT_SECONDS: HTTP timeout for the Exa backend only
 	CacheSize            int
 	CacheTTL             time.Duration
 	LogLevel             string
@@ -35,6 +36,7 @@ func Load() (*Config, error) {
 		SearxngTimeout:    time.Duration(getEnvInt("SEARXNG_TIMEOUT_SECONDS", 3)) * time.Second,
 		// BRAVE_TIMEOUT_SECONDS is retained for compatibility and configures every premium backend.
 		BraveTimeout:         time.Duration(getEnvInt("BRAVE_TIMEOUT_SECONDS", 3)) * time.Second,
+		ExaTimeout:           time.Duration(getEnvInt("EXA_TIMEOUT_SECONDS", 3)) * time.Second,
 		CacheSize:            getEnvInt("CACHE_SIZE", 1000),
 		CacheTTL:             time.Duration(getEnvInt("CACHE_TTL_SECONDS", 3600)) * time.Second,
 		LogLevel:             getEnv("LOG_LEVEL", "info"),

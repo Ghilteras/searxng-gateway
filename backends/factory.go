@@ -15,11 +15,17 @@ var PremiumPoolOrder = []string{"brave", "exa", "parallel", "tavily", "serper"}
 
 // ConfiguredPool returns provider instances registered for eligibility
 // reporting and the ordered subset with configured API keys for enrollment.
-func ConfiguredPool(timeout time.Duration) ([]SearchBackend, []string, error) {
+// timeout applies to every provider except Exa, which uses exaTimeout when it
+// is positive (otherwise timeout).
+func ConfiguredPool(timeout, exaTimeout time.Duration) ([]SearchBackend, []string, error) {
 	all := make([]SearchBackend, 0, len(PremiumPoolOrder))
 	enrolled := make([]string, 0, len(PremiumPoolOrder))
 	for _, name := range PremiumPoolOrder {
-		backend, err := NewFromEnv(name, timeout)
+		providerTimeout := timeout
+		if name == "exa" && exaTimeout > 0 {
+			providerTimeout = exaTimeout
+		}
+		backend, err := NewFromEnv(name, providerTimeout)
 		if err != nil {
 			return nil, nil, err
 		}

@@ -114,9 +114,18 @@ func (e *ExaBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 	}
 }
 
+// exaSearchType is the Exa search mode sent with every API request. Per the
+// Exa OpenAPI spec (docs.exa.ai/reference/search) `type` accepts instant, fast,
+// auto, deep-lite, deep, deep-reasoning alongside numResults; `fast` returns
+// high-quality results with reduced latency and is recommended for
+// user-facing search. `contents` is deliberately NOT requested: this parser
+// reads only text/summary, and adding highlights needs a parser change.
+const exaSearchType = "fast"
+
 type exaAPIRequest struct {
 	Query      string `json:"query"`
 	NumResults int    `json:"numResults,omitempty"`
+	Type       string `json:"type,omitempty"`
 }
 
 type exaAPIResponse struct {
@@ -133,7 +142,7 @@ func (e *ExaBackend) searchAPI(ctx context.Context, query string, count int) ([]
 		return nil, &BackendError{Backend: e.Name(), Err: fmt.Errorf("exa API key not configured"), Code: ErrCodeUnavailable}
 	}
 
-	payload, err := json.Marshal(exaAPIRequest{Query: query, NumResults: count})
+	payload, err := json.Marshal(exaAPIRequest{Query: query, NumResults: count, Type: exaSearchType})
 	if err != nil {
 		return nil, &BackendError{Backend: e.Name(), Err: err, Code: ErrCodeInvalidResponse}
 	}

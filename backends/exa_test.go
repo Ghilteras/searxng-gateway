@@ -191,3 +191,64 @@ func TestExaBackend_AutoFallsBackToMCP(t *testing.T) {
 		t.Fatalf("unexpected fallback results: %#v", results)
 	}
 }
+
+// TestExaAPIRequestBodyCarriesTypeAndNumResults asserts the exact JSON the Exa
+// API receives: type "fast" with numResults, and no contents block (highlights
+// are intentionally not requested; the parser does not read them).
+func TestExaAPIRequestBodyCarriesTypeAndNumResults(t *testing.T) {
+	var got map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"results": []map[string]string{}})
+	}))
+	defer srv.Close()
+	b := NewExaBackend(ExaModeAPI, "key", time.Second, "", "", 10)
+	b.BaseURL = srv.URL
+	if _, err := b.Search(SearchOptions{Query: "Postgres OR MariaDB", NumResults: 7}); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got["type"] != "fast" {
+		t.Errorf("type = %v, want fast", got["type"])
+	}
+	if got["numResults"] != float64(7) {
+		t.Errorf("numResults = %v, want 7", got["numResults"])
+	}
+	if got["query"] != "Postgres OR MariaDB" {
+		t.Errorf("query = %v, want case preserved", got["query"])
+	}
+	if _, present := got["contents"]; present {
+		t.Errorf("contents present in request body (%v); highlights are deliberately not requested", got["contents"])
+	}
+}
+
+// TestConfiguredPoolExaUsesOwnTimeout asserts EXA_TIMEOUT_SECONDS reaches the
+// Exa backend only; every other provider keeps the shared timeout.
+func TestConfiguredPoolExaUsesOwnTimeout(t *testing.T) {
+	providers, _, err := ConfiguredPool(5*time.Second, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, p := range providers {
+		seen[p.Name()] = true
+		if exa, ok := p.(*ExaBackend); ok {
+			if exa.Timeout != 2*time.Second || exa.client.Timeout != 2*time.Second {
+				t.Errorf("exa timeout = %v / client %v, want 2s", exa.Timeout, exa.client.Timeout)
+			}
+		}
+		if br, ok := p.(*BraveBackend); ok && br.client.Timeout != 5*time.Second {
+			t.Errorf("brave client timeout = %v, want shared 5s", br.client.Timeout)
+		}
+	}
+	if !seen["exa"] || !seen["brave"] {
+		t.Fatalf("pool missing exa/brave: %v", seen)
+	}
+	providers, _, _ = ConfiguredPool(5*time.Second, 0)
+	for _, p := range providers {
+		if exa, ok := p.(*ExaBackend); ok && exa.Timeout != 5*time.Second {
+			t.Errorf("exa timeout with no override = %v, want shared 5s", exa.Timeout)
+		}
+	}
+}

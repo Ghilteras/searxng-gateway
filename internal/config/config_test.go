@@ -138,3 +138,33 @@ func TestLoadInvalidCooldown(t *testing.T) {
 		t.Error("Load() expected error when SEARXNG_FAIL_COOLDOWN_SECONDS is 0")
 	}
 }
+
+func TestLoadExaTimeout(t *testing.T) {
+	prev := saveEnv()
+	defer restoreEnv(prev)
+	os.Clearenv()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ExaTimeout != 3*time.Second {
+		t.Errorf("default ExaTimeout = %v, want 3s", cfg.ExaTimeout)
+	}
+	_ = os.Setenv("EXA_TIMEOUT_SECONDS", "7")
+	_ = os.Setenv("BRAVE_TIMEOUT_SECONDS", "4")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ExaTimeout != 7*time.Second {
+		t.Errorf("ExaTimeout = %v, want 7s", cfg.ExaTimeout)
+	}
+	if cfg.BraveTimeout != 4*time.Second {
+		t.Errorf("BraveTimeout = %v, want 4s (independent of EXA_TIMEOUT_SECONDS)", cfg.BraveTimeout)
+	}
+	_ = os.Setenv("EXA_TIMEOUT_SECONDS", "bogus")
+	cfg, _ = Load()
+	if cfg.ExaTimeout != 3*time.Second {
+		t.Errorf("unparsable ExaTimeout = %v, want default 3s (same parsing as BRAVE_TIMEOUT_SECONDS)", cfg.ExaTimeout)
+	}
+}

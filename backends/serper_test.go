@@ -109,7 +109,7 @@ func TestConfiguredPoolOrderAndKeylessExclusion(t *testing.T) {
 	}
 	t.Setenv("BRAVE_API_KEY", "brave")
 	t.Setenv("EXA_API_KEY", "exa")
-	_, got, err := ConfiguredPool(time.Second)
+	_, got, err := ConfiguredPool(time.Second, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
