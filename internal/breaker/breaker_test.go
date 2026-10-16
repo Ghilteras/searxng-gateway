@@ -10,11 +10,9 @@ import (
 	"github.com/sony/gobreaker"
 )
 
-// TestManager_ConcurrentReasonAccess is a regression test for unsynchronized
-// map access on Manager.reasons. Before the fix, RecordClientError writes,
-// RecordSuccess deletes, and LastReason reads m.reasons without any lock
-// (m.mu guards breakers, not reasons). Under concurrent goroutines this
-// triggers "fatal error: concurrent map writes" or a race detector report.
+// TestManager_ConcurrentReasonAccess exercises concurrent breaker operations.
+// Each entry's mutex protects admission and reason/accounting metadata, and is
+// never held across provider work; the manager mutex protects only the entry map.
 func TestManager_ConcurrentReasonAccess(t *testing.T) {
 	m := New()
 
@@ -175,5 +173,143 @@ func TestNonProviderFaultDoesNotTrip(t *testing.T) {
 	}
 	if got := m.State("premium:brave"); got != gobreaker.StateClosed {
 		t.Fatalf("non-provider fault state = %v, want closed", got)
+	}
+}
+
+func TestAllowFreezesTripReasonAcrossOverlappingGeneration(t *testing.T) {
+	m := New()
+	firstDone, _, err := m.Allow("premium:overlap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tripDone, _, err := m.Allow("premium:overlap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lateDone, _, err := m.Allow("premium:overlap")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The first completion establishes one consecutive failure. The second
+	// completion trips and freezes the structural provenance for this epoch.
+	firstDone(false, "transient-network")
+	tripDone(false, "structural-quota")
+	if got := m.State("premium:overlap"); got != gobreaker.StateOpen {
+		t.Fatalf("state after structural trip = %v, want open", got)
+	}
+	_, snapshot, err := m.Allow("premium:overlap")
+	if !errors.Is(err, gobreaker.ErrOpenState) || snapshot.Reason != "structural-quota" {
+		t.Fatalf("open rejection = snapshot %#v err %v, want frozen structural reason", snapshot, err)
+	}
+
+	// This call was admitted in the pre-trip generation. gobreaker ignores its
+	// late result, and the manager must not let it rewrite the open-epoch reason.
+	lateDone(false, "late-transient")
+	_, snapshot, err = m.Allow("premium:overlap")
+	if !errors.Is(err, gobreaker.ErrOpenState) || snapshot.Reason != "structural-quota" {
+		t.Fatalf("open rejection after stale completion = snapshot %#v err %v, want unchanged reason", snapshot, err)
+	}
+}
+
+func TestAllowUnknownTripAndHalfOpenContentionSnapshot(t *testing.T) {
+	unknownManager := NewWithSettings(func(engine string) EngineSettings {
+		return EngineSettings{Name: engine, MaxRequests: 1, Timeout: time.Minute}
+	})
+	first, _, err := unknownManager.Allow("premium:unknown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := unknownManager.Allow("premium:unknown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first(false, "transient-network")
+	second(false, "")
+	_, snapshot, err := unknownManager.Allow("premium:unknown")
+	if !errors.Is(err, gobreaker.ErrOpenState) || snapshot.Reason != "" {
+		t.Fatalf("unknown open rejection = snapshot %#v err %v, want unknown reason", snapshot, err)
+	}
+
+	// A separate breaker proves that probe-slot contention masks, rather than
+	// inherits, the structural reason of the open epoch.
+	m := NewWithSettings(func(engine string) EngineSettings {
+		return EngineSettings{Name: engine, MaxRequests: 1, Timeout: 20 * time.Millisecond}
+	})
+	trip1, _, err := m.Allow("premium:structural")
+	if err != nil {
+		t.Fatal(err)
+	}
+	trip2, _, err := m.Allow("premium:structural")
+	if err != nil {
+		t.Fatal(err)
+	}
+	trip1(false, "structural-credentials")
+	trip2(false, "structural-credentials")
+	deadline := time.Now().Add(time.Second)
+	for m.State("premium:structural") != gobreaker.StateHalfOpen && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if m.State("premium:structural") != gobreaker.StateHalfOpen {
+		t.Fatal("breaker did not enter half-open")
+	}
+	probeDone, _, err := m.Allow("premium:structural")
+	if err != nil {
+		t.Fatalf("half-open probe admission: %v", err)
+	}
+	_, snapshot, err = m.Allow("premium:structural")
+	if !errors.Is(err, gobreaker.ErrTooManyRequests) || snapshot.State != gobreaker.StateHalfOpen || snapshot.Reason != ReasonContention {
+		t.Fatalf("probe contention = snapshot %#v err %v, want contention, not structural provenance", snapshot, err)
+	}
+	probeDone(true, "")
+}
+
+func TestExecutePanicCountsFailureAndReleasesHalfOpenProbe(t *testing.T) {
+	m := NewWithSettings(func(engine string) EngineSettings {
+		return EngineSettings{Name: engine, MaxRequests: 1, Timeout: 20 * time.Millisecond}
+	})
+	const engine = "premium:panic"
+	failure := errors.New("provider failure")
+	for range 2 {
+		_, err := m.Execute(engine, func() (interface{}, error) { return nil, failure })
+		if !errors.Is(err, failure) {
+			t.Fatalf("initial failure = %v, want %v", err, failure)
+		}
+	}
+	if got := m.State(engine); got != gobreaker.StateOpen {
+		t.Fatalf("state after two failures = %v, want open", got)
+	}
+	waitForState(t, m, engine, gobreaker.StateHalfOpen)
+
+	panicValue := "provider panic"
+	func() {
+		defer func() {
+			if got := recover(); got != panicValue {
+				t.Fatalf("recovered panic = %#v, want %#v", got, panicValue)
+			}
+		}()
+		_, _ = m.Execute(engine, func() (interface{}, error) { panic(panicValue) })
+	}()
+	if got := m.State(engine); got != gobreaker.StateOpen {
+		t.Fatalf("state after panicking half-open probe = %v, want open (failure accounted)", got)
+	}
+
+	waitForState(t, m, engine, gobreaker.StateHalfOpen)
+	if _, err := m.Execute(engine, func() (interface{}, error) { return "recovered", nil }); err != nil {
+		t.Fatalf("probe after panic cooldown = %v, want admitted recovery probe", err)
+	}
+	if got := m.State(engine); got != gobreaker.StateClosed {
+		t.Fatalf("state after recovery probe = %v, want closed", got)
+	}
+}
+
+func waitForState(t *testing.T, m *Manager, engine string, want gobreaker.State) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for m.State(engine) != want && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := m.State(engine); got != want {
+		t.Fatalf("state = %v, want %v", got, want)
 	}
 }

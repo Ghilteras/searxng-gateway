@@ -1,8 +1,13 @@
 // Package breaker: per-engine circuit breaker for provider faults.
 //
-// Premium providers are admitted through Execute, which runs the actual
-// provider call inside gobreaker.Execute so MaxRequests constrains real
-// half-open probes. Provider faults (auth, quota, rate limit, network, 5xx,
+// Premium providers are admitted through gobreaker's TwoStepCircuitBreaker.
+// Execute adapts its native Allow/done API while leaving MaxRequests to
+// constrain actual half-open probes. RecordReason + Execute retains a
+// per-engine compatibility slot: concurrent calls can overwrite or consume
+// another call's reason, so it cannot provide exact per-call attribution.
+// Decision-path consumers requiring exact attribution must use Manager.Allow
+// and pass that call's own reason to done; they must not route the decision
+// through RecordReason. Provider faults (auth, quota, rate limit, network, 5xx,
 // degraded, invalid response, provider timeout, panic) trip the breaker;
 // non-provider failures (caller cancellation, overall request deadline,
 // query-validation errors, empty results, missing config) are marked with
@@ -97,18 +102,39 @@ func PerEngineSettings(engine string) EngineSettings {
 // Manager holds per-engine circuit breakers.
 type Manager struct {
 	mu       sync.RWMutex
-	breakers map[string]*gobreaker.CircuitBreaker
-	reasons  map[string]string
-	reasonMu sync.RWMutex // guards reasons only; never held across cb.Execute
+	breakers map[string]*breakerEntry
 	// settings resolves per-engine tuning; overridable in tests.
 	settings func(engine string) EngineSettings
 }
 
+// breakerEntry serializes only admission, state snapshots, and terminal
+// accounting/provenance. Its lock is released before the provider call and is
+// never held across provider work.
+type breakerEntry struct {
+	mu               sync.Mutex
+	cb               *gobreaker.TwoStepCircuitBreaker
+	tripReason       string
+	pendingReason    string // compatibility only: per-engine slot; concurrent calls can misattribute a trip
+	accountingReason string // visible only during serialized native terminal accounting
+}
+
+// AdmissionSnapshot is the state and frozen trip provenance observed when an
+// admission is rejected. An empty/unknown Reason means UNKNOWN, never “not
+// structural”; consumers must treat unknown as a veto rather than evidence that
+// the provider is structurally unavailable.
+type AdmissionSnapshot struct {
+	State  gobreaker.State
+	Reason string
+}
+
+// ReasonContention identifies a rejected half-open admission because its probe
+// slot is already occupied; it is not the reason that opened the breaker.
+const ReasonContention = "contention"
+
 // New creates a new Manager.
 func New() *Manager {
 	return &Manager{
-		breakers: make(map[string]*gobreaker.CircuitBreaker),
-		reasons:  make(map[string]string),
+		breakers: make(map[string]*breakerEntry),
 		settings: PerEngineSettings,
 	}
 }
@@ -134,7 +160,70 @@ func (m *Manager) Execute(engine string, fn func() (interface{}, error)) (interf
 	if engine == "" {
 		return fn()
 	}
-	return m.getBreaker(engine).Execute(fn)
+	entry := m.getBreaker(engine)
+	done, _, err := m.allow(entry)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			entry.mu.Lock()
+			reason := entry.pendingReason
+			entry.pendingReason = ""
+			entry.mu.Unlock()
+			done(false, reason)
+			panic(recovered)
+		}
+	}()
+	result, callErr := fn()
+	entry.mu.Lock()
+	reason := entry.pendingReason
+	entry.pendingReason = ""
+	entry.mu.Unlock()
+	done(isSuccessful(callErr), reason)
+	return result, callErr
+}
+
+// Allow admits a request using gobreaker's native two-step admission. The
+// returned completion callback must be invoked once when the request ends,
+// with the success classification and the reason for a provider failure. The
+// snapshot is meaningful on rejection: open-state rejection carries that
+// epoch's frozen trip reason; half-open probe contention carries
+// ReasonContention instead. A missing reason is unknown, not proof of a
+// non-structural outage.
+func (m *Manager) Allow(engine string) (done func(success bool, reason string), snapshot AdmissionSnapshot, err error) {
+	if engine == "" {
+		return func(bool, string) {}, AdmissionSnapshot{State: gobreaker.StateClosed}, nil
+	}
+	return m.allow(m.getBreaker(engine))
+}
+
+func (m *Manager) allow(entry *breakerEntry) (func(bool, string), AdmissionSnapshot, error) {
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	done, err := entry.cb.Allow()
+	state := entry.cb.State()
+	snapshot := AdmissionSnapshot{State: state}
+	if err != nil {
+		if errors.Is(err, gobreaker.ErrTooManyRequests) {
+			snapshot.Reason = ReasonContention
+		} else if state == gobreaker.StateOpen {
+			snapshot.Reason = entry.tripReason
+		}
+		return nil, snapshot, err
+	}
+	return func(success bool, reason string) {
+		entry.mu.Lock()
+		defer entry.mu.Unlock()
+		before := entry.cb.State()
+		entry.accountingReason = reason
+		done(success)
+		entry.accountingReason = ""
+		after := entry.cb.State()
+		if before != gobreaker.StateOpen && after == gobreaker.StateOpen {
+			entry.tripReason = reason
+		}
+	}, snapshot, nil
 }
 
 // RecordReason stores the bounded reason attached to the next trip of engine.
@@ -144,38 +233,46 @@ func (m *Manager) RecordReason(engine, reason string) {
 	if engine == "" {
 		return
 	}
-	m.reasonMu.Lock()
-	m.reasons[engine] = reason
-	m.reasonMu.Unlock()
+	entry := m.getBreaker(engine)
+	entry.mu.Lock()
+	entry.pendingReason = reason
+	entry.mu.Unlock()
 }
 
 // IsOpen returns true if the circuit breaker for engine is open.
 func (m *Manager) IsOpen(engine string) bool {
 	m.mu.RLock()
-	cb, ok := m.breakers[engine]
+	entry, ok := m.breakers[engine]
 	m.mu.RUnlock()
 	if !ok {
 		return false
 	}
-	return cb.State() == gobreaker.StateOpen
+	return entry.cb.State() == gobreaker.StateOpen
 }
 
 // State returns the current state of the breaker for engine.
 func (m *Manager) State(engine string) gobreaker.State {
 	m.mu.RLock()
-	cb, ok := m.breakers[engine]
+	entry, ok := m.breakers[engine]
 	m.mu.RUnlock()
 	if !ok {
 		return gobreaker.StateClosed
 	}
-	return cb.State()
+	return entry.cb.State()
 }
 
-// LastReason returns the last reason recorded for a given engine.
+// LastReason returns the frozen trip reason of the last open epoch. It is only
+// meaningful while State(engine) == StateOpen and is not cleared on recovery.
 func (m *Manager) LastReason(engine string) string {
-	m.reasonMu.RLock()
-	defer m.reasonMu.RUnlock()
-	return m.reasons[engine]
+	m.mu.RLock()
+	entry := m.breakers[engine]
+	m.mu.RUnlock()
+	if entry == nil {
+		return ""
+	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	return entry.tripReason
 }
 
 // RecordClientError trips the breaker for a SearXNG engine reporting a client
@@ -185,14 +282,12 @@ func (m *Manager) RecordClientError(engine, reason string) {
 	if engine == "" {
 		return
 	}
-	m.reasonMu.Lock()
-	m.reasons[engine] = reason
-	m.reasonMu.Unlock()
-	cb := m.getBreaker(engine)
+	entry := m.getBreaker(engine)
 	// Force 1 failure to trip the breaker (threshold=1)
-	_, _ = cb.Execute(func() (interface{}, error) {
-		return nil, &clientError{reason: reason}
-	})
+	done, _, err := m.allow(entry)
+	if err == nil {
+		done(false, reason)
+	}
 }
 
 // RecordEngineSeen ensures the circuit breaker state gauge series exists for an
@@ -218,16 +313,14 @@ func (m *Manager) RecordSuccess(engine string) {
 	if engine == "" {
 		return
 	}
-	m.reasonMu.Lock()
-	delete(m.reasons, engine)
-	m.reasonMu.Unlock()
-	cb := m.getBreaker(engine)
-	_, _ = cb.Execute(func() (interface{}, error) {
-		return nil, nil
-	})
+	entry := m.getBreaker(engine)
+	done, _, err := m.allow(entry)
+	if err == nil {
+		done(true, "")
+	}
 }
 
-func (m *Manager) getBreaker(engine string) *gobreaker.CircuitBreaker {
+func (m *Manager) getBreaker(engine string) *breakerEntry {
 	m.mu.RLock()
 	cb, ok := m.breakers[engine]
 	m.mu.RUnlock()
@@ -247,7 +340,8 @@ func (m *Manager) getBreaker(engine string) *gobreaker.CircuitBreaker {
 	if name == "" {
 		name = "default"
 	}
-	cb = gobreaker.NewCircuitBreaker(gobreaker.Settings{
+	entry := &breakerEntry{}
+	entry.cb = gobreaker.NewTwoStepCircuitBreaker(gobreaker.Settings{
 		Name:         name,
 		MaxRequests:  settings.MaxRequests,
 		Interval:     settings.Interval,
@@ -260,9 +354,7 @@ func (m *Manager) getBreaker(engine string) *gobreaker.CircuitBreaker {
 		OnStateChange: func(name string, from, to gobreaker.State) {
 			breakerState.WithLabelValues(name).Set(stateFloat(to))
 			if to == gobreaker.StateOpen {
-				m.reasonMu.RLock()
-				reason := m.reasons[name]
-				m.reasonMu.RUnlock()
+				reason := entry.accountingReason
 				if reason == "" {
 					reason = "unknown"
 				}
@@ -276,17 +368,8 @@ func (m *Manager) getBreaker(engine string) *gobreaker.CircuitBreaker {
 			}
 		},
 	})
-	m.breakers[engine] = cb
-	return cb
-}
-
-// clientError is a private error type used to trigger the breaker.
-type clientError struct {
-	reason string
-}
-
-func (e *clientError) Error() string {
-	return e.reason
+	m.breakers[engine] = entry
+	return entry
 }
 
 func stateFloat(s gobreaker.State) float64 {
