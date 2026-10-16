@@ -147,7 +147,13 @@ func (t *TavilyBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		switch resp.StatusCode {
-		case 401, 403:
+		case 401:
+			return nil, (&BackendError{
+				Backend: t.Name(),
+				Err:     fmt.Errorf("authentication failed (HTTP %d)", resp.StatusCode),
+				Code:    ErrCodeAuth,
+			}).WithUnavailabilityReason(UnavailabilityCredentialsRejected)
+		case 403:
 			return nil, &BackendError{
 				Backend: t.Name(),
 				Err:     fmt.Errorf("authentication failed (HTTP %d)", resp.StatusCode),
@@ -159,6 +165,12 @@ func (t *TavilyBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 				Err:     fmt.Errorf("rate limited (HTTP %d)", resp.StatusCode),
 				Code:    ErrCodeRateLimit,
 			}
+		case 432, 433:
+			return nil, (&BackendError{
+				Backend: t.Name(),
+				Err:     fmt.Errorf("account or plan limit (HTTP %d)", resp.StatusCode),
+				Code:    resp.StatusCode,
+			}).WithUnavailabilityReason(UnavailabilityQuotaExhausted)
 		default:
 			return nil, &BackendError{
 				Backend: t.Name(),

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,9 @@ func TestTavilyInvalidJSONDoesNotExposePayload(t *testing.T) {
 	be, ok := err.(*BackendError)
 	if !ok || be.Code != ErrCodeInvalidResponse {
 		t.Fatalf("error = %v; want ErrCodeInvalidResponse", err)
+	}
+	if be.UnavailabilityReason != "" {
+		t.Fatalf("UnavailabilityReason = %q, want empty", be.UnavailabilityReason)
 	}
 	if strings.Contains(err.Error(), marker) || !strings.Contains(err.Error(), "invalid JSON response") {
 		t.Fatalf("error = %v; want safe JSON error without payload", err)
@@ -245,6 +249,93 @@ func TestTavilyBackend_Search_AuthError(t *testing.T) {
 	if backendErr.Code != ErrCodeAuth {
 		t.Errorf("expected ErrCodeAuth, got %d", backendErr.Code)
 	}
+	if backendErr.UnavailabilityReason != UnavailabilityCredentialsRejected {
+		t.Errorf("UnavailabilityReason = %q, want %q", backendErr.UnavailabilityReason, UnavailabilityCredentialsRejected)
+	}
+}
+
+func TestTavilyStructuralAccountStatuses(t *testing.T) {
+	for _, status := range []int{432, 433} {
+		t.Run("status-"+strconv.Itoa(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+			}))
+			defer server.Close()
+
+			b := newTestTavilyBackend(server.URL, "key", "basic", false, false)
+			_, err := b.Search(SearchOptions{Query: "test"})
+			backendErr, ok := err.(*BackendError)
+			if !ok {
+				t.Fatalf("error = %T (%v), want *BackendError", err, err)
+			}
+			if backendErr.Code != status {
+				t.Errorf("Code = %d, want original HTTP status %d", backendErr.Code, status)
+			}
+			if backendErr.UnavailabilityReason != UnavailabilityQuotaExhausted {
+				t.Errorf("UnavailabilityReason = %q, want %q", backendErr.UnavailabilityReason, UnavailabilityQuotaExhausted)
+			}
+		})
+	}
+}
+
+func TestTavilyAmbiguousFailuresRemainUnannotated(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   int
+		url    string
+	}{
+		{name: "forbidden", status: http.StatusForbidden, want: ErrCodeAuth},
+		{name: "rate limit", status: http.StatusTooManyRequests, want: ErrCodeRateLimit},
+		{name: "unknown 4xx", status: http.StatusBadRequest, want: http.StatusBadRequest},
+		{name: "malformed body", status: http.StatusOK, body: "not json", want: ErrCodeInvalidResponse},
+		{name: "network", url: "http://127.0.0.1:1", want: ErrCodeNetwork},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			url := tt.url
+			if url == "" {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					if tt.status != http.StatusOK {
+						w.WriteHeader(tt.status)
+					}
+					_, _ = w.Write([]byte(tt.body))
+				}))
+				defer server.Close()
+				url = server.URL
+			}
+			b := newTestTavilyBackend(url, "key", "basic", false, false)
+			_, err := b.Search(SearchOptions{Query: "test"})
+			backendErr, ok := err.(*BackendError)
+			if !ok || backendErr.Code != tt.want {
+				t.Fatalf("error = %T (%v), want BackendError code %d", err, err, tt.want)
+			}
+			if backendErr.UnavailabilityReason != "" {
+				t.Errorf("UnavailabilityReason = %q, want empty", backendErr.UnavailabilityReason)
+			}
+		})
+	}
+	t.Run("timeout", func(t *testing.T) {
+		release := make(chan struct{})
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			<-release
+		}))
+		defer server.Close()
+		b := newTestTavilyBackend(server.URL, "key", "basic", false, false)
+		b.client = &http.Client{Timeout: 10 * time.Millisecond}
+		_, err := b.Search(SearchOptions{Query: "test"})
+		close(release)
+		backendErr, ok := err.(*BackendError)
+		if !ok || backendErr.Code != ErrCodeInvalidResponse {
+			t.Fatalf("error = %T (%v), want BackendError with ErrCodeInvalidResponse", err, err)
+		}
+		if backendErr.UnavailabilityReason != "" {
+			t.Errorf("UnavailabilityReason = %q, want empty", backendErr.UnavailabilityReason)
+		}
+	})
 }
 
 func TestTavilyBackend_Search_RateLimit(t *testing.T) {

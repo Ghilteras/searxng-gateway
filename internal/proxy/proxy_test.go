@@ -865,6 +865,8 @@ func TestClassifyPremiumOutcome(t *testing.T) {
 		want string
 	}{
 		{"typed 432 plan limit", &backends.BackendError{Backend: "tavily", Code: 432, Err: errors.New("private plan body")}, "quota"},
+		{"annotated Tavily 401 retains auth outcome", (&backends.BackendError{Backend: "tavily", Code: backends.ErrCodeAuth}).WithUnavailabilityReason(backends.UnavailabilityCredentialsRejected), "auth"},
+		{"annotated Tavily 432 retains quota outcome", (&backends.BackendError{Backend: "tavily", Code: 432}).WithUnavailabilityReason(backends.UnavailabilityQuotaExhausted), "quota"},
 		{"typed 401", &backends.BackendError{Code: 401}, "auth"},
 		{"typed 403", &backends.BackendError{Code: 403}, "auth"},
 		{"typed 402 credits", &backends.BackendError{Code: 402, Err: errors.New("payment required")}, "quota"},

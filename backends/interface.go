@@ -79,9 +79,27 @@ func searchContext(opts SearchOptions) context.Context {
 
 // BackendError represents an error from a specific backend
 type BackendError struct {
-	Backend string
-	Err     error
-	Code    int // HTTP status code or custom error code
+	Backend              string
+	Err                  error
+	Code                 int // HTTP status code or custom error code
+	UnavailabilityReason string
+}
+
+const (
+	UnavailabilityCredentialsRejected = "credentials_rejected"
+	UnavailabilityQuotaExhausted      = "quota_exhausted"
+	UnavailabilityDisabled            = "disabled"
+)
+
+// WithUnavailabilityReason attaches a bounded, positive account-unavailability
+// reason to an error. Unknown values are ignored so diagnostics cannot acquire
+// an unbounded vocabulary.
+func (e *BackendError) WithUnavailabilityReason(reason string) *BackendError {
+	switch reason {
+	case UnavailabilityCredentialsRejected, UnavailabilityQuotaExhausted, UnavailabilityDisabled:
+		e.UnavailabilityReason = reason
+	}
+	return e
 }
 
 func (e *BackendError) Error() string {
