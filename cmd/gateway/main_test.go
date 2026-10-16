@@ -29,11 +29,13 @@ import (
 )
 
 type stubSearxng struct {
-	resp *searxng.Response
-	err  error
+	resp  *searxng.Response
+	err   error
+	calls atomic.Int64
 }
 
 func (s *stubSearxng) Search(_ context.Context, _ string) (*searxng.Response, error) {
+	s.calls.Add(1)
 	return s.resp, s.err
 }
 
@@ -246,6 +248,61 @@ func TestSearchEndpointProductionShapedOptionalProviders(t *testing.T) {
 	}
 	if attempts != 3 {
 		t.Fatalf("configured premium attempts = %d, want 3", attempts)
+	}
+}
+
+func TestSearchRejectsWhitespaceQueriesWithoutUpstreamWork(t *testing.T) {
+	metrics.Init()
+	sx := &stubSearxng{resp: &searxng.Response{Results: []searxng.Result{{URL: "https://must-not-run.example"}}}}
+	backend := &stubBackend{name: "brave", avail: true, results: []backends.SearchResult{{URL: "https://must-not-run.example", Engine: "brave"}}}
+	c, _ := cache.New(10, time.Hour)
+	cfg := &config.Config{FallbackTimeout: time.Second, SearxngTimeout: time.Second, MetricsPath: "/metrics", SearxngFailThreshold: 6, SearxngFailCooldown: time.Minute, SufficientMinResults: 2}
+	mgr := backends.NewManager()
+	mgr.Register(backend)
+	_ = mgr.SetFallbacks([]string{"brave"})
+	r := newRouter(proxy.New(cfg, sx, c, breaker.New(), mgr), cfg)
+	for _, target := range []string{"/search?q=%20", "/search?q=%09"} {
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, target, nil))
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("%s status = %d, want 400; body=%q", target, rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "q must not be blank") {
+			t.Errorf("%s body = %q, want clear blank-query message", target, rr.Body.String())
+		}
+	}
+	if got := sx.calls.Load(); got != 0 {
+		t.Fatalf("SearXNG calls = %d, want 0", got)
+	}
+	if got := backend.calls.Load(); got != 0 {
+		t.Fatalf("provider calls = %d, want 0", got)
+	}
+	if got := c.Len(); got != 0 {
+		t.Fatalf("cache entries = %d, want 0", got)
+	}
+}
+
+func TestSearchCacheHitCarriesCurrentQuery(t *testing.T) {
+	r := setupRouter(t)
+	for _, tc := range []struct{ target, query string }{
+		{"/search?q=Fresh+Query", "Fresh Query"},
+		{"/search?q=fresh+QUERY", "fresh QUERY"},
+	} {
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, tc.target, nil))
+		if rr.Code < 200 || rr.Code >= 300 {
+			t.Fatalf("%s status = %d, want 2xx", tc.target, rr.Code)
+		}
+		var body struct {
+			Query   string           `json:"query"`
+			Results []searxng.Result `json:"results"`
+		}
+		if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+			t.Fatalf("%s JSON decode: %v", tc.target, err)
+		}
+		if body.Query != tc.query || len(body.Results) == 0 {
+			t.Fatalf("%s body query=%q results=%d; want query=%q and nonempty results", tc.target, body.Query, len(body.Results), tc.query)
+		}
 	}
 }
 

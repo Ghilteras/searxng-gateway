@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -124,6 +125,12 @@ func newRouter(p *proxy.Proxy, cfg *config.Config) http.Handler {
 			span.SetAttributes(attribute.Int("http.status_code", http.StatusBadRequest), attribute.String("outcome", "error"))
 			span.SetStatus(codes.Error, "")
 			http.Error(w, "missing q", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(q) == "" {
+			span.SetAttributes(attribute.Int("http.status_code", http.StatusBadRequest), attribute.String("outcome", "error"))
+			span.SetStatus(codes.Error, "")
+			http.Error(w, "q must not be blank", http.StatusBadRequest)
 			return
 		}
 		resp, err := p.Search(ctx, q)

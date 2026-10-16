@@ -6,6 +6,8 @@
 
 The gateway response is a reduced SearXNG-compatible web-results representation: it guarantees `query` and `results`, but does not transparently forward the complete SearXNG envelope. `answers`, `corrections`, and `infoboxes` are not modelled; modelled `suggestions` and `unresponsive_engines` are not forwarded into the assembled output.
 
+`GET /search` rejects a missing or whitespace-only `q` with HTTP 400 before invoking SearXNG, a premium provider, or the cache.
+
 ```
 Client ───▶ searxng-gateway (:8080)
                     │

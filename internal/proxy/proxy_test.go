@@ -62,6 +62,23 @@ type contextSearxng struct {
 	fn func(context.Context) (*searxng.Response, error)
 }
 
+type mutableAvailabilityBackend struct {
+	name      string
+	available atomic.Bool
+	calls     atomic.Int64
+	onSearch  func()
+}
+
+func (b *mutableAvailabilityBackend) Name() string      { return b.name }
+func (b *mutableAvailabilityBackend) IsAvailable() bool { return b.available.Load() }
+func (b *mutableAvailabilityBackend) Search(backends.SearchOptions) ([]backends.SearchResult, error) {
+	b.calls.Add(1)
+	if b.onSearch != nil {
+		b.onSearch()
+	}
+	return nil, nil
+}
+
 func (s *contextSearxng) Search(ctx context.Context, _ string) (*searxng.Response, error) {
 	return s.fn(ctx)
 }
@@ -2411,6 +2428,73 @@ func TestNoResultsProductionShapedOptionalProviders(t *testing.T) {
 	}
 	if attempts != 3 {
 		t.Fatalf("configured admitted attempts = %d, want exactly 3", attempts)
+	}
+}
+
+func TestMixedEmptyAndOpenBreakerVetoesNoResults(t *testing.T) {
+	metrics.Init()
+	brave := &fakeBackend{name: "brave", avail: true}
+	exa := &fakeBackend{name: "exa", avail: true}
+	bm := breaker.New()
+	for i := 0; i < 2; i++ {
+		_, _ = bm.Execute(premiumBreakerID("exa"), func() (interface{}, error) { return nil, errors.New("fault") })
+	}
+	if !bm.IsOpen(premiumBreakerID("exa")) {
+		t.Fatal("precondition: exa breaker is not open")
+	}
+	c, _ := cache.New(10, 0)
+	p := newTestProxy(newCfg(), &fakeSearxng{resp: &searxng.Response{}}, c, bm, brave, exa)
+	beforeFail, beforeNoResults := outcomeCounter(t, "fallback_fail"), outcomeCounter(t, "no_results")
+	if _, err := p.Search(context.Background(), "mixed-empty-open-breaker"); err == nil {
+		t.Fatal("mixed empty/open-breaker request returned success")
+	}
+	if got := brave.calls.Load(); got != 1 {
+		t.Fatalf("admitted empty provider calls = %d, want 1", got)
+	}
+	if got := exa.calls.Load(); got != 0 {
+		t.Fatalf("open-breaker provider calls = %d, want 0", got)
+	}
+	if got := outcomeCounter(t, "fallback_fail") - beforeFail; got != 1 {
+		t.Fatalf("fallback_fail delta = %v, want 1", got)
+	}
+	if got := outcomeCounter(t, "no_results") - beforeNoResults; got != 0 {
+		t.Fatalf("no_results delta = %v, want 0", got)
+	}
+	// The production-shaped optional-provider sibling pins missing_key as the
+	// sole skip exemption while this fixture pins breaker_open as a veto.
+}
+
+func TestNotAttemptedConfiguredProviderVetoesNoResults(t *testing.T) {
+	metrics.Init()
+	var logs strings.Builder
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	brave := &mutableAvailabilityBackend{name: "brave"}
+	exa := &mutableAvailabilityBackend{name: "exa"}
+	brave.available.Store(true)
+	exa.available.Store(true)
+	brave.onSearch = func() { exa.available.Store(false) }
+	c, _ := cache.New(10, 0)
+	p := newTestProxy(newCfg(), &fakeSearxng{resp: &searxng.Response{}}, c, breaker.New(), brave, exa)
+	beforeFail, beforeNoResults := outcomeCounter(t, "fallback_fail"), outcomeCounter(t, "no_results")
+	if _, err := p.Search(context.Background(), "not-attempted-configured-provider"); err == nil {
+		t.Fatal("request with a not_attempted configured provider returned success")
+	}
+	if got := brave.calls.Load(); got != 1 {
+		t.Fatalf("admitted empty provider calls = %d, want 1", got)
+	}
+	if got := exa.calls.Load(); got != 0 {
+		t.Fatalf("not_attempted provider calls = %d, want 0", got)
+	}
+	if got := outcomeCounter(t, "fallback_fail") - beforeFail; got != 1 {
+		t.Fatalf("fallback_fail delta = %v, want 1", got)
+	}
+	if got := outcomeCounter(t, "no_results") - beforeNoResults; got != 0 {
+		t.Fatalf("no_results delta = %v, want 0", got)
+	}
+	if !strings.Contains(logs.String(), `"provider":"exa","skip":"not_attempted"`) {
+		t.Fatalf("diagnostic did not record not_attempted provider: %s", logs.String())
 	}
 }
 

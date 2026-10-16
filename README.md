@@ -4,6 +4,8 @@ Decision proxy in front of SearXNG: **SearXNG plus a guaranteed premium call in 
 
 The gateway returns a reduced SearXNG-compatible web-results representation. It guarantees `query` and `results`; it does not transparently forward the full SearXNG envelope: `answers`, `corrections`, and `infoboxes` are not modelled, and modelled `suggestions` and `unresponsive_engines` are not forwarded in the assembled output.
 
+`GET /search` rejects a missing or whitespace-only `q` with HTTP 400 before any upstream search or provider work.
+
 🚀 **Works with zero API keys in keyless mode.** See [docs/keyless.md](docs/keyless.md).
 
 Originally derived from [sx](https://github.com/byteowlz/sx); adds HTTP server, per-engine circuit breaker, Prometheus metrics, cache, and Docker packaging.
@@ -239,6 +241,7 @@ The image is built and pushed automatically by **GitHub Actions** on every push 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
 ## Zero-result outcomes
 
 When both search stages exhaust with no web results, the gateway returns HTTP 200 with `{"query":"<effective query>","results":[]}` and records `no_results` only if the request context is live, the SearXNG stage completed successfully, at least one premium call was admitted, all admitted premium calls ended with `empty`, and no configured eligible provider was skipped for a reason other than missing configuration. SearXNG engine degradation is reported in the terminal diagnostic but does not veto `no_results`. SearXNG cooldown, stage/provider faults, breaker-open skips, and incomplete execution remain errors (`fallback_fail`); parent deadline expiry remains `timeout`. Empty responses are not cached; nonempty partial results retain their existing success and cache behavior. Each zero-result request emits one structured diagnostic without query text, URLs, response bodies, or query hashes.
