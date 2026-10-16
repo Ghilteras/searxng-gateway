@@ -128,7 +128,6 @@ func newRouter(p *proxy.Proxy, cfg *config.Config) http.Handler {
 		}
 		resp, err := p.Search(ctx, q)
 		if err != nil {
-			log.Printf("search failed: %v", err)
 			span.SetAttributes(attribute.Int("http.status_code", http.StatusBadGateway), attribute.String("outcome", "error"))
 			span.SetStatus(codes.Error, "")
 			w.Header().Set("Content-Type", "application/json")

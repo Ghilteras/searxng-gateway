@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,11 +43,13 @@ type stubBackend struct {
 	results []backends.SearchResult
 	err     error
 	avail   bool
+	calls   atomic.Int64
 }
 
 func (s *stubBackend) Name() string      { return s.name }
 func (s *stubBackend) IsAvailable() bool { return s.avail }
 func (s *stubBackend) Search(_ backends.SearchOptions) ([]backends.SearchResult, error) {
+	s.calls.Add(1)
 	return s.results, s.err
 }
 
@@ -94,6 +97,7 @@ func TestSearchEndpointFallback(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	var body struct {
+		Query   string           `json:"query"`
 		Results []searxng.Result `json:"results"`
 	}
 	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
@@ -101,6 +105,9 @@ func TestSearchEndpointFallback(t *testing.T) {
 	}
 	if len(body.Results) == 0 {
 		t.Error("expected non-empty results (Brave fallback)")
+	}
+	if body.Query != "hello" {
+		t.Errorf("query = %q, want effective query hello", body.Query)
 	}
 	if !strings.Contains(rr.Header().Get("Content-Type"), "json") {
 		t.Errorf("Content-Type = %q, want json", rr.Header().Get("Content-Type"))
@@ -137,9 +144,128 @@ func TestSearchFailureDoesNotDiscloseProviderError(t *testing.T) {
 	if !strings.Contains(body, `"error":"search_failed"`) {
 		t.Fatalf("body = %q, want sanitized JSON error", body)
 	}
-	if !strings.Contains(logs.String(), sentinel) {
-		t.Fatalf("server log does not contain provider sentinel: %q", logs.String())
+	if strings.Contains(logs.String(), sentinel) {
+		t.Fatalf("server log disclosed provider sentinel: %q", logs.String())
 	}
+}
+
+func TestSearchEndpointCleanNoResults(t *testing.T) {
+	metrics.Init()
+	c, err := cache.New(10, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{FallbackTimeout: time.Second, SearxngTimeout: time.Second, MetricsPath: "/metrics", SearxngFailThreshold: 6, SearxngFailCooldown: time.Minute, SufficientMinResults: 2}
+	mgr := backends.NewManager()
+	mgr.Register(&stubBackend{name: "brave", avail: true})
+	_ = mgr.SetFallbacks([]string{"brave"})
+	r := newRouter(proxy.New(cfg, &stubSearxng{resp: &searxng.Response{}}, c, breaker.New(), mgr), cfg)
+	before := requestOutcomeValue(t, "no_results")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/search?q=clean-empty", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.TrimSpace(rr.Body.String()) != `{"query":"clean-empty","results":[]}` {
+		t.Fatalf("body = %q, want query metadata and empty result set", rr.Body.String())
+	}
+	if got := requestOutcomeValue(t, "no_results") - before; got != 1 {
+		t.Fatalf("no_results delta = %v, want 1", got)
+	}
+}
+
+func TestSearchEndpointCAPTCHADegradedNoResults(t *testing.T) {
+	metrics.Init()
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	c, _ := cache.New(10, 0)
+	cfg := &config.Config{FallbackTimeout: time.Second, SearxngTimeout: time.Second, MetricsPath: "/metrics", SearxngFailThreshold: 6, SearxngFailCooldown: time.Minute, SufficientMinResults: 10}
+	mgr := backends.NewManager()
+	for _, name := range []string{"brave", "exa", "parallel"} {
+		mgr.Register(&stubBackend{name: name, avail: true})
+	}
+	_ = mgr.SetFallbacks([]string{"brave", "exa", "parallel"})
+	sx := &stubSearxng{resp: &searxng.Response{UnresponsiveEngines: [][]string{{"duckduckgo", "CAPTCHA"}}}}
+	r := newRouter(proxy.New(cfg, sx, c, breaker.New(), mgr), cfg)
+	before := requestOutcomeValue(t, "no_results")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/search?q=captcha-degraded", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.TrimSpace(rr.Body.String()) != `{"query":"captcha-degraded","results":[]}` {
+		t.Fatalf("body = %q, want query and empty results", rr.Body.String())
+	}
+	if got := requestOutcomeValue(t, "no_results") - before; got != 1 {
+		t.Fatalf("no_results delta = %v, want 1", got)
+	}
+	if !strings.Contains(logs.String(), `"reason":"exhausted_with_engine_failures"`) {
+		t.Fatalf("diagnostic omitted degraded-exhaustion reason: %s", logs.String())
+	}
+}
+
+func TestSearchEndpointProductionShapedOptionalProviders(t *testing.T) {
+	metrics.Init()
+	c, _ := cache.New(10, 0)
+	cfg := &config.Config{FallbackTimeout: time.Second, SearxngTimeout: time.Second, MetricsPath: "/metrics", SearxngFailThreshold: 6, SearxngFailCooldown: time.Minute, SufficientMinResults: 10}
+	mgr := backends.NewManager()
+	configured := []*stubBackend{{name: "brave", avail: true}, {name: "exa", avail: true}, {name: "parallel", avail: true}}
+	optional := []*stubBackend{{name: "serper", avail: false}, {name: "tavily", avail: false}}
+	names := make([]string, 0, 5)
+	for _, backend := range append(configured, optional...) {
+		mgr.Register(backend)
+		names = append(names, backend.name)
+	}
+	_ = mgr.SetFallbacks(names)
+	r := newRouter(proxy.New(cfg, &stubSearxng{resp: &searxng.Response{}}, c, breaker.New(), mgr), cfg)
+	before := requestOutcomeValue(t, "no_results")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/search?q=production-shaped", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.TrimSpace(rr.Body.String()) != `{"query":"production-shaped","results":[]}` {
+		t.Fatalf("body = %q, want query and empty results", rr.Body.String())
+	}
+	if got := requestOutcomeValue(t, "no_results") - before; got != 1 {
+		t.Fatalf("no_results delta = %v, want 1", got)
+	}
+	var attempts int64
+	for _, backend := range configured {
+		if got := backend.calls.Load(); got != 1 {
+			t.Errorf("%s admitted calls = %d, want 1", backend.name, got)
+		}
+		attempts += backend.calls.Load()
+	}
+	for _, backend := range optional {
+		if got := backend.calls.Load(); got != 0 {
+			t.Errorf("unavailable %s calls = %d, want 0", backend.name, got)
+		}
+	}
+	if attempts != 3 {
+		t.Fatalf("configured premium attempts = %d, want 3", attempts)
+	}
+}
+
+func requestOutcomeValue(t *testing.T, outcome string) float64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() != "searxng_gateway_requests_total" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			if len(metric.GetLabel()) == 1 && metric.GetLabel()[0].GetValue() == outcome {
+				return metric.GetCounter().GetValue()
+			}
+		}
+	}
+	return 0
 }
 
 func TestSearchHandlerCreatesSanitizedServerSpan(t *testing.T) {

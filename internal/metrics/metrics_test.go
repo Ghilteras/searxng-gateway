@@ -27,6 +27,21 @@ func TestRequestsTotalNotNil(t *testing.T) {
 	if RequestsTotal == nil {
 		t.Fatal("RequestsTotal is nil after Init")
 	}
+	RequestsTotal.WithLabelValues("no_results").Inc()
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() == "searxng_gateway_requests_total" {
+			for _, metric := range family.GetMetric() {
+				if len(metric.GetLabel()) == 1 && metric.GetLabel()[0].GetValue() == "no_results" && metric.GetCounter().GetValue() > 0 {
+					return
+				}
+			}
+		}
+	}
+	t.Fatal("RequestsTotal did not expose dynamic no_results outcome label")
 }
 
 func TestLatencyBucketBoundaries(t *testing.T) {

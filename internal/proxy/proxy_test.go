@@ -2228,6 +2228,346 @@ func TestEmptyResultOutcomeNoTrip(t *testing.T) {
 	}
 }
 
+func TestCleanNoResultsIsNotCachedAndDiagnosticsArePrivate(t *testing.T) {
+	metrics.Init()
+	const urlMarker = "https://PRIVATE-URL-MARKER.example/path"
+	const secretMarker = "SECRET-PRIVATE-MARKER-93"
+	query := "QUERY-PRIVATE-MARKER-71 " + urlMarker + " " + secretMarker // DELIBERATELY NEVER LOG THIS VALUE.
+	var logs strings.Builder
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	backend := &fakeBackend{name: "brave", avail: true}
+	c, _ := cache.New(10, time.Hour)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 3
+	p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, breaker.New(), backend)
+	before := outcomeCounter(t, "no_results")
+	for i := 0; i < 2; i++ {
+		response, err := p.Search(context.Background(), query)
+		if err != nil || response == nil || len(response.Results) != 0 {
+			t.Fatalf("Search %d = %#v, %v; want successful empty response", i+1, response, err)
+		}
+		if response.Results == nil {
+			t.Fatalf("Search %d returned nil results slice; want []", i+1)
+		}
+	}
+	if got := backend.calls.Load(); got != 2 {
+		t.Fatalf("backend calls = %d, want fresh attempt for each identical query", got)
+	}
+	if _, ok := c.Get(normalize(query)); ok {
+		t.Fatal("clean empty response was cached")
+	}
+	if got := outcomeCounter(t, "no_results") - before; got != 2 {
+		t.Fatalf("no_results delta = %v, want 2", got)
+	}
+	output := logs.String()
+	if got := strings.Count(output, "zero_result "); got != 2 {
+		t.Fatalf("structured zero-result record count = %d, want exactly 2 (one per zero-result request): %s", got, output)
+	}
+	for _, required := range []string{`"outcome":"no_results"`, `"reason":"clean_exhaustion"`, `"searxng_outcome":"success"`, `"provider":"brave"`, `"outcome":"empty"`} {
+		if !strings.Contains(output, required) {
+			t.Errorf("diagnostic missing %q: %s", required, output)
+		}
+	}
+	for _, secret := range []string{query, "QUERY-PRIVATE-MARKER-71", urlMarker, secretMarker, "secret-response-body"} {
+		if strings.Contains(output, secret) {
+			t.Errorf("diagnostic leaked forbidden marker %q: %s", secret, output)
+		}
+	}
+}
+
+func TestMixedPremiumFaultAndEmptyIsFallbackFail(t *testing.T) {
+	metrics.Init()
+	var logs strings.Builder
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	fault := &fakeBackend{name: "brave", avail: true, err: errors.New("provider failure")}
+	empty := &fakeBackend{name: "exa", avail: true}
+	c, _ := cache.New(10, 0)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 10
+	p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{UnresponsiveEngines: [][]string{{"engine-a", "network failure"}}}}, c, breaker.New(), fault, empty)
+	before := outcomeCounter(t, "fallback_fail")
+	beforeNoResults := outcomeCounter(t, "no_results")
+	if _, err := p.Search(context.Background(), "mixed-empty-fault"); err == nil {
+		t.Fatal("mixed fault/empty returned success; want fallback error")
+	}
+	if got := outcomeCounter(t, "fallback_fail") - before; got != 1 {
+		t.Fatalf("fallback_fail delta = %v, want 1", got)
+	}
+	if got := outcomeCounter(t, "no_results") - beforeNoResults; got != 0 {
+		t.Fatalf("no_results delta = %v, want zero", got)
+	}
+	for _, field := range []string{`"outcome":"fallback_fail"`, `"provider":"brave"`, `"outcome":"other_error"`, `"provider":"exa"`, `"outcome":"empty"`, `"engine-a"`, `"network failure"`} {
+		if !strings.Contains(logs.String(), field) {
+			t.Errorf("terminal diagnostic missing %q: %s", field, logs.String())
+		}
+	}
+}
+
+func TestAllPremiumBreakersOpenIsFallbackFail(t *testing.T) {
+	metrics.Init()
+	backend := &fakeBackend{name: "brave", avail: true}
+	bm := breaker.New()
+	for i := 0; i < 2; i++ {
+		_, _ = bm.Execute(premiumBreakerID("brave"), func() (interface{}, error) { return nil, errors.New("fault") })
+	}
+	if !bm.IsOpen(premiumBreakerID("brave")) {
+		t.Fatal("precondition: breaker is not open")
+	}
+	c, _ := cache.New(10, 0)
+	cfg := newCfg()
+	p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, bm, backend)
+	before := outcomeCounter(t, "fallback_fail")
+	beforeNoResults := outcomeCounter(t, "no_results")
+	if _, err := p.Search(context.Background(), "all-breakers-open"); err == nil {
+		t.Fatal("open breaker request returned success")
+	}
+	if got := outcomeCounter(t, "fallback_fail") - before; got != 1 {
+		t.Fatalf("fallback_fail delta = %v, want 1", got)
+	}
+	if got := outcomeCounter(t, "no_results") - beforeNoResults; got != 0 {
+		t.Fatalf("no_results delta = %v, want 0", got)
+	}
+	if got := backend.calls.Load(); got != 0 {
+		t.Fatalf("calls with open breaker = %d, want 0", got)
+	}
+}
+
+func TestNoResultsCAPTCHADegraded(t *testing.T) {
+	metrics.Init()
+	var logs strings.Builder
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	providers := []*fakeBackend{
+		{name: "brave", avail: true}, {name: "exa", avail: true}, {name: "parallel", avail: true},
+	}
+	c, _ := cache.New(10, 0) // isolated in-memory cache
+	cfg := newCfg()
+	cfg.SufficientMinResults = 10
+	sx := &fakeSearxng{resp: &searxng.Response{UnresponsiveEngines: [][]string{{"duckduckgo", "CAPTCHA"}}}}
+	p := newTestProxy(cfg, sx, c, breaker.New(), providers[0], providers[1], providers[2])
+	before := outcomeCounter(t, "no_results")
+	response, err := p.Search(context.Background(), "captcha-degraded-empty")
+	if err != nil || response == nil || response.Query != "captcha-degraded-empty" || len(response.Results) != 0 {
+		t.Fatalf("Search = %#v, %v; want successful empty response", response, err)
+	}
+	if got := outcomeCounter(t, "no_results") - before; got != 1 {
+		t.Fatalf("no_results delta = %v, want 1", got)
+	}
+	for _, provider := range providers {
+		if got := provider.calls.Load(); got != 1 {
+			t.Errorf("%s attempts = %d, want one empty terminal attempt", provider.name, got)
+		}
+	}
+	for _, field := range []string{`"outcome":"no_results"`, `"reason":"exhausted_with_engine_failures"`, `"searxng_engine_failures":[["duckduckgo","CAPTCHA"]]`} {
+		if !strings.Contains(logs.String(), field) {
+			t.Errorf("diagnostic missing %q: %s", field, logs.String())
+		}
+	}
+}
+
+func TestNoResultsProductionShapedOptionalProviders(t *testing.T) {
+	metrics.Init()
+	configured := []*fakeBackend{
+		{name: "brave", avail: true}, {name: "exa", avail: true}, {name: "parallel", avail: true},
+	}
+	optional := []*fakeBackend{
+		{name: "serper", avail: false}, {name: "tavily", avail: false},
+	}
+	backends := make([]backends.SearchBackend, 0, 5)
+	for _, backend := range configured {
+		backends = append(backends, backend)
+	}
+	for _, backend := range optional {
+		backends = append(backends, backend)
+	}
+	c, _ := cache.New(10, 0) // isolated in-memory cache
+	cfg := newCfg()
+	cfg.SufficientMinResults = 10
+	p := newTestProxy(cfg, &fakeSearxng{resp: &searxng.Response{}}, c, breaker.New(), backends...)
+	before := outcomeCounter(t, "no_results")
+	response, err := p.Search(context.Background(), "production-shaped-empty")
+	if err != nil || response == nil || response.Query != "production-shaped-empty" || len(response.Results) != 0 {
+		t.Fatalf("Search = %#v, %v; want successful empty response", response, err)
+	}
+	if got := outcomeCounter(t, "no_results") - before; got != 1 {
+		t.Fatalf("no_results delta = %v, want 1", got)
+	}
+	var attempts int64
+	for _, backend := range configured {
+		if got := backend.calls.Load(); got != 1 {
+			t.Errorf("%s attempts = %d, want one", backend.name, got)
+		}
+		attempts += backend.calls.Load()
+	}
+	for _, backend := range optional {
+		if got := backend.calls.Load(); got != 0 {
+			t.Errorf("unavailable %s attempts = %d, want zero", backend.name, got)
+		}
+	}
+	if attempts != 3 {
+		t.Fatalf("configured admitted attempts = %d, want exactly 3", attempts)
+	}
+}
+
+func TestZeroResultsSearxngFaultOrCooldownIsFallbackFail(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		sx       searxng.Client
+		cooldown bool
+	}{
+		{name: "stage_error", sx: &fakeSearxng{err: errors.New("SearXNG unavailable")}},
+		{name: "cooldown_skip", sx: &fakeSearxng{resp: &searxng.Response{}}, cooldown: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			metrics.Init()
+			var logs strings.Builder
+			previous := log.Writer()
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(previous) })
+			c, _ := cache.New(10, 0)
+			p := newTestProxy(newCfg(), tc.sx, c, breaker.New(), &fakeBackend{name: "brave", avail: true})
+			if tc.cooldown {
+				p.sxCooldownTil.Store(time.Now().Add(time.Minute).UnixNano())
+			}
+			beforeFail := outcomeCounter(t, "fallback_fail")
+			beforeEmpty := outcomeCounter(t, "no_results")
+			if _, err := p.Search(context.Background(), "stage-fault-or-cooldown"); err == nil {
+				t.Fatal("zero-result request returned success")
+			}
+			if got := outcomeCounter(t, "fallback_fail") - beforeFail; got != 1 {
+				t.Fatalf("fallback_fail delta = %v, want 1", got)
+			}
+			if got := outcomeCounter(t, "no_results") - beforeEmpty; got != 0 {
+				t.Fatalf("no_results delta = %v, want 0", got)
+			}
+			if !strings.Contains(logs.String(), `"context_state":"live"`) {
+				t.Fatalf("diagnostic context state not live: %s", logs.String())
+			}
+		})
+	}
+}
+
+func TestZeroResultCallerCancellationDiagnostic(t *testing.T) {
+	metrics.Init()
+	var logs strings.Builder
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	sxStarted, premiumStarted := make(chan struct{}), make(chan struct{})
+	sx := &contextSearxng{fn: func(ctx context.Context) (*searxng.Response, error) {
+		close(sxStarted)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	provider := &contextBackend{name: "brave", fn: func(ctx context.Context) ([]backends.SearchResult, error) {
+		close(premiumStarted)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	c, _ := cache.New(10, 0)
+	cfg := newCfg()
+	cfg.FallbackTimeout = time.Second
+	p := newTestProxy(cfg, sx, c, breaker.New(), provider)
+	before := outcomeCounter(t, "fallback_fail")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := p.Search(ctx, "caller-cancel-zero"); done <- err }()
+	<-sxStarted
+	<-premiumStarted
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("caller cancellation returned success")
+	}
+	if got := outcomeCounter(t, "fallback_fail") - before; got != 1 {
+		t.Fatalf("fallback_fail delta = %v, want 1", got)
+	}
+	if !strings.Contains(logs.String(), `"context_state":"cancelled"`) {
+		t.Fatalf("diagnostic omitted caller cancellation state: %s", logs.String())
+	}
+}
+
+func TestZeroResultParentDeadlineDiagnostic(t *testing.T) {
+	metrics.Init()
+	var logs strings.Builder
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	sx := &fakeSearxng{resp: &searxng.Response{}}
+	provider := &contextBackend{name: "brave", fn: func(ctx context.Context) ([]backends.SearchResult, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	c, _ := cache.New(10, 0)
+	cfg := newCfg()
+	cfg.FallbackTimeout = 25 * time.Millisecond
+	p := newTestProxy(cfg, sx, c, breaker.New(), provider)
+	before := outcomeCounter(t, "timeout")
+	if _, err := p.Search(context.Background(), "parent-deadline-zero"); err == nil {
+		t.Fatal("parent deadline returned success")
+	}
+	if got := outcomeCounter(t, "timeout") - before; got != 1 {
+		t.Fatalf("timeout delta = %v, want 1", got)
+	}
+	for _, field := range []string{`"outcome":"timeout"`, `"reason":"parent_deadline"`, `"context_state":"deadline_exceeded"`} {
+		if !strings.Contains(logs.String(), field) {
+			t.Errorf("diagnostic missing %q: %s", field, logs.String())
+		}
+	}
+}
+
+func TestQueryMetadataFreshResponseAndConcurrentCacheHits(t *testing.T) {
+	metrics.Init()
+	c, _ := cache.New(10, time.Hour)
+	cfg := newCfg()
+	cfg.SufficientMinResults = 10
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{{URL: "https://metadata.example", Engine: "wikipedia"}}}}
+	p := newTestProxy(cfg, sx, c, breaker.New(), &fakeBackend{name: "brave", avail: true})
+	first, err := p.Search(context.Background(), "  Postgres   OR MariaDB ")
+	if err != nil || first.Query != "Postgres OR MariaDB" || len(first.Results) != 1 {
+		t.Fatalf("fresh response = %#v, %v; query/result contract violated", first, err)
+	}
+	cacheKey := normalize("  Postgres   OR MariaDB ")
+	cachedValue, ok := c.Get(cacheKey)
+	if !ok {
+		t.Fatal("positive response was not cached")
+	}
+	cached := cachedValue.(*searxng.Response)
+	const workers = 16
+	var wg sync.WaitGroup
+	errCh := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			query := "postgres OR MARIADB"
+			if i%2 == 1 {
+				query = "POSTGRES or mariadb"
+			}
+			got, err := p.Search(context.Background(), query)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if got.Query != query || len(got.Results) != 1 {
+				errCh <- fmt.Errorf("cache hit response = %#v, want query %q and one result", got, query)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Error(err)
+	}
+	if cached.Query != "Postgres OR MariaDB" {
+		t.Fatalf("shared cached Query mutated to %q", cached.Query)
+	}
+}
+
 // TestProxyHalfOpenAdmitsSingleRealSearchUnderConcurrency verifies admission
 // at the proxy/backend boundary (not just at Manager.Execute): one real Search
 // remains in flight as the half-open probe while concurrent requests are

@@ -24,8 +24,8 @@
 //     tried.
 //  5. Assemble the output: premium results in arrival order, then SearXNG
 //     results whose URL premium did not return. Return accumulated nonempty
-//     results even below the target; an empty result set is a timeout at the
-//     parent deadline, otherwise a failure.
+//     results even below the target; an empty result set is no_results only
+//     after clean exhaustion, otherwise fallback_fail or timeout.
 //  6. Circuit breaker: premium providers whose breaker is open are skipped.
 //     Each actual premium call runs inside gobreaker.Execute (real admission)
 //     and records exactly one terminal outcome; genuine provider faults trip
@@ -51,6 +51,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -104,11 +105,14 @@ func New(cfg *config.Config, sx searxng.Client, c *cache.Cache, breakerMgr *brea
 //   - searxng_ok:                 only SearXNG contributed results (premium errored, returned empty, or had no provider to call).
 //   - premium_ok:                 only premium providers contributed results (SearXNG skipped, errored, returned empty, or returned only URLs premium also returned).
 //   - searxng_plus_premium_ok:    both SearXNG and premium providers contributed results.
-//   - fallback_fail:              all providers exhausted with no results.
+//   - no_results:                 successful aggregation with empty premium outcomes (engine degradation is diagnosed separately).
+//   - fallback_fail:              zero results with a fault, unavailable coverage, or skip.
 //   - timeout:                    The overall request budget expired before any results were collected.
 func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, error) {
+	requestStarted := time.Now()
 	ctx, span := otel.Tracer("sx/internal/proxy").Start(ctx, "proxy.search")
 	defer span.End()
+	diagnostics := &requestDiagnostics{}
 	// key (lower-cased, whitespace-collapsed) is the cache key ONLY.
 	// upstreamQuery keeps the caller's case (trim + whitespace collapse) and is
 	// the query forwarded to SearXNG and to every premium provider: operators
@@ -118,11 +122,13 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 
 	// 1. Cache check.
 	if v, ok := p.c.Get(key); ok {
+		cached := *(v.(*searxng.Response))
+		cached.Query = upstreamQuery
 		span.AddEvent("cache.hit", trace.WithAttributes(traceAttrs("cache_hit")...))
-		span.SetAttributes(attribute.String("outcome", "cache_hit"), attribute.Int("result_count", resultCount(v.(*searxng.Response))))
+		span.SetAttributes(attribute.String("outcome", "cache_hit"), attribute.Int("result_count", resultCount(&cached)))
 		span.SetStatus(codes.Ok, "")
 		metrics.RequestsTotal.WithLabelValues("cache_hit").Inc()
-		return v.(*searxng.Response), nil
+		return &cached, nil
 	}
 	span.AddEvent("cache.miss", trace.WithAttributes(traceAttrs("cache_miss")...))
 
@@ -133,6 +139,7 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, p.cfg.FallbackTimeout)
 	defer cancel()
+	timeoutCtx = context.WithValue(timeoutCtx, requestDiagnosticsKey{}, diagnostics)
 	parentDeadline, _ := timeoutCtx.Deadline()
 
 	// premium_calls_per_request: admitted calls across the concurrent first call
@@ -152,6 +159,12 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	usedPremiums := make(map[string]bool)
 	var premiumResults []searxng.Result
 	var premiumErrMsgs []string
+	for _, name := range p.fallbackMgr.AvailableBackends() {
+		backend, ok := p.fallbackMgr.GetBackend(name)
+		if ok && !backend.IsAvailable() {
+			diagnostics.addProvider(providerDiagnostic{Provider: name, Skip: "missing_key"})
+		}
+	}
 
 	// 3a. Guaranteed first premium call, started CONCURRENTLY with the SearXNG
 	// stage. It performs exactly one admitted call (breaker admission, outcome
@@ -204,6 +217,9 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 			stageOutcome = "timeout"
 		default:
 			stageOutcome = "error"
+		}
+		if err == nil && resp != nil {
+			diagnostics.engineFailures = boundedEngineFailures(resp.UnresponsiveEngines)
 		}
 
 		if err == nil && resp != nil {
@@ -321,12 +337,49 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 
 	// 5. Outcome.
 	if len(allResults) == 0 {
-		outcome := "fallback_fail"
-		if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
-			outcome = "timeout"
+		providerEvents := diagnostics.providers()
+		seenProviders := make(map[string]bool, len(providerEvents))
+		for _, event := range providerEvents {
+			seenProviders[event.Provider] = true
 		}
+		for _, name := range p.fallbackMgr.AvailableBackends() {
+			if !seenProviders[name] {
+				diagnostics.addProvider(providerDiagnostic{Provider: name, Skip: "not_attempted"})
+			}
+		}
+		requestErr := timeoutCtx.Err()
+		outcome := "fallback_fail"
+		if errors.Is(requestErr, context.DeadlineExceeded) {
+			outcome = "timeout"
+		} else if requestErr == nil && stageOutcome == "success" && admittedTotal > 0 && diagnostics.cleanEmpty() {
+			outcome = "no_results"
+		}
+		reason := "provider_fault_or_incomplete"
+		if outcome == "no_results" {
+			reason = "clean_exhaustion"
+			if len(diagnostics.engineFailures) > 0 {
+				reason = "exhausted_with_engine_failures"
+			}
+		} else if outcome == "timeout" {
+			reason = "parent_deadline"
+		}
+		contextState := "live"
+		if errors.Is(requestErr, context.DeadlineExceeded) {
+			contextState = "deadline_exceeded"
+		} else if requestErr != nil {
+			contextState = "cancelled"
+		}
+		logZeroResultDiagnostic(zeroResultDiagnostic{
+			Outcome: outcome, Elapsed: time.Since(requestStarted).String(), Reason: reason, ContextState: contextState,
+			SearXNGOutcome: stageOutcome, SearXNGResults: len(sxResults), SearXNGFailures: diagnostics.engineFailures,
+			Premium: diagnostics.providers(), TraceID: traceID(span.SpanContext().TraceID().String()),
+		})
 		metrics.RequestsTotal.WithLabelValues(outcome).Inc()
 		span.SetAttributes(attribute.String("outcome", outcome), attribute.Int("result_count", 0))
+		if outcome == "no_results" {
+			span.SetStatus(codes.Ok, "")
+			return &searxng.Response{Query: upstreamQuery, Results: []searxng.Result{}}, nil
+		}
 		span.SetStatus(codes.Error, "")
 		errDetail := "all fallbacks failed"
 		if len(premiumErrMsgs) > 0 {
@@ -352,7 +405,7 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	span.SetAttributes(attribute.String("outcome", outcome), attribute.Int("result_count", len(allResults)))
 	span.SetStatus(codes.Ok, "")
 
-	mapped := &searxng.Response{Results: allResults}
+	mapped := &searxng.Response{Query: upstreamQuery, Results: allResults}
 	p.observe(mapped)
 	p.c.Set(key, mapped)
 	return mapped, nil
@@ -398,6 +451,7 @@ func (p *Proxy) premiumLoop(
 	minAdmitted int,
 	maxAdmitted int,
 ) ([]searxng.Result, map[string]bool, map[string]bool, []string, int) {
+	diagnostics, _ := ctx.Value(requestDiagnosticsKey{}).(*requestDiagnostics)
 	premiumURLs := make(map[string]bool, len(premiumResults))
 	for _, r := range premiumResults {
 		premiumURLs[r.URL] = true
@@ -421,11 +475,17 @@ func (p *Proxy) premiumLoop(
 
 		if !premium.IsAvailable() {
 			p.recordProviderSkip(premium.Name(), "missing_key")
+			if diagnostics != nil {
+				diagnostics.addProvider(providerDiagnostic{Provider: premium.Name(), Skip: "missing_key"})
+			}
 			continue
 		}
 		id := premiumBreakerID(premium.Name())
 		if p.breakerMgr.IsOpen(id) {
 			p.recordProviderSkip(premium.Name(), "breaker_open")
+			if diagnostics != nil {
+				diagnostics.addProvider(providerDiagnostic{Provider: premium.Name(), Skip: "breaker_open"})
+			}
 			continue
 		}
 
@@ -450,6 +510,9 @@ func (p *Proxy) premiumLoop(
 			// admission, or it is half-open and the single probe slot is already
 			// taken (gobreaker returns ErrTooManyRequests and fn never runs).
 			p.recordProviderSkip(premium.Name(), "breaker_open")
+			if diagnostics != nil {
+				diagnostics.addProvider(providerDiagnostic{Provider: premium.Name(), Skip: "breaker_open"})
+			}
 			continue
 		}
 		admittedCalls++
@@ -457,6 +520,9 @@ func (p *Proxy) premiumLoop(
 		// trip/recovery transition. Keep the one-hot eligibility gauge current
 		// in the same request, without waiting for a later refresh.
 		p.refreshProviderEligibility(premium)
+		if diagnostics != nil {
+			diagnostics.addProvider(providerDiagnostic{Provider: premium.Name(), Outcome: outcome, Results: len(results)})
+		}
 		if callErr != nil {
 			logPremiumFailure(premium.Name(), phase, outcome)
 			errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", premium.Name(), callErr))
@@ -487,6 +553,91 @@ func (p *Proxy) premiumLoop(
 	}
 
 	return premiumResults, seenURLs, usedPremiums, errMsgs, admittedCalls
+}
+
+type requestDiagnosticsKey struct{}
+
+type providerDiagnostic struct {
+	Provider string `json:"provider"`
+	Outcome  string `json:"outcome,omitempty"`
+	Results  int    `json:"results,omitempty"`
+	Skip     string `json:"skip,omitempty"`
+}
+
+type requestDiagnostics struct {
+	mu             sync.Mutex
+	providerEvents []providerDiagnostic
+	engineFailures [][]string
+}
+
+func (d *requestDiagnostics) addProvider(event providerDiagnostic) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.providerEvents = append(d.providerEvents, event)
+}
+
+func (d *requestDiagnostics) providers() []providerDiagnostic {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]providerDiagnostic(nil), d.providerEvents...)
+}
+
+func (d *requestDiagnostics) cleanEmpty() bool {
+	for _, event := range d.providers() {
+		if event.Skip == "missing_key" {
+			continue
+		}
+		if event.Skip != "" || event.Outcome != "empty" {
+			return false
+		}
+	}
+	return true
+}
+
+type zeroResultDiagnostic struct {
+	Outcome         string               `json:"outcome"`
+	Elapsed         string               `json:"elapsed"`
+	Reason          string               `json:"reason"`
+	ContextState    string               `json:"context_state"`
+	SearXNGOutcome  string               `json:"searxng_outcome"`
+	SearXNGResults  int                  `json:"searxng_results"`
+	SearXNGFailures [][]string           `json:"searxng_engine_failures,omitempty"`
+	Premium         []providerDiagnostic `json:"premium"`
+	TraceID         string               `json:"trace_id,omitempty"`
+}
+
+func boundedEngineFailures(failures [][]string) [][]string {
+	const maxEntries, maxField = 16, 128
+	out := make([][]string, 0, min(len(failures), maxEntries))
+	for _, pair := range failures {
+		if len(out) == maxEntries {
+			break
+		}
+		entry := make([]string, 0, 2)
+		for i := 0; i < len(pair) && i < 2; i++ {
+			value := strings.ToValidUTF8(pair[i], "�")
+			if len(value) > maxField {
+				value = value[:maxField]
+			}
+			entry = append(entry, value)
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func logZeroResultDiagnostic(record zeroResultDiagnostic) {
+	encoded, err := json.Marshal(record)
+	if err == nil {
+		log.Printf("zero_result %s", encoded)
+	}
+}
+
+func traceID(id string) string {
+	if id == "00000000000000000000000000000000" {
+		return ""
+	}
+	return id
 }
 
 // firstPremium is the guaranteed first premium call running concurrently with

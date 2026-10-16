@@ -1,5 +1,7 @@
 # SearXNG Gateway — proxy con fallback e circuit breaker
 
+**Current feature version: v3.2.0.** The reduced SearXNG-compatible response guarantees `query` and `results`; it does not forward the complete upstream envelope (`answers`/`corrections`/`infoboxes` are unmodelled; `suggestions`/`unresponsive_engines` are not forwarded). Empty aggregation produces `no_results` / HTTP 200 only when the request context is live, SearXNG completed successfully (engine-level degradation is diagnostic, not a veto), at least one premium call was admitted, all admitted terminal outcomes were `empty`, and no configured eligible provider was skipped except for missing configuration. Otherwise return `fallback_fail`, except parent deadline expiry (`timeout`). Empty results are never cached; fresh and cached responses always carry the effective query (cache hits copy before updating it). Every zero-result request writes one structured diagnostic; never include raw queries, URLs, response bodies, or query hashes.
+
 Proxy HTTP davanti a SearXNG: stage SearXNG e primo provider premium (Brave, Exa, Parallel, Serper, Tavily) in parallelo, poi top-up premium seriale finché i risultati sono insufficienti. Circuit breaker per engine bloccati, metriche Prometheus, cache.
 
 - **Linguaggio**: Go 1.25.0
