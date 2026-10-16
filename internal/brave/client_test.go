@@ -400,6 +400,69 @@ func TestObserveRateLimitHeaders_UnlimitedMonthlyQuota_Omitted(t *testing.T) {
 	}
 }
 
+func TestObserveRateLimitHeaders_MonthlyLimitAbsent_RemainingIgnored(t *testing.T) {
+	metrics.Init()
+	resetBraveRateLimitGauges()
+	defer resetBraveRateLimitGauges()
+
+	h := http.Header{}
+	h.Set("X-RateLimit-Remaining", "49, 0")
+	h.Set("X-RateLimit-Reset", "1, 1312096")
+	ObserveRateLimitHeaders(h)
+
+	for _, metric := range []string{
+		"searxng_gateway_brave_rate_limit_limit",
+		"searxng_gateway_brave_rate_limit_remaining",
+		"searxng_gateway_brave_rate_limit_reset_seconds",
+	} {
+		if _, found := gaugeValue(t, metric); found {
+			t.Errorf("metric %s must be absent when the monthly limit header is absent", metric)
+		}
+	}
+}
+
+func TestObserveRateLimitHeaders_MonthlyLimitSingleValued_RemainingIgnored(t *testing.T) {
+	metrics.Init()
+	resetBraveRateLimitGauges()
+	defer resetBraveRateLimitGauges()
+
+	h := http.Header{}
+	h.Set("X-RateLimit-Limit", "50")
+	h.Set("X-RateLimit-Remaining", "49, 0")
+	h.Set("X-RateLimit-Reset", "1, 1312096")
+	ObserveRateLimitHeaders(h)
+
+	for _, metric := range []string{
+		"searxng_gateway_brave_rate_limit_limit",
+		"searxng_gateway_brave_rate_limit_remaining",
+		"searxng_gateway_brave_rate_limit_reset_seconds",
+	} {
+		if _, found := gaugeValue(t, metric); found {
+			t.Errorf("metric %s must be absent when the limit header has no monthly value", metric)
+		}
+	}
+}
+
+func TestObserveRateLimitHeaders_NoMonthlyLimitSuccessor_DeletesAllGauges(t *testing.T) {
+	seedAllRateLimitGauges(t)
+	defer resetBraveRateLimitGauges()
+
+	h := http.Header{}
+	h.Set("X-RateLimit-Remaining", "49, 0")
+	h.Set("X-RateLimit-Reset", "1, 1312096")
+	ObserveRateLimitHeaders(h)
+
+	for _, metric := range []string{
+		"searxng_gateway_brave_rate_limit_limit",
+		"searxng_gateway_brave_rate_limit_remaining",
+		"searxng_gateway_brave_rate_limit_reset_seconds",
+	} {
+		if _, found := gaugeValue(t, metric); found {
+			t.Errorf("metric %s must be deleted when successor has no monthly limit", metric)
+		}
+	}
+}
+
 // TestObserveRateLimitHeaders_NegativeSeedThenValidSuccessor proves that
 // after an invalid negative seed, a valid successor populates correctly
 // (no stale negative leak).

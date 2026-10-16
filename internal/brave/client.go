@@ -105,7 +105,7 @@ func (c *httpClient) Search(ctx context.Context, query string) (*Response, error
 }
 
 // parseRateLimitHeaders parses the Brave Search API rate limit headers
-// and returns a RateLimit struct. Returns nil if no headers are present.
+// and returns a RateLimit struct. Returns nil if no valid monthly limit is present.
 //
 // Brave API response headers:
 //
@@ -115,8 +115,9 @@ func (c *httpClient) Search(ctx context.Context, query string) (*Response, error
 //	X-RateLimit-Policy:     "1;w=1, 15000;w=2592000"
 //
 // We only extract the second (monthly) value from each multi-value header.
-// Brave reports a monthly limit of 0 for unlimited plans; in that case there
-// is no meaningful monthly remaining/reset gauge to publish.
+// Brave reports a monthly limit of 0 for unlimited plans; a missing or invalid
+// monthly limit is also unknown. In either case there is no meaningful monthly
+// remaining/reset gauge to publish.
 func parseRateLimitHeaders(h http.Header) *RateLimit {
 	rl := &RateLimit{}
 	var found bool
@@ -154,7 +155,7 @@ func parseRateLimitHeaders(h http.Header) *RateLimit {
 		}
 	}
 
-	if !found || (rl.HasLimitMonth && rl.LimitMonth == 0) {
+	if !found || !rl.HasLimitMonth || rl.LimitMonth == 0 {
 		return nil
 	}
 	return rl
