@@ -243,6 +243,7 @@ var ProviderEligibilityReasons = []string{
 	"invalid_config",
 	"breaker_open",
 	"quota_exhausted",
+	"credentials_rejected",
 }
 
 var providerEligibilityMu sync.Mutex

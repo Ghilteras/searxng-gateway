@@ -25,10 +25,12 @@
 //  5. Assemble the output: premium results in arrival order, then SearXNG
 //     results whose URL premium did not return. Return accumulated nonempty
 //     results even below the target; an empty result set is no_results only
-//     after clean exhaustion, otherwise fallback_fail or timeout.
-//  6. Circuit breaker: premium providers whose breaker is open are skipped.
-//     Each actual premium call runs inside gobreaker.Execute (real admission)
-//     and records exactly one terminal outcome; genuine provider faults trip
+//     after clean exhaustion, otherwise fallback_fail or timeout. no_results
+//     means no results from the capabilities available to this request, not
+//     that no results exist.
+//  6. Circuit breaker: premium providers whose breaker rejects admission are
+//     skipped. Each actual premium call uses native gobreaker admission and
+//     records exactly one terminal outcome; genuine provider faults trip
 //     the breaker, non-provider failures (caller cancellation, overall
 //     deadline, query validation, empty results) do not.
 //
@@ -105,8 +107,8 @@ func New(cfg *config.Config, sx searxng.Client, c *cache.Cache, breakerMgr *brea
 //   - searxng_ok:                 only SearXNG contributed results (premium errored, returned empty, or had no provider to call).
 //   - premium_ok:                 only premium providers contributed results (SearXNG skipped, errored, returned empty, or returned only URLs premium also returned).
 //   - searxng_plus_premium_ok:    both SearXNG and premium providers contributed results.
-//   - no_results:                 successful aggregation with empty premium outcomes (engine degradation is diagnosed separately).
-//   - fallback_fail:              zero results with a fault, unavailable coverage, or skip.
+//   - no_results:                 no results from the capabilities available to this request (not a claim that no results exist).
+//   - fallback_fail:              zero results with a fault or unavailable coverage.
 //   - timeout:                    The overall request budget expired before any results were collected.
 func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, error) {
 	requestStarted := time.Now()
@@ -482,14 +484,6 @@ func (p *Proxy) premiumLoop(
 			continue
 		}
 		id := premiumBreakerID(premium.Name())
-		if p.breakerMgr.IsOpen(id) {
-			p.recordProviderSkip(premium.Name(), "breaker_open")
-			if diagnostics != nil {
-				diagnostics.addProvider(providerDiagnostic{Provider: premium.Name(), Skip: "breaker_open"})
-			}
-			continue
-		}
-
 		phase := "primary"
 		if p.breakerMgr.State(id) == gobreaker.StateHalfOpen {
 			phase = "canary"
@@ -502,17 +496,14 @@ func (p *Proxy) premiumLoop(
 			providerSpan.End()
 			break
 		}
-		results, outcome, admitted, callErr := p.admitPremiumCall(providerCtx, query, premium, id, phase)
+		results, outcome, eligibilityReason, skip, admitted, callErr := p.admitPremiumCall(providerCtx, query, premium, id, phase)
 		providerSpan.SetAttributes(attribute.String("outcome", outcome), attribute.Int("result_count", len(results)))
 		providerSpan.End()
 
 		if !admitted {
-			// Not admitted: either the breaker opened between the IsOpen check and
-			// admission, or it is half-open and the single probe slot is already
-			// taken (gobreaker returns ErrTooManyRequests and fn never runs).
-			p.recordProviderSkip(premium.Name(), "breaker_open")
+			p.recordProviderSkip(premium.Name(), skip)
 			if diagnostics != nil {
-				diagnostics.addProvider(providerDiagnostic{Provider: premium.Name(), Skip: "breaker_open"})
+				diagnostics.addProvider(providerDiagnostic{Provider: premium.Name(), Skip: skip, EligibilityReason: eligibilityReason})
 			}
 			continue
 		}
@@ -522,7 +513,7 @@ func (p *Proxy) premiumLoop(
 		// in the same request, without waiting for a later refresh.
 		p.refreshProviderEligibility(premium)
 		if diagnostics != nil {
-			diagnostics.addProvider(providerDiagnostic{Provider: premium.Name(), Outcome: outcome, Results: len(results)})
+			diagnostics.addProvider(providerDiagnostic{Provider: premium.Name(), Outcome: outcome, Results: len(results), EligibilityReason: eligibilityReason})
 		}
 		if callErr != nil {
 			logPremiumFailure(premium.Name(), phase, outcome)
@@ -559,10 +550,11 @@ func (p *Proxy) premiumLoop(
 type requestDiagnosticsKey struct{}
 
 type providerDiagnostic struct {
-	Provider string `json:"provider"`
-	Outcome  string `json:"outcome,omitempty"`
-	Results  int    `json:"results,omitempty"`
-	Skip     string `json:"skip,omitempty"`
+	Provider          string `json:"provider"`
+	Outcome           string `json:"outcome,omitempty"`
+	Results           int    `json:"results,omitempty"`
+	Skip              string `json:"skip,omitempty"`
+	EligibilityReason string `json:"eligibility_reason,omitempty"`
 }
 
 type requestDiagnostics struct {
@@ -585,14 +577,50 @@ func (d *requestDiagnostics) providers() []providerDiagnostic {
 
 func (d *requestDiagnostics) cleanEmpty() bool {
 	for _, event := range d.providers() {
-		if event.Skip == "missing_key" {
-			continue
-		}
-		if event.Skip != "" || event.Outcome != "empty" {
+		if event.Skip != "" {
+			if event.Outcome != "" || event.Results != 0 {
+				return false
+			}
+			switch event.Skip {
+			case "missing_key":
+				if event.EligibilityReason == "" || event.EligibilityReason == "missing_key" {
+					continue
+				}
+			case "structural_unavailability", "breaker_open":
+				if isStructuralReason(event.EligibilityReason) {
+					continue
+				}
+			default:
+				if isStructuralReason(event.Skip) && (event.EligibilityReason == "" || event.EligibilityReason == event.Skip) {
+					continue
+				}
+			}
 			return false
 		}
+		if event.Results != 0 {
+			return false
+		}
+		if event.EligibilityReason != "" && !isStructuralReason(event.EligibilityReason) {
+			return false
+		}
+		if event.Outcome == "empty" && event.EligibilityReason == "" {
+			continue
+		}
+		if isStructuralReason(event.EligibilityReason) && (event.Outcome == "auth" || event.Outcome == "quota" || event.Outcome == "not_configured") {
+			continue
+		}
+		return false
 	}
 	return true
+}
+
+func isStructuralReason(reason string) bool {
+	switch reason {
+	case "missing_key", backends.UnavailabilityDisabled, backends.UnavailabilityQuotaExhausted, backends.UnavailabilityCredentialsRejected:
+		return true
+	default:
+		return false
+	}
 }
 
 type zeroResultDiagnostic struct {
@@ -722,7 +750,14 @@ func (p *Proxy) providerEligibilityReason(provider backends.SearchBackend) strin
 	if !provider.IsAvailable() {
 		return "missing_key"
 	}
-	if p.breakerMgr.IsOpen(premiumBreakerID(provider.Name())) {
+	id := premiumBreakerID(provider.Name())
+	if p.breakerMgr.State(id) == gobreaker.StateOpen {
+		// Metrics may expose the frozen reason of the authoritative open epoch.
+		// cleanEmpty uses the per-admission snapshot instead, never this legacy
+		// per-engine slot, so concurrent outcomes cannot affect eligibility.
+		if reason := p.breakerMgr.LastReason(id); isStructuralReason(reason) {
+			return reason
+		}
 		return "breaker_open"
 	}
 	return "eligible"
@@ -750,42 +785,65 @@ func (p *Proxy) admitPremiumCall(
 	provider backends.SearchBackend,
 	id string,
 	phase string,
-) (results []backends.SearchResult, outcome string, admitted bool, callErr error) {
-	_, _ = p.breakerMgr.Execute(id, func() (res interface{}, err error) {
-		admitted = true
-		start := time.Now()
-		defer func() {
-			metrics.RequestDuration.WithLabelValues(provider.Name(), phase).Observe(time.Since(start).Seconds())
-		}()
-		defer func() {
-			if r := recover(); r != nil {
-				outcome = "panic"
-				metrics.ProviderAttemptsTotal.WithLabelValues(provider.Name(), phase, outcome).Inc()
-				p.breakerMgr.RecordReason(id, outcome)
-				callErr = fmt.Errorf("provider %s panicked", provider.Name())
-				res, err = nil, callErr
-			}
-		}()
-		results, callErr = provider.Search(backends.SearchOptions{
-			Context:    ctx,
-			Query:      query,
-			NumResults: 10,
-		})
-		outcome = classifyPremiumOutcome(ctx, results, callErr)
-		metrics.ProviderAttemptsTotal.WithLabelValues(provider.Name(), phase, outcome).Inc()
-		switch {
-		case outcome == "success" || outcome == "empty":
-			return results, nil
-		case !premiumTrips(outcome):
-			// Caller cancellation, overall deadline, query validation or an
-			// unconfigured provider must never trip the breaker.
-			return results, breaker.ErrNonProviderFault
-		default:
-			p.breakerMgr.RecordReason(id, outcome)
-			return results, callErr
+) (results []backends.SearchResult, outcome string, eligibilityReason string, skip string, admitted bool, callErr error) {
+	done, snapshot, admissionErr := p.breakerMgr.Allow(id)
+	if admissionErr != nil {
+		if errors.Is(admissionErr, gobreaker.ErrOpenState) {
+			skip, eligibilityReason = "breaker_open", snapshot.Reason
+		} else if errors.Is(admissionErr, gobreaker.ErrTooManyRequests) {
+			skip = "breaker_contention"
+		} else {
+			skip = "breaker_rejected"
 		}
+		return nil, "", eligibilityReason, skip, false, admissionErr
+	}
+	admitted = true
+	completed := false
+	defer func() {
+		if !completed {
+			done(false, "panic")
+		}
+	}()
+	start := time.Now()
+	defer func() {
+		metrics.RequestDuration.WithLabelValues(provider.Name(), phase).Observe(time.Since(start).Seconds())
+	}()
+	defer func() {
+		if r := recover(); r != nil {
+			outcome = "panic"
+			metrics.ProviderAttemptsTotal.WithLabelValues(provider.Name(), phase, outcome).Inc()
+			callErr = fmt.Errorf("provider %s panicked", provider.Name())
+			done(false, outcome)
+			completed = true
+		}
+	}()
+	results, callErr = provider.Search(backends.SearchOptions{
+		Context:    ctx,
+		Query:      query,
+		NumResults: 10,
 	})
-	return results, outcome, admitted, callErr
+	outcome = classifyPremiumOutcome(ctx, results, callErr)
+	var backendErr *backends.BackendError
+	if errors.As(callErr, &backendErr) {
+		eligibilityReason = backendErr.UnavailabilityReason
+	}
+	metrics.ProviderAttemptsTotal.WithLabelValues(provider.Name(), phase, outcome).Inc()
+	switch {
+	case outcome == "success" || outcome == "empty":
+		done(true, "")
+	case !premiumTrips(outcome):
+		// Caller cancellation, overall deadline, query validation or an
+		// unconfigured provider must never trip the breaker.
+		done(true, "")
+	default:
+		tripReason := outcome
+		if isStructuralReason(eligibilityReason) {
+			tripReason = eligibilityReason
+		}
+		done(false, tripReason)
+	}
+	completed = true
+	return results, outcome, eligibilityReason, "", admitted, callErr
 }
 
 // recordSearxngSuccess resets the failure counter and clears any active cooldown.

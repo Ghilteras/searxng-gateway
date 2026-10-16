@@ -2696,8 +2696,10 @@ func TestProxyHalfOpenAdmitsSingleRealSearchUnderConcurrency(t *testing.T) {
 	}
 
 	const concurrentRequests = 8
-	beforeSkips := counterValueForLabels(t, "searxng_gateway_provider_skips_total",
+	beforeOpenSkips := counterValueForLabels(t, "searxng_gateway_provider_skips_total",
 		map[string]string{"provider": "brave", "reason": "breaker_open"})
+	beforeContentionSkips := counterValueForLabels(t, "searxng_gateway_provider_skips_total",
+		map[string]string{"provider": "brave", "reason": "breaker_contention"})
 	beforeCanary := counterValueForLabels(t, "searxng_gateway_provider_attempts_total",
 		map[string]string{"provider": "brave", "phase": "canary", "outcome": "success"})
 	start := make(chan struct{})
@@ -2719,16 +2721,18 @@ func TestProxyHalfOpenAdmitsSingleRealSearchUnderConcurrency(t *testing.T) {
 	}
 
 	// Keep the real probe blocked while every other concurrent request gets its
-	// breaker_open skip. This proves there was no second Search call in flight.
+	// breaker_contention skip. This proves there was no second Search call in flight.
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
 	for counterValueForLabels(t, "searxng_gateway_provider_skips_total",
-		map[string]string{"provider": "brave", "reason": "breaker_open"})-beforeSkips < concurrentRequests-1 {
+		map[string]string{"provider": "brave", "reason": "breaker_open"})+
+		counterValueForLabels(t, "searxng_gateway_provider_skips_total",
+			map[string]string{"provider": "brave", "reason": "breaker_contention"})-beforeOpenSkips-beforeContentionSkips < concurrentRequests-1 {
 		select {
 		case <-tick.C:
 		case <-time.After(time.Second):
 			close(probeRelease)
-			t.Fatal("concurrent requests did not all receive breaker_open skips")
+			t.Fatal("concurrent requests did not all receive breaker skips")
 		}
 	}
 	if got := calls.Load(); got != 3 {
@@ -2973,12 +2977,13 @@ func TestForcedPremiumCallEmptyDoesNotTriggerSecondCall(t *testing.T) {
 // TestEligibilitySeededOnSearxngOnlyRequest.)
 func TestSkippedProviderDoesNotCountAsForcedCall(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name       string
+		skipReason string
 		// prep readies the "premium:brave" breaker and returns a cleanup.
 		prep func(t *testing.T, bm *breaker.Manager) (cleanup func())
 	}{
-		// IsOpen(id) is true: skipped before admission.
-		{"breaker_open", func(t *testing.T, bm *breaker.Manager) func() {
+		// Native admission rejects the open epoch before any provider call.
+		{"breaker_open", "breaker_open", func(t *testing.T, bm *breaker.Manager) func() {
 			for i := 0; i < 2; i++ {
 				_, _ = bm.Execute("premium:brave", func() (interface{}, error) { return nil, errors.New("fault") })
 			}
@@ -2987,10 +2992,9 @@ func TestSkippedProviderDoesNotCountAsForcedCall(t *testing.T) {
 			}
 			return func() {}
 		}},
-		// Half-open with its single probe slot held: IsOpen is false, so the
-		// provider is selected and sent to admission, which refuses it
+		// Half-open with its single probe slot held: native admission refuses it
 		// (admitted==false): skipped AFTER selection and admission.
-		{"admission_refused", func(t *testing.T, bm *breaker.Manager) func() {
+		{"admission_refused", "breaker_contention", func(t *testing.T, bm *breaker.Manager) func() {
 			for i := 0; i < 2; i++ {
 				_, _ = bm.Execute("premium:brave", func() (interface{}, error) { return nil, errors.New("fault") })
 			}
@@ -3038,7 +3042,7 @@ func TestSkippedProviderDoesNotCountAsForcedCall(t *testing.T) {
 			cfg.SufficientMinResults = 2
 			p := newTestProxy(cfg, sufficientSearxng(), c, bm, first, second, third)
 			beforeSkips := counterValueForLabels(t, "searxng_gateway_provider_skips_total",
-				map[string]string{"provider": "brave", "reason": "breaker_open"})
+				map[string]string{"provider": "brave", "reason": tc.skipReason})
 			if _, err := p.Search(context.Background(), "skipped-"+tc.name); err != nil {
 				t.Fatalf("Search error = %v", err)
 			}
@@ -3046,8 +3050,8 @@ func TestSkippedProviderDoesNotCountAsForcedCall(t *testing.T) {
 				t.Fatalf("skipped provider calls = %d, want 0", got)
 			}
 			if delta := counterValueForLabels(t, "searxng_gateway_provider_skips_total",
-				map[string]string{"provider": "brave", "reason": "breaker_open"}) - beforeSkips; delta != 1 {
-				t.Fatalf("brave breaker_open skip delta = %v, want 1 (the skip branch must be exercised)", delta)
+				map[string]string{"provider": "brave", "reason": tc.skipReason}) - beforeSkips; delta != 1 {
+				t.Fatalf("brave %s skip delta = %v, want 1 (the skip branch must be exercised)", tc.skipReason, delta)
 			}
 			// Round-robin picks the next non-skipped provider; which of the two
 			// remaining is chosen depends on the rotating index, so assert the
