@@ -1,4 +1,4 @@
-# searxng-gateway v3.2.0
+# searxng-gateway v3.2.1
 
 Decision proxy in front of SearXNG: **SearXNG plus a guaranteed premium call in parallel** — runs a bounded SearXNG stage (skipped during cooldown) concurrently with the first admitted premium provider call, then continues the premium round-robin serially only while the distinct-URL count is below a configurable target; the response lists premium results first (premium wins duplicate URLs), followed by the SearXNG-only results, and accumulated non-empty results are returned even below target. Prometheus /metrics, in-memory LRU cache.
 

@@ -355,12 +355,13 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 			outcome = "no_results"
 		}
 		reason := "provider_fault_or_incomplete"
-		if outcome == "no_results" {
+		switch outcome {
+		case "no_results":
 			reason = "clean_exhaustion"
 			if len(diagnostics.engineFailures) > 0 {
 				reason = "exhausted_with_engine_failures"
 			}
-		} else if outcome == "timeout" {
+		case "timeout":
 			reason = "parent_deadline"
 		}
 		contextState := "live"
