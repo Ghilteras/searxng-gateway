@@ -374,17 +374,19 @@ func TestObserveRateLimitHeaders_NegativeValues_Rejected(t *testing.T) {
 	}
 }
 
-// TestObserveRateLimitHeaders_ZeroMonthlyValues_Accepted verifies that a
-// zero monthly value is valid and populates the gauge.
-func TestObserveRateLimitHeaders_ZeroMonthlyValues_Accepted(t *testing.T) {
+// TestObserveRateLimitHeaders_UnlimitedMonthlyQuota_Omitted verifies the
+// recorded Brave response headers where monthly limit=0 denotes unlimited.
+// Publishing monthly remaining=0 would falsely signal exhausted quota.
+func TestObserveRateLimitHeaders_UnlimitedMonthlyQuota_Omitted(t *testing.T) {
 	metrics.Init()
 	resetBraveRateLimitGauges()
 	defer resetBraveRateLimitGauges()
 
 	h := http.Header{}
-	h.Set("X-RateLimit-Limit", "1, 0")
-	h.Set("X-RateLimit-Remaining", "1, 0")
-	h.Set("X-RateLimit-Reset", "1, 0")
+	h.Set("X-RateLimit-Limit", "50, 0")
+	h.Set("X-RateLimit-Policy", "50;w=1, 0;w=2678400")
+	h.Set("X-RateLimit-Remaining", "49, 0")
+	h.Set("X-RateLimit-Reset", "1, 1312096")
 	ObserveRateLimitHeaders(h)
 
 	for _, metric := range []string{
@@ -392,11 +394,8 @@ func TestObserveRateLimitHeaders_ZeroMonthlyValues_Accepted(t *testing.T) {
 		"searxng_gateway_brave_rate_limit_remaining",
 		"searxng_gateway_brave_rate_limit_reset_seconds",
 	} {
-		got, found := gaugeValue(t, metric)
-		if !found {
-			t.Errorf("metric %s must be present for zero monthly value", metric)
-		} else if got != 0 {
-			t.Errorf("metric %s = %v, want 0", metric, got)
+		if _, found := gaugeValue(t, metric); found {
+			t.Errorf("metric %s must be absent for an unlimited monthly quota", metric)
 		}
 	}
 }

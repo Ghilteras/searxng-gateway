@@ -115,6 +115,8 @@ func (c *httpClient) Search(ctx context.Context, query string) (*Response, error
 //	X-RateLimit-Policy:     "1;w=1, 15000;w=2592000"
 //
 // We only extract the second (monthly) value from each multi-value header.
+// Brave reports a monthly limit of 0 for unlimited plans; in that case there
+// is no meaningful monthly remaining/reset gauge to publish.
 func parseRateLimitHeaders(h http.Header) *RateLimit {
 	rl := &RateLimit{}
 	var found bool
@@ -152,7 +154,7 @@ func parseRateLimitHeaders(h http.Header) *RateLimit {
 		}
 	}
 
-	if !found {
+	if !found || (rl.HasLimitMonth && rl.LimitMonth == 0) {
 		return nil
 	}
 	return rl
