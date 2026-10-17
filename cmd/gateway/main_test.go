@@ -325,6 +325,356 @@ func requestOutcomeValue(t *testing.T, outcome string) float64 {
 	return 0
 }
 
+func TestSearchEndpointTavilyStructuralZeroResultHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		reason string
+	}{
+		{status: http.StatusUnauthorized, reason: "credentials_rejected"},
+		{status: 432, reason: "quota_exhausted"},
+		{status: 433, reason: "quota_exhausted"},
+	} {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+			metrics.Init()
+			var logs bytes.Buffer
+			previous := log.Writer()
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(previous) })
+			r, calls := newHermeticTavilyRouter(t, tc.status, "account issue")
+			beforeNoResults := requestOutcomeValue(t, "no_results")
+			beforeFail := requestOutcomeValue(t, "fallback_fail")
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/search?q=structural-"+strings.ReplaceAll(http.StatusText(tc.status), " ", "-"), nil))
+			assertZeroResultHTTP(t, rr, http.StatusOK)
+			if got := requestOutcomeValue(t, "no_results") - beforeNoResults; got != 1 {
+				t.Fatalf("no_results delta = %v, want 1", got)
+			}
+			if got := requestOutcomeValue(t, "fallback_fail") - beforeFail; got != 0 {
+				t.Fatalf("fallback_fail delta = %v, want 0", got)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("Tavily HTTP calls = %d, want 1", got)
+			}
+			if !strings.Contains(logs.String(), `"eligibility_reason":"`+tc.reason+`"`) {
+				t.Fatalf("Tavily structural eligibility reason %q missing from diagnostics: %s", tc.reason, logs.String())
+			}
+		})
+	}
+}
+
+func TestSearchEndpointTavilyStructuralOpenBreakerZeroResultHTTP(t *testing.T) {
+	metrics.Init()
+	r, calls := newHermeticTavilyRouter(t, 432, "quota exhausted")
+	beforeNoResults := requestOutcomeValue(t, "no_results")
+	beforeFail := requestOutcomeValue(t, "fallback_fail")
+	for _, query := range []string{"breaker-trip-one", "breaker-trip-two"} {
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/search?q="+query, nil))
+		assertZeroResultHTTP(t, rr, http.StatusOK)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("Tavily HTTP calls before open-breaker request = %d, want 2", got)
+	}
+	if got := providerEligibilityValue(t, "tavily", "quota_exhausted"); got != 1 {
+		t.Fatalf("Tavily quota_exhausted eligibility = %v, want 1 after structural breaker trip", got)
+	}
+	beforeSkipped := providerSkipValue(t, "tavily", "breaker_open")
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/search?q=breaker-open-followup", nil))
+	// no_results requires admittedTotal > 0: the gateway must have admitted a
+	// premium call and observed it return empty. With every provider skipped,
+	// even for a frozen structural breaker cause, emptiness was not tested, so
+	// fallback_fail/502 is the honest outcome.
+	assertZeroResultHTTP(t, rr, http.StatusBadGateway)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("Tavily HTTP calls after breaker-open request = %d, want unchanged at 2", got)
+	}
+	if got := providerSkipValue(t, "tavily", "breaker_open") - beforeSkipped; got != 1 {
+		t.Fatalf("breaker_open provider-skip delta = %v, want 1", got)
+	}
+	if got := requestOutcomeValue(t, "no_results") - beforeNoResults; got != 2 {
+		t.Fatalf("no_results delta = %v, want 2", got)
+	}
+	if got := requestOutcomeValue(t, "fallback_fail") - beforeFail; got != 1 {
+		t.Fatalf("fallback_fail delta = %v, want 1", got)
+	}
+	if !strings.Contains(logs.String(), `"skip":"breaker_open","eligibility_reason":"quota_exhausted"`) {
+		t.Fatalf("fallback diagnostic omitted frozen structural breaker reason: %s", logs.String())
+	}
+}
+
+func TestSearchEndpointStructuralBreakerWithAdmittedEmptyProviderReturnsNoResults(t *testing.T) {
+	metrics.Init()
+	r, tavilyCalls, braveCalls := newHermeticTwoProviderRouter(t)
+	beforeNoResults := requestOutcomeValue(t, "no_results")
+	beforeFail := requestOutcomeValue(t, "fallback_fail")
+	for _, query := range []string{"reachable-trip-one", "reachable-trip-two"} {
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/search?q="+query, nil))
+		assertZeroResultHTTP(t, rr, http.StatusOK)
+	}
+	if got := tavilyCalls.Load(); got != 2 {
+		t.Fatalf("Tavily calls before open-breaker request = %d, want 2", got)
+	}
+	if got := braveCalls.Load(); got != 2 {
+		t.Fatalf("Brave calls before open-breaker request = %d, want 2", got)
+	}
+	if got := providerEligibilityValue(t, "tavily", "quota_exhausted"); got != 1 {
+		t.Fatalf("Tavily quota_exhausted eligibility = %v, want 1", got)
+	}
+	beforeSkipped := providerSkipValue(t, "tavily", "breaker_open")
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/search?q=reachable-open-followup", nil))
+	assertZeroResultHTTP(t, rr, http.StatusOK)
+	if got := tavilyCalls.Load(); got != 2 {
+		t.Fatalf("Tavily calls after breaker-open request = %d, want unchanged at 2", got)
+	}
+	if got := braveCalls.Load(); got != 3 {
+		t.Fatalf("Brave calls after breaker-open request = %d, want 3 admitted empty calls", got)
+	}
+	if got := providerSkipValue(t, "tavily", "breaker_open") - beforeSkipped; got != 1 {
+		t.Fatalf("breaker_open provider-skip delta = %v, want 1", got)
+	}
+	if got := requestOutcomeValue(t, "no_results") - beforeNoResults; got != 3 {
+		t.Fatalf("no_results delta = %v, want 3", got)
+	}
+	if got := requestOutcomeValue(t, "fallback_fail") - beforeFail; got != 0 {
+		t.Fatalf("fallback_fail delta = %v, want 0", got)
+	}
+	if !strings.Contains(logs.String(), `"provider":"brave","outcome":"empty"`) || !strings.Contains(logs.String(), `"skip":"breaker_open","eligibility_reason":"quota_exhausted"`) {
+		t.Fatalf("reachable zero-result diagnostic omitted the admitted empty provider or frozen structural skip: %s", logs.String())
+	}
+}
+
+func TestSearchEndpointTavilyUnprovenZeroResultFailuresVetoHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "403 forbidden", status: http.StatusForbidden, body: "forbidden"},
+		{name: "429 rate limited", status: http.StatusTooManyRequests, body: "rate limited"},
+		{name: "503 unavailable", status: http.StatusServiceUnavailable, body: "unavailable"},
+		{name: "400 misleading quota text", status: http.StatusBadRequest, body: "credits and quota are mentioned but not annotated"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			metrics.Init()
+			r, calls := newHermeticTavilyRouter(t, tc.status, tc.body)
+			beforeNoResults := requestOutcomeValue(t, "no_results")
+			beforeFail := requestOutcomeValue(t, "fallback_fail")
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/search?q=unproven-"+strings.ReplaceAll(tc.name, " ", "-"), nil))
+			assertZeroResultHTTP(t, rr, http.StatusBadGateway)
+			if got := requestOutcomeValue(t, "fallback_fail") - beforeFail; got != 1 {
+				t.Fatalf("fallback_fail delta = %v, want 1", got)
+			}
+			if got := requestOutcomeValue(t, "no_results") - beforeNoResults; got != 0 {
+				t.Fatalf("no_results delta = %v, want 0", got)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("Tavily HTTP calls = %d, want 1", got)
+			}
+		})
+	}
+}
+
+// newHermeticTavilyRouter preserves the gateway HTTP harness while using the
+// production SearXNG HTTP client and the real Tavily backend. Both upstreams
+// terminate at httptest servers; the key is a non-secret test marker.
+func newHermeticTavilyRouter(t *testing.T, status int, body string) (http.Handler, *atomic.Int64) {
+	t.Helper()
+	searxngServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search" || r.URL.Query().Get("format") != "json" {
+			http.Error(w, "unexpected SearXNG request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	t.Cleanup(searxngServer.Close)
+
+	var calls atomic.Int64
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/search" {
+			http.Error(w, "unexpected Tavily request", http.StatusBadRequest)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer hermetic-test-key" {
+			http.Error(w, "unexpected test authorization", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(tavilyServer.Close)
+
+	tavily := backends.NewTavilyBackend("hermetic-test-key", time.Second, "basic", false, false)
+	tavily.BaseURL = tavilyServer.URL + "/search"
+	mgr := backends.NewManager()
+	mgr.Register(tavily)
+	if err := mgr.SetFallbacks([]string{"tavily"}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := cache.New(10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		FallbackTimeout:      3 * time.Second,
+		SearxngTimeout:       time.Second,
+		MetricsPath:          "/metrics",
+		SearxngFailThreshold: 6,
+		SearxngFailCooldown:  time.Minute,
+		SufficientMinResults: 10,
+	}
+	return newRouter(proxy.New(cfg, searxng.New(searxngServer.URL, time.Second), c, breaker.New(), mgr), cfg), &calls
+}
+
+// newHermeticTwoProviderRouter uses real backends whose BaseURL fields are
+// injectable. Brave proves an admitted empty result while Tavily's breaker is
+// open with a frozen structural quota cause, exercising the reachable v3 shape
+// through the gateway HTTP handler.
+func newHermeticTwoProviderRouter(t *testing.T) (http.Handler, *atomic.Int64, *atomic.Int64) {
+	t.Helper()
+	searxngServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search" || r.URL.Query().Get("format") != "json" {
+			http.Error(w, "unexpected SearXNG request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	t.Cleanup(searxngServer.Close)
+
+	var tavilyCalls, braveCalls atomic.Int64
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tavilyCalls.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/search" {
+			http.Error(w, "unexpected Tavily request", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(432)
+		_, _ = w.Write([]byte("quota exhausted"))
+	}))
+	t.Cleanup(tavilyServer.Close)
+	braveServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		braveCalls.Add(1)
+		if r.Method != http.MethodGet {
+			http.Error(w, "unexpected Brave request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"web":{"results":[]}}`))
+	}))
+	t.Cleanup(braveServer.Close)
+
+	tavily := backends.NewTavilyBackend("hermetic-test-key", time.Second, "basic", false, false)
+	tavily.BaseURL = tavilyServer.URL + "/search"
+	brave := backends.NewBraveBackend("hermetic-test-key", time.Second)
+	brave.BaseURL = braveServer.URL
+	mgr := backends.NewManager()
+	mgr.Register(brave)
+	mgr.Register(tavily)
+	if err := mgr.SetFallbacks([]string{"brave", "tavily"}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := cache.New(10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		FallbackTimeout:      3 * time.Second,
+		SearxngTimeout:       time.Second,
+		MetricsPath:          "/metrics",
+		SearxngFailThreshold: 6,
+		SearxngFailCooldown:  time.Minute,
+		SufficientMinResults: 10,
+	}
+	r := newRouter(proxy.New(cfg, searxng.New(searxngServer.URL, time.Second), c, breaker.New(), mgr), cfg)
+	return r, &tavilyCalls, &braveCalls
+}
+
+func assertZeroResultHTTP(t *testing.T, rr *httptest.ResponseRecorder, wantStatus int) {
+	t.Helper()
+	if rr.Code != wantStatus {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, wantStatus, rr.Body.String())
+	}
+	if wantStatus == http.StatusOK {
+		var body struct {
+			Query   string           `json:"query"`
+			Results []searxng.Result `json:"results"`
+		}
+		if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if body.Results == nil || len(body.Results) != 0 {
+			t.Fatalf("results = %#v, want []", body.Results)
+		}
+		return
+	}
+	if !strings.Contains(rr.Body.String(), `"error":"search_failed"`) {
+		t.Fatalf("502 body = %q, want sanitized search_failed error", rr.Body.String())
+	}
+}
+
+func providerEligibilityValue(t *testing.T, provider, reason string) float64 {
+	t.Helper()
+	return gaugeValue(t, "searxng_gateway_provider_eligibility", map[string]string{"provider": provider, "reason": reason})
+}
+
+func providerSkipValue(t *testing.T, provider, reason string) float64 {
+	t.Helper()
+	return counterValue(t, "searxng_gateway_provider_skips_total", map[string]string{"provider": provider, "reason": reason})
+}
+
+func gaugeValue(t *testing.T, name string, labels map[string]string) float64 {
+	t.Helper()
+	return gatheredMetricValue(t, name, labels, false)
+}
+
+func counterValue(t *testing.T, name string, labels map[string]string) float64 {
+	t.Helper()
+	return gatheredMetricValue(t, name, labels, true)
+}
+
+func gatheredMetricValue(t *testing.T, name string, labels map[string]string, counter bool) float64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			matches := len(metric.GetLabel()) == len(labels)
+			for _, label := range metric.GetLabel() {
+				if labels[label.GetName()] != label.GetValue() {
+					matches = false
+					break
+				}
+			}
+			if matches {
+				if counter {
+					return metric.GetCounter().GetValue()
+				}
+				return metric.GetGauge().GetValue()
+			}
+		}
+	}
+	return 0
+}
+
 func TestSearchHandlerCreatesSanitizedServerSpan(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	previous := otel.GetTracerProvider()
