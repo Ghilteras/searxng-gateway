@@ -114,4 +114,4 @@ Placement finale FUORI SCOPE (homelab-config): `opencode-self` + `subagent-orche
 2026-10-06 — Delta: sanitizzazione risposte backend → journal: search "backend response-body sanitization R2"
 
 → journal: search "Gateway zero-results coverage incident 2026-10-15"
-v3.2.3 release + the no_results production boundary (premium providers fill the gap so the path is not reachable on demand) → journal: read 20261017-001640-529
+v3.2.3 release, the no_results production boundary, and the live cross-repo alert fix → journal: search "v3.2.3 release"
