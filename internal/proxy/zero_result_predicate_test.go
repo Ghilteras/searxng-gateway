@@ -132,3 +132,24 @@ func TestV3CleanEmptyRejectsContradictoryOrUnknownEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestV324CleanEmptySkipLabelsAreNarrowlyAccepted(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		event providerDiagnostic
+		want  bool
+	}{
+		{name: "breaker open with frozen structural cause", event: providerDiagnostic{Provider: "brave", Skip: "breaker_open", EligibilityReason: backends.UnavailabilityQuotaExhausted}, want: true},
+		{name: "missing key", event: providerDiagnostic{Provider: "brave", Skip: "missing_key"}, want: true},
+		{name: "structural skip label with matching reason", event: providerDiagnostic{Provider: "brave", Skip: backends.UnavailabilityQuotaExhausted, EligibilityReason: backends.UnavailabilityQuotaExhausted}},
+		{name: "structural skip label with empty reason", event: providerDiagnostic{Provider: "brave", Skip: backends.UnavailabilityQuotaExhausted}},
+		{name: "retired structural unavailability label", event: providerDiagnostic{Provider: "brave", Skip: "structural_unavailability", EligibilityReason: backends.UnavailabilityQuotaExhausted}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &requestDiagnostics{providerEvents: []providerDiagnostic{tc.event}}
+			if got := d.cleanEmpty(); got != tc.want {
+				t.Errorf("cleanEmpty() = %v, want %v for %+v", got, tc.want, tc.event)
+			}
+		})
+	}
+}

@@ -2462,8 +2462,8 @@ func TestMixedEmptyAndOpenBreakerVetoesNoResults(t *testing.T) {
 	if got := outcomeCounter(t, "no_results") - beforeNoResults; got != 0 {
 		t.Fatalf("no_results delta = %v, want 0", got)
 	}
-	// The production-shaped optional-provider sibling pins missing_key as the
-	// sole skip exemption while this fixture pins breaker_open as a veto.
+	// The production-shaped optional-provider sibling accepts missing_key and
+	// breaker_open whose frozen trip reason is structural as skip exemptions.
 }
 
 func TestNotAttemptedConfiguredProviderVetoesNoResults(t *testing.T) {

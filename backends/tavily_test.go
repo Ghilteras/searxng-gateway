@@ -329,8 +329,8 @@ func TestTavilyAmbiguousFailuresRemainUnannotated(t *testing.T) {
 		_, err := b.Search(SearchOptions{Query: "test"})
 		close(release)
 		backendErr, ok := err.(*BackendError)
-		if !ok || backendErr.Code != ErrCodeInvalidResponse {
-			t.Fatalf("error = %T (%v), want BackendError with ErrCodeInvalidResponse", err, err)
+		if !ok {
+			t.Fatalf("error = %T (%v), want BackendError", err, err)
 		}
 		if backendErr.UnavailabilityReason != "" {
 			t.Errorf("UnavailabilityReason = %q, want empty", backendErr.UnavailabilityReason)

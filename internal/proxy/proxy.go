@@ -586,12 +586,8 @@ func (d *requestDiagnostics) cleanEmpty() bool {
 				if event.EligibilityReason == "" || event.EligibilityReason == "missing_key" {
 					continue
 				}
-			case "structural_unavailability", "breaker_open":
+			case "breaker_open":
 				if isStructuralReason(event.EligibilityReason) {
-					continue
-				}
-			default:
-				if isStructuralReason(event.Skip) && (event.EligibilityReason == "" || event.EligibilityReason == event.Skip) {
 					continue
 				}
 			}
