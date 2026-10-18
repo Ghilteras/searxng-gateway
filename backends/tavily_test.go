@@ -11,6 +11,22 @@ import (
 	"time"
 )
 
+type tavilyReadErrorBody struct {
+	closed bool
+}
+
+func (b *tavilyReadErrorBody) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+func (b *tavilyReadErrorBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+type tavilyRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f tavilyRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 func TestTavilyInvalidJSONDoesNotExposePayload(t *testing.T) {
 	const marker = "9182736450918273645"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -334,6 +350,35 @@ func TestTavilyAmbiguousFailuresRemainUnannotated(t *testing.T) {
 		}
 		if backendErr.UnavailabilityReason != "" {
 			t.Errorf("UnavailabilityReason = %q, want empty", backendErr.UnavailabilityReason)
+		}
+	})
+	t.Run("response body read failure", func(t *testing.T) {
+		body := &tavilyReadErrorBody{}
+		b := newTestTavilyBackend("http://tavily.test", "key", "basic", false, false)
+		b.client = &http.Client{Transport: tavilyRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       body,
+				Header:     make(http.Header),
+			}, nil
+		})}
+
+		results, err := b.Search(SearchOptions{Query: "test"})
+		if len(results) != 0 {
+			t.Errorf("results = %v, want none", results)
+		}
+		backendErr, ok := err.(*BackendError)
+		if !ok {
+			t.Fatalf("error = %T (%v), want *BackendError", err, err)
+		}
+		if backendErr.Code != ErrCodeInvalidResponse {
+			t.Errorf("Code = %d, want %d", backendErr.Code, ErrCodeInvalidResponse)
+		}
+		if backendErr.UnavailabilityReason != "" {
+			t.Errorf("UnavailabilityReason = %q, want empty", backendErr.UnavailabilityReason)
+		}
+		if !body.closed {
+			t.Error("response body was not closed")
 		}
 	})
 }
