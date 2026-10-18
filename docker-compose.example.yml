@@ -30,7 +30,7 @@ services:
           memory: 384M
 
   searxng-gateway:
-    image: ghcr.io/ghilteras/searxng-gateway:v3.2.4
+    image: ghcr.io/ghilteras/searxng-gateway:v3.2.5
     container_name: searxng-gateway
     restart: unless-stopped
     ports:
