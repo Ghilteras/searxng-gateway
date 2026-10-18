@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "metrics": {
+    "searxng_gateway_provider_eligibility": ["provider", "reason"],
+    "searxng_gateway_provider_attempts_total": ["provider", "phase", "outcome"],
+    "searxng_gateway_provider_skips_total": ["provider", "reason"],
+    "searxng_gateway_requests_total": ["outcome"]
+  },
+  "eligibility": {
+    "reasons": [
+      {"reason": "eligible", "class": "healthy", "produced": true},
+      {"reason": "disabled", "class": "configuration", "produced": false},
+      {"reason": "missing_key", "class": "configuration", "produced": true},
+      {"reason": "invalid_config", "class": "configuration", "produced": true},
+      {"reason": "breaker_open", "class": "runtime_failure", "produced": true},
+      {"reason": "quota_exhausted", "class": "runtime_failure", "produced": true},
+      {"reason": "credentials_rejected", "class": "runtime_failure", "produced": true}
+    ],
+    "reserved_unproduced": ["disabled"],
+    "alert_mask_expected": ["eligible", "breaker_open", "quota_exhausted", "credentials_rejected"],
+    "semantics": "One-hot per provider: exactly one reason series is 1 (active); every other reason series is 0. Reserved reasons are part of the vocabulary but are not currently produced by the gateway.",
+    "snapshots": {
+      "eligible": {"eligible": 1, "disabled": 0, "missing_key": 0, "invalid_config": 0, "breaker_open": 0, "quota_exhausted": 0, "credentials_rejected": 0},
+      "missing_key": {"eligible": 0, "disabled": 0, "missing_key": 1, "invalid_config": 0, "breaker_open": 0, "quota_exhausted": 0, "credentials_rejected": 0},
+      "transient_breaker_open": {"eligible": 0, "disabled": 0, "missing_key": 0, "invalid_config": 0, "breaker_open": 1, "quota_exhausted": 0, "credentials_rejected": 0},
+      "quota_tripped_structural": {"eligible": 0, "disabled": 0, "missing_key": 0, "invalid_config": 0, "breaker_open": 0, "quota_exhausted": 1, "credentials_rejected": 0},
+      "credentials_tripped_structural": {"eligible": 0, "disabled": 0, "missing_key": 0, "invalid_config": 0, "breaker_open": 0, "quota_exhausted": 0, "credentials_rejected": 1},
+      "recovered": {"eligible": 1, "disabled": 0, "missing_key": 0, "invalid_config": 0, "breaker_open": 0, "quota_exhausted": 0, "credentials_rejected": 0}
+    }
+  }
+}

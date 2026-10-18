@@ -124,6 +124,10 @@ SearXNG requests retry only `network`-class failures, up to 3 attempts total wit
 
 ## Prometheus metrics
 
+### Monitoring contract
+
+`testdata/monitoring/provider_contract.json` is the versioned producer interface between this gateway and its monitoring consumers. It freezes provider eligibility reason labels, per-reason `healthy`/`runtime_failure`/`configuration` classification, production status, and representative one-hot snapshots. `alert_mask_expected` contains all non-configuration reasons: consumers must include new healthy or runtime-failure reasons in their masks, while configuration reasons must remain excluded. A vocabulary or classification change requires updating the consumer fixture in the same release.
+
 All metrics are exposed at `:8080/metrics` (configurable via `METRICS_PATH`), prefixed `searxng_gateway_`.
 
 ### Request metrics

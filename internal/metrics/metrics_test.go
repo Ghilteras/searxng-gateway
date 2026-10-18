@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"encoding/json"
+	"os"
 	"reflect"
 	"sort"
 	"sync"
@@ -10,6 +12,136 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )
+
+func TestProviderEligibilityContractVocabularyAndOneHot(t *testing.T) {
+	Init()
+	var contract struct {
+		Eligibility struct {
+			Reasons []struct {
+				Reason   string `json:"reason"`
+				Class    string `json:"class"`
+				Produced bool   `json:"produced"`
+			} `json:"reasons"`
+			AlertMaskExpected []string                  `json:"alert_mask_expected"`
+			Snapshots         map[string]map[string]int `json:"snapshots"`
+		} `json:"eligibility"`
+	}
+	data, err := os.ReadFile("../../testdata/monitoring/provider_contract.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &contract); err != nil {
+		t.Fatal(err)
+	}
+	fixtureReasons := make([]string, 0, len(contract.Eligibility.Reasons))
+	derivedMask := make([]string, 0, len(contract.Eligibility.Reasons))
+	for _, reason := range contract.Eligibility.Reasons {
+		fixtureReasons = append(fixtureReasons, reason.Reason)
+		switch reason.Class {
+		case "healthy", "runtime_failure":
+			derivedMask = append(derivedMask, reason.Reason)
+		case "configuration":
+		default:
+			t.Errorf("reason %q has unknown class %q", reason.Reason, reason.Class)
+		}
+		if reason.Class == "runtime_failure" && !containsString(contract.Eligibility.AlertMaskExpected, reason.Reason) {
+			t.Errorf("runtime-failure reason %q missing from alert_mask_expected", reason.Reason)
+		}
+		if reason.Class == "configuration" && containsString(contract.Eligibility.AlertMaskExpected, reason.Reason) {
+			t.Errorf("configuration reason %q must not appear in alert_mask_expected", reason.Reason)
+		}
+	}
+	if !reflect.DeepEqual(fixtureReasons, ProviderEligibilityReasons) {
+		t.Fatalf("fixture eligibility reasons = %v, code vocabulary = %v", fixtureReasons, ProviderEligibilityReasons)
+	}
+	if !reflect.DeepEqual(contract.Eligibility.AlertMaskExpected, derivedMask) {
+		t.Fatalf("alert_mask_expected = %v, reasons with non-configuration classes = %v", contract.Eligibility.AlertMaskExpected, derivedMask)
+	}
+	for _, activeReason := range ProviderEligibilityReasons {
+		provider := "contract-reason-" + activeReason
+		SetProviderEligibility(provider, func() string { return activeReason })
+		families, err := prometheus.DefaultGatherer.Gather()
+		if err != nil {
+			t.Fatal(err)
+		}
+		active := 0
+		for _, family := range families {
+			if family.GetName() != "searxng_gateway_provider_eligibility" {
+				continue
+			}
+			for _, metric := range family.GetMetric() {
+				labels := map[string]string{}
+				for _, label := range metric.GetLabel() {
+					labels[label.GetName()] = label.GetValue()
+				}
+				if labels["provider"] != provider {
+					continue
+				}
+				value := metric.GetGauge().GetValue()
+				if value == 1 {
+					active++
+					if labels["reason"] != activeReason {
+						t.Errorf("active reason = %q, want %q", labels["reason"], activeReason)
+					}
+				} else if value != 0 {
+					t.Errorf("reason %q = %v, want 0 or 1", labels["reason"], value)
+				}
+			}
+		}
+		if active != 1 {
+			t.Errorf("reason %q active eligibility series = %d, want 1", activeReason, active)
+		}
+	}
+	for snapshot, values := range contract.Eligibility.Snapshots {
+		t.Run(snapshot, func(t *testing.T) {
+			provider := "contract-" + snapshot
+			SetProviderEligibility(provider, func() string {
+				for _, reason := range ProviderEligibilityReasons {
+					if values[reason] == 1 {
+						return reason
+					}
+				}
+				return ""
+			})
+			families, err := prometheus.DefaultGatherer.Gather()
+			if err != nil {
+				t.Fatal(err)
+			}
+			active := 0
+			for _, family := range families {
+				if family.GetName() != "searxng_gateway_provider_eligibility" {
+					continue
+				}
+				for _, metric := range family.GetMetric() {
+					labels := map[string]string{}
+					for _, label := range metric.GetLabel() {
+						labels[label.GetName()] = label.GetValue()
+					}
+					if labels["provider"] != provider {
+						continue
+					}
+					got := int(metric.GetGauge().GetValue())
+					if got != values[labels["reason"]] {
+						t.Errorf("reason %s = %d, want %d", labels["reason"], got, values[labels["reason"]])
+					}
+					active += got
+				}
+			}
+			if active != 1 {
+				t.Fatalf("active eligibility series = %d, want 1", active)
+			}
+		})
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
 
 func TestInitIdempotent(t *testing.T) {
 	Init() // first
