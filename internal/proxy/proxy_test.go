@@ -47,6 +47,85 @@ type fakeBackend struct {
 	calls   atomic.Int64
 }
 
+func recordTestBreakerFailure(t *testing.T, bm *breaker.Manager, engine, reason string) {
+	t.Helper()
+	done, _, err := bm.Allow(engine)
+	if err != nil {
+		t.Fatalf("breaker admission: %v", err)
+	}
+	done(false, reason)
+}
+
+func TestAdmitPremiumCallPanicAccountsHalfOpenProbeOnce(t *testing.T) {
+	metrics.Init()
+	const id = "premium:panic-regression"
+	bm := breaker.NewWithSettings(func(engine string) breaker.EngineSettings {
+		return breaker.EngineSettings{Name: engine, MaxRequests: 1, Timeout: 20 * time.Millisecond}
+	})
+	recordTestBreakerFailure(t, bm, id, "initial")
+	recordTestBreakerFailure(t, bm, id, "initial")
+	deadline := time.Now().Add(time.Second)
+	for bm.Snapshot(id).State != gobreaker.StateHalfOpen && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := bm.Snapshot(id).State; got != gobreaker.StateHalfOpen {
+		t.Fatalf("state = %v, want half-open", got)
+	}
+	p := &Proxy{breakerMgr: bm}
+	panicker := &contextBackend{name: "panic-regression", fn: func(context.Context) ([]backends.SearchResult, error) { panic("provider panic") }}
+	before := providerAttemptCounter(t, "panic-regression", "canary", "panic")
+	_, outcome, _, _, admitted, callErr := p.admitPremiumCall(context.Background(), "q", panicker, id, "canary")
+	if !admitted || outcome != "panic" || callErr == nil {
+		t.Fatalf("panic call admitted=%v outcome=%q err=%v", admitted, outcome, callErr)
+	}
+	if got := providerAttemptCounter(t, "panic-regression", "canary", "panic") - before; got != 1 {
+		t.Fatalf("panic terminal attempts = %v, want exactly one", got)
+	}
+	if got := bm.Snapshot(id).State; got != gobreaker.StateOpen {
+		t.Fatalf("state after panic = %v, want open", got)
+	}
+	deadline = time.Now().Add(time.Second)
+	for bm.Snapshot(id).State != gobreaker.StateHalfOpen && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := bm.Snapshot(id).State; got != gobreaker.StateHalfOpen {
+		t.Fatalf("probe slot was stranded; state = %v", got)
+	}
+	recovered := &contextBackend{name: "panic-regression", fn: func(context.Context) ([]backends.SearchResult, error) {
+		return []backends.SearchResult{{URL: "https://recovered"}}, nil
+	}}
+	_, outcome, _, _, admitted, callErr = p.admitPremiumCall(context.Background(), "q", recovered, id, "canary")
+	if !admitted || outcome != "success" || callErr != nil {
+		t.Fatalf("recovery call admitted=%v outcome=%q err=%v", admitted, outcome, callErr)
+	}
+	if got := bm.Snapshot(id).State; got != gobreaker.StateClosed {
+		t.Fatalf("state after recovery = %v, want closed", got)
+	}
+}
+
+func providerAttemptCounter(t *testing.T, provider, phase, outcome string) float64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("Gather failed: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "searxng_gateway_provider_attempts_total" {
+			continue
+		}
+		for _, metric := range mf.GetMetric() {
+			labels := map[string]string{}
+			for _, label := range metric.GetLabel() {
+				labels[label.GetName()] = label.GetValue()
+			}
+			if labels["provider"] == provider && labels["phase"] == phase && labels["outcome"] == outcome {
+				return metric.GetCounter().GetValue()
+			}
+		}
+	}
+	return 0
+}
+
 type contextBackend struct {
 	name string
 	fn   func(context.Context) ([]backends.SearchResult, error)
@@ -930,13 +1009,13 @@ func TestTyped432TripsBreakerInPrimaryPhase(t *testing.T) {
 	if !bm.IsOpen("premium:tavily") {
 		t.Fatal("typed 432 did not open Tavily breaker")
 	}
-	if got := bm.LastReason("premium:tavily"); got != "quota" {
+	if got := bm.Snapshot("premium:tavily").Reason; got != "quota" {
 		t.Fatalf("breaker reason = %q, want bounded outcome quota", got)
 	}
 	if strings.Contains(logs.String(), querySecret) || strings.Contains(logs.String(), bodySecret) || strings.Contains(logs.String(), keySecret) {
 		t.Fatalf("sensitive text leaked in provider log: %q", logs.String())
 	}
-	if strings.Contains(bm.LastReason("premium:tavily"), bodySecret) || strings.Contains(bm.LastReason("premium:tavily"), keySecret) {
+	if strings.Contains(bm.Snapshot("premium:tavily").Reason, bodySecret) || strings.Contains(bm.Snapshot("premium:tavily").Reason, keySecret) {
 		t.Fatal("sensitive text leaked in breaker reason")
 	}
 	calls := backend.calls.Load()
@@ -2331,7 +2410,7 @@ func TestAllPremiumBreakersOpenIsFallbackFail(t *testing.T) {
 	backend := &fakeBackend{name: "brave", avail: true}
 	bm := breaker.New()
 	for i := 0; i < 2; i++ {
-		_, _ = bm.Execute(premiumBreakerID("brave"), func() (interface{}, error) { return nil, errors.New("fault") })
+		recordTestBreakerFailure(t, bm, premiumBreakerID("brave"), "fault")
 	}
 	if !bm.IsOpen(premiumBreakerID("brave")) {
 		t.Fatal("precondition: breaker is not open")
@@ -2439,7 +2518,7 @@ func TestMixedEmptyAndOpenBreakerVetoesNoResults(t *testing.T) {
 	exa := &fakeBackend{name: "exa", avail: true}
 	bm := breaker.New()
 	for i := 0; i < 2; i++ {
-		_, _ = bm.Execute(premiumBreakerID("exa"), func() (interface{}, error) { return nil, errors.New("fault") })
+		recordTestBreakerFailure(t, bm, premiumBreakerID("exa"), "fault")
 	}
 	if !bm.IsOpen(premiumBreakerID("exa")) {
 		t.Fatal("precondition: exa breaker is not open")
@@ -2655,7 +2734,7 @@ func TestQueryMetadataFreshResponseAndConcurrentCacheHits(t *testing.T) {
 }
 
 // TestProxyHalfOpenAdmitsSingleRealSearchUnderConcurrency verifies admission
-// at the proxy/backend boundary (not just at Manager.Execute): one real Search
+// at the proxy/backend boundary: one real Search
 // remains in flight as the half-open probe while concurrent requests are
 // skipped without invoking Search a second time.
 func TestProxyHalfOpenAdmitsSingleRealSearchUnderConcurrency(t *testing.T) {
@@ -2985,7 +3064,7 @@ func TestSkippedProviderDoesNotCountAsForcedCall(t *testing.T) {
 		// Native admission rejects the open epoch before any provider call.
 		{"breaker_open", "breaker_open", func(t *testing.T, bm *breaker.Manager) func() {
 			for i := 0; i < 2; i++ {
-				_, _ = bm.Execute("premium:brave", func() (interface{}, error) { return nil, errors.New("fault") })
+				recordTestBreakerFailure(t, bm, "premium:brave", "fault")
 			}
 			if !bm.IsOpen("premium:brave") {
 				t.Fatal("precondition: expected the brave breaker to be open")
@@ -2996,7 +3075,7 @@ func TestSkippedProviderDoesNotCountAsForcedCall(t *testing.T) {
 		// (admitted==false): skipped AFTER selection and admission.
 		{"admission_refused", "breaker_contention", func(t *testing.T, bm *breaker.Manager) func() {
 			for i := 0; i < 2; i++ {
-				_, _ = bm.Execute("premium:brave", func() (interface{}, error) { return nil, errors.New("fault") })
+				recordTestBreakerFailure(t, bm, "premium:brave", "fault")
 			}
 			deadline := time.Now().Add(time.Second)
 			for bm.State("premium:brave") != gobreaker.StateHalfOpen && time.Now().Before(deadline) {
@@ -3010,11 +3089,13 @@ func TestSkippedProviderDoesNotCountAsForcedCall(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				_, _ = bm.Execute("premium:brave", func() (interface{}, error) {
-					close(held)
-					<-release
-					return nil, nil
-				})
+				probeDone, _, err := bm.Allow("premium:brave")
+				if err != nil {
+					return
+				}
+				close(held)
+				<-release
+				probeDone(true, "")
 			}()
 			<-held
 			if bm.IsOpen("premium:brave") {

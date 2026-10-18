@@ -508,7 +508,7 @@ func (p *Proxy) premiumLoop(
 			continue
 		}
 		admittedCalls++
-		// Execute has now observed the terminal call outcome and completed any
+		// The admitted provider call has completed any
 		// trip/recovery transition. Keep the one-hot eligibility gauge current
 		// in the same request, without waiting for a later refresh.
 		p.refreshProviderEligibility(premium)
@@ -747,11 +747,10 @@ func (p *Proxy) providerEligibilityReason(provider backends.SearchBackend) strin
 		return "missing_key"
 	}
 	id := premiumBreakerID(provider.Name())
-	if p.breakerMgr.State(id) == gobreaker.StateOpen {
-		// Metrics may expose the frozen reason of the authoritative open epoch.
-		// cleanEmpty uses the per-admission snapshot instead, never this legacy
-		// per-engine slot, so concurrent outcomes cannot affect eligibility.
-		if reason := p.breakerMgr.LastReason(id); isStructuralReason(reason) {
+	snapshot := p.breakerMgr.Snapshot(id)
+	if snapshot.State == gobreaker.StateOpen {
+		// Metrics expose the frozen reason only for the authoritative open epoch.
+		if reason := snapshot.Reason; isStructuralReason(reason) {
 			return reason
 		}
 		return "breaker_open"

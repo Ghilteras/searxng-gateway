@@ -111,7 +111,7 @@ func TestV3AllPremiumsSkippedWithNoAdmissionVetoesNoResults(t *testing.T) {
 	bm := breaker.New()
 	for _, name := range []string{"brave", "tavily"} {
 		for range 2 {
-			_, _ = bm.Execute(premiumBreakerID(name), func() (interface{}, error) { return nil, errors.New("unknown fault") })
+			recordTestBreakerFailure(t, bm, premiumBreakerID(name), "unknown fault")
 		}
 	}
 	p, _ := newStructuralPredicateProxy(t, bm, nil)
