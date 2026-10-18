@@ -54,7 +54,10 @@ func TestProviderEligibilityContractVocabularyAndOneHot(t *testing.T) {
 	if !reflect.DeepEqual(fixtureReasons, ProviderEligibilityReasons) {
 		t.Fatalf("fixture eligibility reasons = %v, code vocabulary = %v", fixtureReasons, ProviderEligibilityReasons)
 	}
-	if !reflect.DeepEqual(contract.Eligibility.AlertMaskExpected, derivedMask) {
+	sort.Strings(derivedMask)
+	expectedMask := append([]string(nil), contract.Eligibility.AlertMaskExpected...)
+	sort.Strings(expectedMask)
+	if !reflect.DeepEqual(expectedMask, derivedMask) {
 		t.Fatalf("alert_mask_expected = %v, reasons with non-configuration classes = %v", contract.Eligibility.AlertMaskExpected, derivedMask)
 	}
 	for _, activeReason := range ProviderEligibilityReasons {
@@ -65,6 +68,7 @@ func TestProviderEligibilityContractVocabularyAndOneHot(t *testing.T) {
 			t.Fatal(err)
 		}
 		active := 0
+		presentReasons := make([]string, 0, len(ProviderEligibilityReasons))
 		for _, family := range families {
 			if family.GetName() != "searxng_gateway_provider_eligibility" {
 				continue
@@ -77,6 +81,7 @@ func TestProviderEligibilityContractVocabularyAndOneHot(t *testing.T) {
 				if labels["provider"] != provider {
 					continue
 				}
+				presentReasons = append(presentReasons, labels["reason"])
 				value := metric.GetGauge().GetValue()
 				if value == 1 {
 					active++
@@ -87,6 +92,12 @@ func TestProviderEligibilityContractVocabularyAndOneHot(t *testing.T) {
 					t.Errorf("reason %q = %v, want 0 or 1", labels["reason"], value)
 				}
 			}
+		}
+		sort.Strings(presentReasons)
+		wantReasons := append([]string(nil), ProviderEligibilityReasons...)
+		sort.Strings(wantReasons)
+		if !reflect.DeepEqual(presentReasons, wantReasons) {
+			t.Errorf("provider %q eligibility reason series = %v, want full vocabulary %v", provider, presentReasons, wantReasons)
 		}
 		if active != 1 {
 			t.Errorf("reason %q active eligibility series = %d, want 1", activeReason, active)

@@ -9,7 +9,7 @@
   "eligibility": {
     "reasons": [
       {"reason": "eligible", "class": "healthy", "produced": true},
-      {"reason": "disabled", "class": "configuration", "produced": false},
+      {"reason": "disabled", "class": "runtime_failure", "produced": false},
       {"reason": "missing_key", "class": "configuration", "produced": true},
       {"reason": "invalid_config", "class": "configuration", "produced": true},
       {"reason": "breaker_open", "class": "runtime_failure", "produced": true},
@@ -17,8 +17,8 @@
       {"reason": "credentials_rejected", "class": "runtime_failure", "produced": true}
     ],
     "reserved_unproduced": ["disabled"],
-    "alert_mask_expected": ["eligible", "breaker_open", "quota_exhausted", "credentials_rejected"],
-    "semantics": "One-hot per provider: exactly one reason series is 1 (active); every other reason series is 0. Reserved reasons are part of the vocabulary but are not currently produced by the gateway.",
+    "alert_mask_expected": ["eligible", "breaker_open", "quota_exhausted", "credentials_rejected", "disabled"],
+    "semantics": "One-hot per provider: exactly one reason series is 1 (active); every other reason series is 0. Reserved reasons are part of the vocabulary but are not currently produced by the gateway. The producer API groups disabled with account-unavailability reasons and the proxy treats it as positive structural evidence; therefore a vendor-side account disable is a structural outage of a configured capability, and the alert mask must select it to stay fail-loud rather than silent. If an operator-chosen administrative disable is introduced, it must have its own reason rather than reusing disabled, which would silence alerts for vendor-side disables.",
     "snapshots": {
       "eligible": {"eligible": 1, "disabled": 0, "missing_key": 0, "invalid_config": 0, "breaker_open": 0, "quota_exhausted": 0, "credentials_rejected": 0},
       "missing_key": {"eligible": 0, "disabled": 0, "missing_key": 1, "invalid_config": 0, "breaker_open": 0, "quota_exhausted": 0, "credentials_rejected": 0},
