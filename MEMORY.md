@@ -115,3 +115,7 @@ Placement finale FUORI SCOPE (homelab-config): `opencode-self` + `subagent-orche
 
 → journal: search "Gateway zero-results coverage incident 2026-10-15"
 v3.2.3 release, the no_results production boundary, and the live cross-repo alert fix → journal: search "v3.2.3 release"
+
+## 2026-10-17 — SearXNG gateway v3.2.4 release
+
+→ journal: search "SearXNG gateway v3.2.4 release"
