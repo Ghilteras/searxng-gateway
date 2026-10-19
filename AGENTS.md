@@ -36,6 +36,7 @@ cmd/gateway/main.go → internal/proxy/proxy.go (bounded SearXNG stage and the g
 
 ## Deploy
 - Ogni modifica viene rilasciata: aggiornare la versione e la documentazione nella stessa release, pubblicare l’immagine e fare il deploy; non lasciare modifiche atterrate ma non rilasciate.
+- Le release che modificano il vocabolario di monitoraggio (nomi delle metriche, valori delle label, set dei motivi di eleggibilità o vocabolario zero-result/outcome) devono eseguire anche il contract producer/consumer in homelab-config: la procedura esatta è solo in `scripts/test-searxng-monitoring.py` e non va copiata altrove.
 - Deploy SOLO via Portainer API (skill portainer-redeploy), MAI docker compose/run/rm.
 - Stack 31 (id: ai) è il target di deploy ROUTINE di questo repo: un aggiornamento del gateway si deploya come qualsiasi altro stack, SENZA conferma extra.
 - Qualsiasi altro stack → fermati e chiedi ad Angelo di usare homelab-config.
