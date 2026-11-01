@@ -114,7 +114,15 @@ jobs:
             tag="${GITHUB_REF_NAME}"
           else
             tag=""
+            existing=$(git tag --points-at "$GITHUB_SHA" --list 'v*' | head -n1 || true)
+            if [ -n "${existing:-}" ]; then
+              tag="$existing"
+              echo "commit already tagged as $tag - reusing it"
+            fi
             for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              if [ -n "${tag:-}" ]; then
+                break
+              fi
               git fetch --tags --force --quiet origin || true
               latest=$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)
               if [ -z "${latest:-}" ]; then
