@@ -1,0 +1,79 @@
+name: Release
+
+# A tag without a Release silently breaks the release channel: v3.2.1..v3.2.5
+# shipped with no Release, so `releases/latest` answered v3.1.0 while the newest
+# tag was v3.2.5, and anything resolving "latest published version" read a
+# three-week-old answer. This workflow makes "tag exists" and "release exists"
+# the same event, so the channel cannot fall behind the tags again.
+#
+# Notes are the commit subjects since the previous tag. This repository commits
+# straight to main with no pull requests, so GitHub's native --generate-notes has
+# no PR list to build from and would emit an almost empty body; the commit list
+# is the honest equivalent. Richer grouping can come later, but a release that
+# always exists with true content beats a prettier one that sometimes does not.
+
+on:
+  push:
+    tags: ["v*"]
+  # Manual dispatch exists to prove the workflow without cutting a throwaway
+  # release: run it against an existing tag; the create step is idempotent.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require a tag ref
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [[ "$REF" != refs/tags/* ]]; then
+            echo "::error::this workflow releases tags; got $REF - dispatch it with --ref <tag>"
+            exit 1
+          fi
+
+      - name: Build the release body from commits since the previous tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          prev=$(git tag --list 'v*' --sort=-v:refname | grep -vx "$TAG" | head -n1 || true)
+          if [ -n "${prev:-}" ]; then
+            range="$prev..$TAG"
+            heading="## What changed since $prev"
+            link="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${prev}...${TAG}"
+          else
+            range="$TAG"
+            heading="## Initial release"
+            link=""
+          fi
+          {
+            printf '%s\n\n' "$heading"
+            git log --no-merges --pretty=format:'- %s' "$range" | grep -v '^$' || true
+            printf '\n'
+            if [ -n "$link" ]; then
+              printf '\n%s\n' "$link"
+            fi
+          } > "$RUNNER_TEMP/notes.md"
+          echo "----- generated notes -----"
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: Create the release if it does not exist yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists - nothing to do"
+            exit 0
+          fi
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
