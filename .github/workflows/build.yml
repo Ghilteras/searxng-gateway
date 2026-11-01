@@ -83,3 +83,98 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  release:
+    # Every push to main produces a released artefact derived from the commit CI
+    # just built. No human cuts a tag, and there is no moment at which main is
+    # ahead of the newest release: that is the drift that left v3.2.1..v3.2.5
+    # with no Release object while releases/latest answered v3.1.0.
+    #
+    # The job runs only after `test` and `build` succeed, so a tag can never
+    # point at a commit whose image was not produced. Notes are the commit
+    # subjects since the previous tag: this repository commits straight to main
+    # with no pull requests, so GitHub's native --generate-notes has no PR list
+    # and would emit an almost empty body.
+    needs: [test, build]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve the version and tag the built commit
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            latest=$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)
+            if [ -z "${latest:-}" ]; then
+              tag="v0.1.0"
+            else
+              rest="${latest#v}"
+              major="${rest%%.*}"
+              rest="${rest#*.}"
+              minor="${rest%%.*}"
+              patch="${rest#*.}"
+              tag="v${major}.${minor}.$((patch + 1))"
+            fi
+            if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              echo "::error::tag $tag already exists; refusing to reuse a version"
+              exit 1
+            fi
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "refs/tags/$tag"
+          fi
+          prev=$(git tag --list 'v*' --sort=-v:refname | grep -vx "$tag" | head -n1 || true)
+          {
+            echo "tag=$tag"
+            echo "prev=${prev:-}"
+          } >> "$GITHUB_OUTPUT"
+          echo "resolved tag=$tag prev=${prev:-none}"
+
+      - name: Build the release body from commits since the previous tag
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+          PREV: ${{ steps.ver.outputs.prev }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PREV:-}" ]; then
+            range="$PREV..$TAG"
+            heading="## What changed since $PREV"
+            link="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${TAG}"
+          else
+            range="$TAG"
+            heading="## Initial release"
+            link=""
+          fi
+          {
+            printf '%s\n\n' "$heading"
+            git log --no-merges --pretty=format:'- %s' "$range" | grep -v '^$' || true
+            printf '\n'
+            if [ -n "$link" ]; then
+              printf '\n%s\n' "$link"
+            fi
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists - nothing to do"
+            exit 0
+          fi
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
