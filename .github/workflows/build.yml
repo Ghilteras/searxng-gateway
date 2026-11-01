@@ -100,9 +100,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    concurrency:
-      group: release
-      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -116,30 +113,49 @@ jobs:
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             tag="${GITHUB_REF_NAME}"
           else
-            latest=$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)
-            if [ -z "${latest:-}" ]; then
-              tag="v0.1.0"
-            else
-              rest="${latest#v}"
-              major="${rest%%.*}"
-              rest="${rest#*.}"
-              minor="${rest%%.*}"
-              patch="${rest#*.}"
-              tag="v${major}.${minor}.$((patch + 1))"
-            fi
-            if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-              echo "::error::tag $tag already exists; refusing to reuse a version"
+            tag=""
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              git fetch --tags --force --quiet origin || true
+              latest=$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)
+              if [ -z "${latest:-}" ]; then
+                candidate="v0.1.0"
+              else
+                rest="${latest#v}"
+                major="${rest%%.*}"
+                rest="${rest#*.}"
+                minor="${rest%%.*}"
+                patch="${rest#*.}"
+                candidate="v${major}.${minor}.$((patch + 1))"
+              fi
+              if git rev-parse -q --verify "refs/tags/$candidate" >/dev/null; then
+                sleep "$attempt"
+                continue
+              fi
+              git tag "$candidate" "$GITHUB_SHA"
+              if git push origin "refs/tags/$candidate"; then
+                tag="$candidate"
+                break
+              fi
+              git tag -d "$candidate" >/dev/null 2>&1 || true
+              sleep "$attempt"
+            done
+            if [ -z "$tag" ]; then
+              echo "::error::could not allocate a unique tag after 10 attempts"
               exit 1
             fi
-            git tag "$tag" "$GITHUB_SHA"
-            git push origin "refs/tags/$tag"
           fi
           prev=$(git tag --list 'v*' --sort=-v:refname | grep -vx "$tag" | head -n1 || true)
+          tip=$(git ls-remote origin refs/heads/main | cut -f1 || true)
+          is_latest="false"
+          if [ "$tip" = "$GITHUB_SHA" ]; then
+            is_latest="true"
+          fi
           {
             echo "tag=$tag"
             echo "prev=${prev:-}"
+            echo "is_latest=$is_latest"
           } >> "$GITHUB_OUTPUT"
-          echo "resolved tag=$tag prev=${prev:-none}"
+          echo "resolved tag=$tag prev=${prev:-none} latest=$is_latest"
 
       - name: Build the release body from commits since the previous tag
         env:
@@ -170,11 +186,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.ver.outputs.tag }}
+          LATEST: ${{ steps.ver.outputs.is_latest }}
         run: |
           set -euo pipefail
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "release $TAG already exists - nothing to do"
             exit 0
           fi
-          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag \
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag --latest="$LATEST" \
             --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
