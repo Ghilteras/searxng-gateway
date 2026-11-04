@@ -6,7 +6,7 @@ Machine facts for SearXNG Gateway development.
 
 All metrics are Prometheus, emitted by the gateway at /metrics:
 
-- `searxng_gateway_engine_results_total{engine="..."}` — results per engine (brave, exa, tavily, jina, plus SearXNG engines)
+- `searxng_gateway_engine_results_total{engine="..."}` — results per engine (the enrolled premium providers — brave, exa, parallel, tavily, serper — plus SearXNG engine names; the label is ambiguous between a premium provider and an upstream engine of the same name)
 - `searxng_gateway_circuit_breaker_state{engine="..."}` — 0 closed, 1 half-open, 2 open; premium breakers use `engine="premium:<provider>"`
 - `searxng_gateway_circuit_breaker_trips_total{engine="...",reason="..."}` — trips
 - `searxng_gateway_circuit_breaker_recovery_total{engine="..."}` — half-open recoveries

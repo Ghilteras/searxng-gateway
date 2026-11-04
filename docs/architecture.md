@@ -67,7 +67,7 @@ The upstream query keeps the caller's case (trim + whitespace collapse) so opera
 
 The premium top-up — `premiumLoop`, from the second admitted call on — invokes providers serially. Only the guaranteed first call overlaps with SearXNG (it is going to be made anyway, so the overlap adds no billed call). Serial top-up is a deliberate design choice, not a TODO to be fixed. The trade-offs behind the choice, and why concurrency is not the fix, are:
 
-**1. Quota and rate-limit control.** Concurrency defeats early stop: calls already launched cannot be un-launched even when the first provider alone would have sufficed, so it is strictly more billed calls (Brave ~1,000/mo, Exa ~2,800/mo, Tavily credits, Jina RPM/tokens). The loop stops as soon as the target is reached (and the one guaranteed admitted call is done) and skips providers that are unavailable or circuit-broken. Serial execution also preserves best-effort pacing against per-second and per-minute caps (Brave QPS, Jina 500 RPM) — response-time spacing, not an explicit rate limiter. Two consecutive genuine faults from a provider (e.g. 4xx auth/quota) trip that engine's circuit breaker for 5 minutes — an availability cost, not just a metric blip.
+**1. Quota and rate-limit control.** Concurrency defeats early stop: calls already launched cannot be un-launched even when the first provider alone would have sufficed, so it is strictly more billed calls (Brave ~1,000/mo, Exa ~2,800/mo, Tavily credits). The loop stops as soon as the target is reached (and the one guaranteed admitted call is done) and skips providers that are unavailable or circuit-broken. Serial execution also preserves best-effort pacing against per-second and per-minute caps (Brave QPS) — response-time spacing, not an explicit rate limiter. Two consecutive genuine faults from a provider (e.g. 4xx auth/quota) trip that engine's circuit breaker for 5 minutes — an availability cost, not just a metric blip.
 
 **2. Attribution determinism.** Output order is load-bearing and deliberately order-dependent. Premium results are listed *before* the SearXNG-only results, so premium owns duplicate URLs and stays visible to clients that keep only the first results, and response contents/ordering do not depend on goroutine scheduling. Tests pin these cases.
 
@@ -110,8 +110,8 @@ The gateway returns JSON in SearXNG format regardless of which backend provided 
 |-------|--------|-------|
 | `title` | Backend-specific title | — |
 | `url` | Backend-specific URL | Deduplicated across all backends |
-| `content` | Backend-specific snippet | `description` from Brave, `content`/`summary` from Exa/Tavily, `content` from Jina |
-| `engine` | Backend name | e.g. `"brave"`, `"exa"`, `"jina"`, `"tavily"`, `"bing"`, or a SearXNG engine name |
+| `content` | Backend-specific snippet | `description` from Brave, `content`/`summary` from Exa/Tavily |
+| `engine` | Backend name | e.g. `"brave"`, `"exa"`, `"parallel"`, `"tavily"`, `"serper"`, or a SearXNG engine name; the label is ambiguous between a gateway premium provider and an upstream engine of the same name |
 | `engines` | `[]string{engine}` | List format for compatibility |
 | `score` | — | Not set by premium providers (omitted) |
 
