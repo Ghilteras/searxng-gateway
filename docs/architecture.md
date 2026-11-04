@@ -208,8 +208,6 @@ The cooldown gauge is cleared lazily: it keeps the expired timestamp until `inCo
 | `searxng_gateway_brave_rate_limit_remaining` | Gauge | `period` | Brave API requests remaining in the current request window (from `X-RateLimit-Remaining` header) |
 | `searxng_gateway_brave_rate_limit_limit` | Gauge | `period` | Brave API requests allowed in the current request window (from `X-RateLimit-Limit` header) |
 | `searxng_gateway_brave_rate_limit_reset_seconds` | Gauge | `period` | Seconds until the Brave API request window resets (from `X-RateLimit-Reset` header) |
-| `serper_searches_remaining` | Gauge | `period` | Serper searches remaining (no public API yet) |
-| `serper_searches_limit` | Gauge | `period` | Serper searches limit |
 
 ## Configuration
 

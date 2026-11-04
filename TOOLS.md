@@ -20,7 +20,7 @@ All metrics are Prometheus, emitted by the gateway at /metrics:
 - `searxng_gateway_searxng_failure_streak` — current consecutive SearXNG failures, reset to 0 on success or when an expired cooldown is cleared (gauge, no labels)
 - `searxng_gateway_searxng_cooldown_until_seconds` — Unix timestamp when the current SearXNG cooldown expires, 0 when not in cooldown (gauge, no labels). Cleared lazily by `inCooldown()` on the next request after expiry, so alert with `> time()`, never `> 0`
 
-Source pointers: `internal/brave/client.go` (X-RateLimit parsing), `internal/quota/quota.go` (Brave remaining/limit gauges; Serper scaffold at 0), `backends/*.go` (SearchBackend), `internal/proxy/proxy.go` (engine_status).
+Source pointers: `internal/brave/client.go` (X-RateLimit parsing and the three Brave request-window gauges), `internal/metrics/metrics.go` (metric definitions), `backends/*.go` (SearchBackend), `internal/proxy/proxy.go` (engine_status).
 
 ## Retired metrics
 
