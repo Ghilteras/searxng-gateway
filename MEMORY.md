@@ -123,3 +123,9 @@ v3.2.3 release, the no_results production boundary, and the live cross-repo aler
 ## 2026-10-18 — SearXNG gateway v3.2.5 release and disabled-contract lessons
 
 → journal: search "SearXNG gateway v3.2.5 release"
+
+---
+
+## 2026-11-04 — Accuracy baseline: premium-first mix verified; request contract documented
+
+→ journal: search "relevance baseline"
