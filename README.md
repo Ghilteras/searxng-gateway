@@ -158,7 +158,7 @@ groups:
 
 ## Endpoints
 
-- `GET /search?q=<query>` — proxy endpoint (query-only; always JSON, `format=json` is accepted and ignored)
+- `GET /search?q=<query>` — proxy endpoint (query-only; JSON responses, except the `q`-validation `400` which is plain text; `format=json` is accepted and ignored)
 - `GET /healthz` — liveness
 - `GET /metrics` — Prometheus exposition
 
