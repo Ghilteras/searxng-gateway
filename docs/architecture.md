@@ -235,4 +235,5 @@ See [README](../README.md) for the complete env var table including per-provider
 
 - **Docker**: `docker compose -f docker-compose.example.yml up -d` starts SearXNG + gateway. See [keyless.md](keyless.md) for a zero-key setup.
 - **Endpoints**: `GET /search?q=<query>&format=json`, `GET /healthz`, `GET /metrics`
+- **Search input**: the endpoint is query-only — `q` is its sole input. SearXNG parameters (`language`, `time_range`, `safesearch`, `pageno`, `categories`, `engines`) are not forwarded and are silently ignored; the merged response is neither narrowed, paginated nor filtered by them.
 - The gateway image is built and pushed automatically by GitHub Actions on push to `main` and `v*` tags (`.github/workflows/build.yml`). See [README](../README.md) for build details.

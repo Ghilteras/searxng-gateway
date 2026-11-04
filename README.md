@@ -162,6 +162,11 @@ groups:
 - `GET /healthz` — liveness
 - `GET /metrics` — Prometheus exposition
 
+The search endpoint is query-only: `q` is its sole input. SearXNG parameters
+(`language`, `time_range`, `safesearch`, `pageno`, `categories`, `engines`) are not
+forwarded upstream and are silently ignored, so they neither narrow, paginate nor
+filter the merged response.
+
 ## Env vars
 
 | Var | Default | Required | Description |
