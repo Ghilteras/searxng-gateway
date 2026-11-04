@@ -42,6 +42,16 @@ Client ───▶ searxng-gateway (:8080)
 
 The upstream query keeps the caller's case (trim + whitespace collapse) so operators such as `OR` survive; only the cache key is lower-cased.
 
+## Request contract
+
+`GET /search` is query-only and always answers JSON.
+
+- `q` is the only input that affects the result set; a missing or whitespace-only `q` is rejected with HTTP 400 before any cache, SearXNG or provider work.
+- `format` is accepted only for SearXNG compatibility and is ignored: the response is always JSON and the SearXNG stage is always called with `format=json`.
+- SearXNG parameters — `language`, `time_range`, `safesearch`, `pageno`, `categories`, `engines` — are not forwarded and are silently ignored, so they neither narrow, paginate nor filter the merged response.
+- Premium providers receive fixed gateway options, not caller input: Brave is always called with `safesearch=moderate`, and a caller can neither change nor read that from the response.
+- Engine bangs inside `q` (for example `!bi`) therefore narrow only the SearXNG stage, while premium providers receive the literal query string.
+
 ## Request flow
 
 1. **Normalise** the query for the **cache key only** (lowercase, collapse whitespace) and check the **LRU cache**. Cache hit returns immediately without calling any backend. The query sent upstream (SearXNG and every premium provider) is the raw query trimmed and whitespace-collapsed, **case preserved**.
@@ -234,6 +244,5 @@ See [README](../README.md) for the complete env var table including per-provider
 ## Deployment
 
 - **Docker**: `docker compose -f docker-compose.example.yml up -d` starts SearXNG + gateway. See [keyless.md](keyless.md) for a zero-key setup.
-- **Endpoints**: `GET /search?q=<query>&format=json`, `GET /healthz`, `GET /metrics`
-- **Search input**: the endpoint is query-only — `q` is its sole input. SearXNG parameters (`language`, `time_range`, `safesearch`, `pageno`, `categories`, `engines`) are not forwarded and are silently ignored; the merged response is neither narrowed, paginated nor filtered by them.
+- **Endpoints**: `GET /search?q=<query>` (always JSON; `format=json` is accepted and ignored), `GET /healthz`, `GET /metrics`
 - The gateway image is built and pushed automatically by GitHub Actions on push to `main` and `v*` tags (`.github/workflows/build.yml`). See [README](../README.md) for build details.

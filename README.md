@@ -158,14 +158,11 @@ groups:
 
 ## Endpoints
 
-- `GET /search?q=<query>&format=json` — proxy endpoint
+- `GET /search?q=<query>` — proxy endpoint (query-only; always JSON, `format=json` is accepted and ignored)
 - `GET /healthz` — liveness
 - `GET /metrics` — Prometheus exposition
 
-The search endpoint is query-only: `q` is its sole input. SearXNG parameters
-(`language`, `time_range`, `safesearch`, `pageno`, `categories`, `engines`) are not
-forwarded upstream and are silently ignored, so they neither narrow, paginate nor
-filter the merged response.
+See [docs/architecture.md](docs/architecture.md#request-contract) for the request contract.
 
 ## Env vars
 
