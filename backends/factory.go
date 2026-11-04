@@ -10,7 +10,7 @@ import (
 // NewFromEnv creates a SearchBackend from environment variables.
 // It reads <NAME>_API_KEY and any provider-specific env vars.
 // PremiumPoolOrder fixes pool and round-robin order. Only these keyed backends
-// are automatically enrolled; Jina and Bing remain outside the premium pool.
+// are automatically enrolled.
 var PremiumPoolOrder = []string{"brave", "exa", "parallel", "tavily", "serper"}
 
 // ConfiguredPool returns provider instances registered for eligibility

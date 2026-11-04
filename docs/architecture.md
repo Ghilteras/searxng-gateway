@@ -110,7 +110,7 @@ The gateway returns JSON in SearXNG format regardless of which backend provided 
 |-------|--------|-------|
 | `title` | Backend-specific title | — |
 | `url` | Backend-specific URL | Deduplicated across all backends |
-| `content` | Backend-specific snippet | `description` from Brave, `content`/`summary` from Exa/Tavily |
+| `content` | Backend-specific snippet | `description` from Brave, `content`/`summary` from Exa and Tavily, `snippet` from Serper, first non-empty excerpt from Parallel |
 | `engine` | Backend name | e.g. `"brave"`, `"exa"`, `"parallel"`, `"tavily"`, `"serper"`, or a SearXNG engine name; the label is ambiguous between a gateway premium provider and an upstream engine of the same name |
 | `engines` | `[]string{engine}` | List format for compatibility |
 | `score` | — | Not set by premium providers (omitted) |

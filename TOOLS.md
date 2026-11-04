@@ -28,11 +28,11 @@ Source pointers: `internal/brave/client.go` (X-RateLimit parsing), `internal/quo
 
 ## Premium quota caveat (2026-08-28 live probe)
 
-Only Brave sends `X-RateLimit-Remaining/Limit/Reset` in search responses; the gateway exposes these as `searxng_gateway_brave_rate_limit_remaining`, `searxng_gateway_brave_rate_limit_limit`, and `searxng_gateway_brave_rate_limit_reset_seconds` (request-window metrics, not account credits). Tavily/Exa/Jina throw away 429 headers:
+Only Brave sends `X-RateLimit-Remaining/Limit/Reset` in search responses; the gateway exposes these as `searxng_gateway_brave_rate_limit_remaining`, `searxng_gateway_brave_rate_limit_limit`, and `searxng_gateway_brave_rate_limit_reset_seconds` (request-window metrics, not account credits). Tavily/Exa throw away 429 headers (this repo integrates no Jina backend; the Jina line below is a historical probe note):
 
 - Tavily: GET /usage (Bearer) → {key:{usage,limit}, account:{plan_usage,plan_limit}}
 - Exa: costDollars in body + PAYMENT-REQUIRED header (binary, not countdown)
-- Jina: HTTP 402 InsufficientBalanceError (binary)
+- Jina (no backend in this repo; historical probe note only): HTTP 402 InsufficientBalanceError (binary)
 
 Request-window rate-limit alarm is structurally Brave-only. Other providers need separate polling/body mechanisms.
 
