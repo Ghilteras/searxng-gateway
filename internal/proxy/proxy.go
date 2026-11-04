@@ -1253,7 +1253,9 @@ func networkKind(err error) string {
 		return "conn_refused"
 	case strings.Contains(low, "connection reset"):
 		return "conn_reset"
-	case strings.Contains(low, "i/o timeout"):
+	case strings.Contains(low, "i/o timeout"),
+		strings.Contains(low, "timeout exceeded"),
+		strings.Contains(low, "context deadline exceeded"):
 		return "io_timeout"
 	case strings.Contains(low, "no route to host"), strings.Contains(low, "network is unreachable"):
 		return "unreachable"

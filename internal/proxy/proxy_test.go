@@ -999,6 +999,8 @@ func TestNetworkKind(t *testing.T) {
 		{"connection refused", errors.New("dial tcp 1.2.3.4:443: connect: connection refused"), "conn_refused"},
 		{"connection reset", errors.New("read tcp: connection reset by peer"), "conn_reset"},
 		{"i/o timeout", errors.New("read tcp: i/o timeout"), "io_timeout"},
+		{"client timeout", errors.New(`request failed: Get "https://api.tavily.com/search": context deadline exceeded (Client.Timeout exceeded while awaiting headers)`), "io_timeout"},
+		{"backend error nil Err", &backends.BackendError{Backend: "tavily", Code: backends.ErrCodeNetwork}, "other"},
 		{"no route", errors.New("dial tcp: no route to host"), "unreachable"},
 		{"network unreachable", errors.New("network is unreachable"), "unreachable"},
 		{"ambiguous transport failure", errors.New("dial tcp 1.2.3.4:443: connect: tls handshake failure"), "other"},
