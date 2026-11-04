@@ -516,7 +516,7 @@ func (p *Proxy) premiumLoop(
 			diagnostics.addProvider(providerDiagnostic{Provider: premium.Name(), Outcome: outcome, Results: len(results), EligibilityReason: eligibilityReason})
 		}
 		if callErr != nil {
-			logPremiumFailure(premium.Name(), phase, outcome)
+			logPremiumFailure(premium.Name(), phase, outcome, networkKind(callErr))
 			errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", premium.Name(), callErr))
 			continue
 		}
@@ -1233,10 +1233,38 @@ func isQuotaText(msg string) bool {
 	return false
 }
 
-func logPremiumFailure(provider, phase, outcome string) {
+// networkKind maps a provider error to a bounded, log-only transport token. It
+// never emits error text: the token comes from a fixed vocabulary, so no query,
+// body or credential can reach the log. Unknown or ambiguous evidence is "other".
+func networkKind(err error) string {
+	var backendErr *backends.BackendError
+	inner := err
+	if errors.As(err, &backendErr) && backendErr.Err != nil {
+		inner = backendErr.Err
+	}
+	if inner == nil {
+		return "other"
+	}
+	low := strings.ToLower(inner.Error())
+	switch {
+	case strings.Contains(low, "no such host"):
+		return "dns"
+	case strings.Contains(low, "connection refused"):
+		return "conn_refused"
+	case strings.Contains(low, "connection reset"):
+		return "conn_reset"
+	case strings.Contains(low, "i/o timeout"):
+		return "io_timeout"
+	case strings.Contains(low, "no route to host"), strings.Contains(low, "network is unreachable"):
+		return "unreachable"
+	}
+	return "other"
+}
+
+func logPremiumFailure(provider, phase, outcome, kind string) {
 	if premiumTrips(outcome) {
-		log.Printf("[WARN] provider_failure provider=%s phase=%s outcome=%s", provider, phase, outcome)
+		log.Printf("[WARN] provider_failure provider=%s phase=%s outcome=%s kind=%s", provider, phase, outcome, kind)
 		return
 	}
-	log.Printf("[INFO] provider_failure provider=%s phase=%s outcome=%s", provider, phase, outcome)
+	log.Printf("[INFO] provider_failure provider=%s phase=%s outcome=%s kind=%s", provider, phase, outcome, kind)
 }

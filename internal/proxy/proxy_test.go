@@ -989,6 +989,78 @@ func TestClassifyPremiumOutcome(t *testing.T) {
 	}
 }
 
+func TestNetworkKind(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"dns", errors.New("dial tcp: lookup api.tavily.com: no such host"), "dns"},
+		{"connection refused", errors.New("dial tcp 1.2.3.4:443: connect: connection refused"), "conn_refused"},
+		{"connection reset", errors.New("read tcp: connection reset by peer"), "conn_reset"},
+		{"i/o timeout", errors.New("read tcp: i/o timeout"), "io_timeout"},
+		{"no route", errors.New("dial tcp: no route to host"), "unreachable"},
+		{"network unreachable", errors.New("network is unreachable"), "unreachable"},
+		{"ambiguous transport failure", errors.New("dial tcp 1.2.3.4:443: connect: tls handshake failure"), "other"},
+		{"backend error unwrap", &backends.BackendError{Backend: "tavily", Code: backends.ErrCodeNetwork, Err: errors.New("lookup api.tavily.com: no such host")}, "dns"},
+		{"nil", nil, "other"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := networkKind(tt.err); got != tt.want {
+				t.Fatalf("networkKind() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLogPremiumFailureEmitsBoundedKind(t *testing.T) {
+	const querySecret = "QUERY-SENTINEL"
+	const bodySecret = "BODY-SENTINEL"
+	const credentialSecret = "CREDENTIAL-SENTINEL"
+	poisoned := errors.New(querySecret + " " + bodySecret + " " + credentialSecret)
+	var logs strings.Builder
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	resetKind := networkKind(errors.New("read tcp: connection reset by peer"))
+	logPremiumFailure("tavily", "primary", "network", resetKind)
+	logPremiumFailure("tavily", "topup", "request_error", resetKind)
+	logPremiumFailure("tavily", "primary", "network", networkKind(poisoned))
+	logPremiumFailure("tavily", "topup", "request_error", networkKind(poisoned))
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("log lines = %d, want 4: %q", len(lines), logs.String())
+	}
+	for i, tt := range []struct {
+		prefix  string
+		outcome string
+		kind    string
+	}{
+		{"[WARN]", "network", "conn_reset"},
+		{"[INFO]", "request_error", "conn_reset"},
+		{"[WARN]", "network", "other"},
+		{"[INFO]", "request_error", "other"},
+	} {
+		line := lines[i]
+		if !strings.Contains(line, tt.prefix+" provider_failure ") {
+			t.Errorf("line %d = %q, want %s provider_failure prefix", i, line, tt.prefix)
+		}
+		if !strings.Contains(line, "outcome="+tt.outcome) {
+			t.Errorf("line %d missing outcome=%s: %q", i, tt.outcome, line)
+		}
+		if !strings.Contains(line, "kind="+tt.kind) {
+			t.Errorf("line %d missing kind=%s: %q", i, tt.kind, line)
+		}
+		for _, secret := range []string{querySecret, bodySecret, credentialSecret} {
+			if strings.Contains(line, secret) {
+				t.Errorf("line %d leaked %q: %q", i, secret, line)
+			}
+		}
+	}
+}
+
 func TestTyped432TripsBreakerInPrimaryPhase(t *testing.T) {
 	const querySecret = "QUERY-SECRET-432"
 	const bodySecret = "PLAN-BODY-432"
@@ -1014,6 +1086,9 @@ func TestTyped432TripsBreakerInPrimaryPhase(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), querySecret) || strings.Contains(logs.String(), bodySecret) || strings.Contains(logs.String(), keySecret) {
 		t.Fatalf("sensitive text leaked in provider log: %q", logs.String())
+	}
+	if !strings.Contains(logs.String(), "kind=") {
+		t.Fatalf("provider log missing bounded kind field: %q", logs.String())
 	}
 	if strings.Contains(bm.Snapshot("premium:tavily").Reason, bodySecret) || strings.Contains(bm.Snapshot("premium:tavily").Reason, keySecret) {
 		t.Fatal("sensitive text leaked in breaker reason")
