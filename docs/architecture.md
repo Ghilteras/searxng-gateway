@@ -44,10 +44,10 @@ The upstream query keeps the caller's case (trim + whitespace collapse) so opera
 
 ## Request contract
 
-`GET /search` is query-only and always answers JSON.
+`GET /search` is query-only. Every successful response is JSON; the `q`-validation `400` is plain text (`Content-Type: text/plain`).
 
 - `q` is the only input that affects the result set; a missing or whitespace-only `q` is rejected with HTTP 400 before any cache, SearXNG or provider work.
-- `format` is accepted only for SearXNG compatibility and is ignored: the response is always JSON and the SearXNG stage is always called with `format=json`.
+- `format` is accepted only for SearXNG compatibility and is ignored: a successful response is JSON whatever `format` asks for, and the SearXNG stage is always called with `format=json`.
 - SearXNG parameters — `language`, `time_range`, `safesearch`, `pageno`, `categories`, `engines` — are not forwarded and are silently ignored, so they neither narrow, paginate nor filter the merged response.
 - Premium providers receive fixed gateway options, not caller input: Brave is always called with `safesearch=moderate`, and a caller can neither change nor read that from the response.
 - Engine bangs inside `q` (for example `!bi`) therefore narrow only the SearXNG stage, while premium providers receive the literal query string.
@@ -99,8 +99,6 @@ The premium pool is derived from configured `<NAME>_API_KEY` variables; missing-
 | Parallel | `parallel` | `PARALLEL_API_KEY` | No | Auto-enrolled when key is configured |
 | Tavily | `tavily` | `TAVILY_API_KEY` | No | `TAVILY_SEARCH_DEPTH=basic\|advanced` |
 | Serper | `serper` | `SERPER_API_KEY` | No | Homepage example; docs page returned 404; free-query recurrence unverified |
-| Brave Web (HTML scrape) | `brave-web` | — | Yes | Parses Brave Search HTML |
-| SearXNG instance | `searxng` | — | Yes | For multi-instance or remote SearXNG backends |
 
 All backends implement the `SearchBackend` interface in `backends/interface.go`. The `backends/factory.go` factory instantiates them from env vars. See [README](../README.md) for the full env var table and [keyless.md](keyless.md) for a zero-API-key setup.
 
