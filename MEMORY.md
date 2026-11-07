@@ -129,3 +129,9 @@ v3.2.3 release, the no_results production boundary, and the live cross-repo aler
 ## 2026-11-04 — Accuracy baseline: premium-first mix verified; request contract documented
 
 → journal: search "relevance baseline"
+
+---
+
+## 2026-11-06 — Exa highlights fix, validation, deployment, credential exposure
+
+→ journal: search "Gateway v3.2.15 Exa highlights"
