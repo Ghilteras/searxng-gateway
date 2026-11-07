@@ -193,8 +193,7 @@ func TestExaBackend_AutoFallsBackToMCP(t *testing.T) {
 }
 
 // TestExaAPIRequestBodyCarriesTypeAndNumResults asserts the exact JSON the Exa
-// API receives: type "fast" with numResults, and no contents block (highlights
-// are intentionally not requested; the parser does not read them).
+// API receives: type "fast" with numResults and cached highlights.
 func TestExaAPIRequestBodyCarriesTypeAndNumResults(t *testing.T) {
 	var got map[string]interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -218,8 +217,8 @@ func TestExaAPIRequestBodyCarriesTypeAndNumResults(t *testing.T) {
 	if got["query"] != "Postgres OR MariaDB" {
 		t.Errorf("query = %v, want case preserved", got["query"])
 	}
-	if _, present := got["contents"]; present {
-		t.Errorf("contents present in request body (%v); highlights are deliberately not requested", got["contents"])
+	if _, present := got["contents"]; !present {
+		t.Error("contents missing from request body; cached highlights should be requested")
 	}
 }
 
@@ -250,5 +249,73 @@ func TestConfiguredPoolExaUsesOwnTimeout(t *testing.T) {
 		if exa, ok := p.(*ExaBackend); ok && exa.Timeout != 5*time.Second {
 			t.Errorf("exa timeout with no override = %v, want shared 5s", exa.Timeout)
 		}
+	}
+}
+
+func TestExaRequestAsksForCachedHighlights(t *testing.T) {
+	var got exaAPIRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"results": []map[string]interface{}{}})
+	}))
+	defer server.Close()
+
+	b := NewExaBackend(ExaModeAPI, "test-key", 2*time.Second, "", "", 10)
+	b.BaseURL = server.URL
+
+	if _, err := b.Search(SearchOptions{Query: "q"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Type != exaSearchType {
+		t.Errorf("type = %q, want %q", got.Type, exaSearchType)
+	}
+	if got.Contents == nil || got.Contents.Highlights == nil {
+		t.Fatalf("contents.highlights not requested: %+v", got.Contents)
+	}
+	if got.Contents.Highlights.MaxCharacters != exaHighlightMaxCharacters {
+		t.Errorf("maxCharacters = %d, want %d", got.Contents.Highlights.MaxCharacters, exaHighlightMaxCharacters)
+	}
+	if got.MaxAgeHours == nil || *got.MaxAgeHours != exaMaxAgeHoursCachedOnly {
+		t.Errorf("maxAgeHours = %v, want %d", got.MaxAgeHours, exaMaxAgeHoursCachedOnly)
+	}
+}
+
+func TestExaContentFromHighlights(t *testing.T) {
+	cases := []struct {
+		name        string
+		result      map[string]interface{}
+		wantContent string
+	}{
+		{"first non-blank highlight wins", map[string]interface{}{"highlights": []string{"", "  ", "the answer"}, "text": "full text"}, "the answer"},
+		{"blank highlights fall back to text", map[string]interface{}{"highlights": []string{}, "text": "full text", "summary": "s"}, "full text"},
+		{"blank text falls back to summary", map[string]interface{}{"highlights": []string{}, "text": "", "summary": "s"}, "s"},
+		{"all absent yields empty content", map[string]interface{}{}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				res := tc.result
+				res["title"] = "T"
+				res["url"] = "https://exa.example/x"
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"results": []map[string]interface{}{res}})
+			}))
+			defer server.Close()
+
+			b := NewExaBackend(ExaModeAPI, "test-key", 2*time.Second, "", "", 10)
+			b.BaseURL = server.URL
+
+			results, err := b.Search(SearchOptions{Query: "q"})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(results) != 1 {
+				t.Fatalf("expected 1 result, got %d", len(results))
+			}
+			if results[0].Content != tc.wantContent {
+				t.Errorf("content = %q, want %q", results[0].Content, tc.wantContent)
+			}
+		})
 	}
 }

@@ -118,23 +118,57 @@ func (e *ExaBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 // Exa OpenAPI spec (docs.exa.ai/reference/search) `type` accepts instant, fast,
 // auto, deep-lite, deep, deep-reasoning alongside numResults; `fast` returns
 // high-quality results with reduced latency and is recommended for
-// user-facing search. `contents` is deliberately NOT requested: this parser
-// reads only text/summary, and adding highlights needs a parser change.
+// user-facing search. Adopted 2026-10-11: p50 fell from 1.5s to 0.35s.
 const exaSearchType = "fast"
 
+// Exa content options. `highlights` is Exa's documented default for compact,
+// query-relevant excerpts and carries no extra Search charge (only `summary`
+// adds a per-result model call). `maxAgeHours: -1` restricts retrieval to
+// cached content: a live page fetch would reintroduce the latency that
+// `type: fast` was adopted to remove.
+const (
+	exaHighlightMaxCharacters = 500
+	exaMaxAgeHoursCachedOnly  = -1
+)
+
 type exaAPIRequest struct {
-	Query      string `json:"query"`
-	NumResults int    `json:"numResults,omitempty"`
-	Type       string `json:"type,omitempty"`
+	Query       string       `json:"query"`
+	NumResults  int          `json:"numResults,omitempty"`
+	Type        string       `json:"type,omitempty"`
+	Contents    *exaContents `json:"contents,omitempty"`
+	MaxAgeHours *int         `json:"maxAgeHours,omitempty"`
+}
+
+type exaContents struct {
+	Highlights *exaHighlights `json:"highlights,omitempty"`
+}
+
+type exaHighlights struct {
+	MaxCharacters int `json:"maxCharacters,omitempty"`
 }
 
 type exaAPIResponse struct {
 	Results []struct {
-		Title   string `json:"title"`
-		URL     string `json:"url"`
-		Text    string `json:"text"`
-		Summary string `json:"summary"`
+		Title      string   `json:"title"`
+		URL        string   `json:"url"`
+		Text       string   `json:"text"`
+		Summary    string   `json:"summary"`
+		Highlights []string `json:"highlights"`
 	} `json:"results"`
+}
+
+// newExaAPIRequest builds the search payload. Highlights are requested on every
+// call so results carry a snippet; the parser still falls back to text/summary
+// for responses that omit them.
+func newExaAPIRequest(query string, count int) exaAPIRequest {
+	cachedOnly := exaMaxAgeHoursCachedOnly
+	return exaAPIRequest{
+		Query:       query,
+		NumResults:  count,
+		Type:        exaSearchType,
+		Contents:    &exaContents{Highlights: &exaHighlights{MaxCharacters: exaHighlightMaxCharacters}},
+		MaxAgeHours: &cachedOnly,
+	}
 }
 
 func (e *ExaBackend) searchAPI(ctx context.Context, query string, count int) ([]SearchResult, error) {
@@ -142,7 +176,7 @@ func (e *ExaBackend) searchAPI(ctx context.Context, query string, count int) ([]
 		return nil, &BackendError{Backend: e.Name(), Err: fmt.Errorf("exa API key not configured"), Code: ErrCodeUnavailable}
 	}
 
-	payload, err := json.Marshal(exaAPIRequest{Query: query, NumResults: count, Type: exaSearchType})
+	payload, err := json.Marshal(newExaAPIRequest(query, count))
 	if err != nil {
 		return nil, &BackendError{Backend: e.Name(), Err: err, Code: ErrCodeInvalidResponse}
 	}
@@ -182,9 +216,9 @@ func (e *ExaBackend) searchAPI(ctx context.Context, query string, count int) ([]
 
 	results := make([]SearchResult, 0, len(parsed.Results))
 	for _, r := range parsed.Results {
-		content := r.Text
+		content := firstNonEmpty(r.Highlights...)
 		if strings.TrimSpace(content) == "" {
-			content = r.Summary
+			content = firstNonEmpty(r.Text, r.Summary)
 		}
 		results = append(results, SearchResult{
 			Title:   r.Title,

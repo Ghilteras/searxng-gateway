@@ -95,7 +95,7 @@ The premium pool is derived from configured `<NAME>_API_KEY` variables; missing-
 | Backend | Factory name | Key env var | Keyless? | Notes |
 |---------|-------------|-------------|----------|-------|
 | Brave Search API | `brave` | `BRAVE_API_KEY` | No | `$5 credit = ~1,000 queries/mo` |
-| Exa | `exa` | `EXA_API_KEY` | No | Also supports MCP mode (`EXA_MCP_URL`). API requests use search `type: fast`; HTTP timeout `EXA_TIMEOUT_SECONDS` (default 3s). `contents`/highlights are not requested (the parser reads only `text`/`summary`) |
+| Exa | `exa` | `EXA_API_KEY` | No | Also supports MCP mode (`EXA_MCP_URL`). API requests use search `type: fast`; HTTP timeout `EXA_TIMEOUT_SECONDS` (default 3s). Requests `contents.highlights` (500 chars) with `maxAgeHours: -1`, i.e. cached content only, so no live page fetch is added |
 | Parallel | `parallel` | `PARALLEL_API_KEY` | No | Auto-enrolled when key is configured |
 | Tavily | `tavily` | `TAVILY_API_KEY` | No | `TAVILY_SEARCH_DEPTH=basic\|advanced` |
 | Serper | `serper` | `SERPER_API_KEY` | No | Homepage example; docs page returned 404; free-query recurrence unverified |
@@ -110,7 +110,7 @@ The gateway returns JSON in SearXNG format regardless of which backend provided 
 |-------|--------|-------|
 | `title` | Backend-specific title | — |
 | `url` | Backend-specific URL | Deduplicated across all backends |
-| `content` | Backend-specific snippet | `description` from Brave, `content`/`summary` from Exa and Tavily, `snippet` from Serper, first non-empty excerpt from Parallel |
+| `content` | Backend-specific snippet | `description` from Brave; first highlight from Exa (falling back to its `text`/`summary`); `content`/`summary` from Tavily; `snippet` from Serper; first non-empty excerpt from Parallel |
 | `engine` | Backend name | e.g. `"brave"`, `"exa"`, `"parallel"`, `"tavily"`, `"serper"`, or a SearXNG engine name; the label is ambiguous between a gateway premium provider and an upstream engine of the same name |
 | `engines` | `[]string{engine}` | List format for compatibility |
 | `score` | — | Not set by premium providers (omitted) |
