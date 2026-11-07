@@ -116,12 +116,11 @@ func (e *ExaBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 
 // exaSearchType is the Exa search mode sent with every API request. Per the
 // Exa OpenAPI spec (docs.exa.ai/reference/search) `type` accepts instant, fast,
-// auto, deep-lite, deep, deep-reasoning alongside numResults; `fast` returns
-// high-quality results with reduced latency and is recommended for
-// user-facing search. Adopted 2026-10-11: p50 fell from 1.5s to 0.35s after 16
-// breaker trips. Exa now marks `fast` legacy with `lite` as the replacement;
-// `lite` restricts several parameters, so switching types is a separate,
-// separately measured decision.
+// lite, auto, deep-lite, deep, deep-reasoning alongside numResults; `fast` is
+// the reduced-latency mode we keep. Adopted 2026-10-11: p50 fell from 1.5s to
+// 0.35s after 16 breaker trips. Exa now marks `fast` legacy with `lite` as the
+// replacement; `lite` restricts several parameters, so switching types is a
+// separate, separately measured decision.
 const exaSearchType = "fast"
 
 // Exa content options. `highlights` is Exa's documented default for compact,
