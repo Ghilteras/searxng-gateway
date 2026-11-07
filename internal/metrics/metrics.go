@@ -131,6 +131,15 @@ var (
 		Help:    "Number of results returned per request",
 		Buckets: []float64{0, 1, 3, 5, 10, 20, 50},
 	})
+	// LowResultsEngineResultsTotal counts result contributions by bounded
+	// primary engine for responses containing at most five results.
+	LowResultsEngineResultsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "searxng_gateway_low_results_engine_results_total",
+			Help: "Results by primary engine in responses with at most five results",
+		},
+		[]string{"engine"},
+	)
 
 	// EnginesCount reports the number of distinct engines in the last response.
 	EnginesCount = prometheus.NewGauge(prometheus.GaugeOpts{
@@ -287,6 +296,9 @@ var initOnce sync.Once
 // It is safe to call multiple times — subsequent calls are no-ops.
 func Init() {
 	initOnce.Do(func() {
-		prometheus.MustRegister(RequestsTotal, RequestDuration, SearxngStageDuration, SearchRequestDuration, SearxngFailureStreak, SearxngCooldownUntilSeconds, ResultsCount, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveRateLimitRemaining, BraveRateLimitLimit, BraveRateLimitResetSeconds, ProviderAttemptsTotal, ProviderSkipsTotal, ProviderEligibility, SearxngStageTotal, PremiumStageDuration, SearchResultsTotal, PremiumCallsPerRequest)
+		for _, engine := range []string{"brave", "exa", "parallel", "serper", "tavily", "marginalia", "mwmbl", "github", "stackoverflow", "arxiv", "pypi", "docker_hub", "other"} {
+			LowResultsEngineResultsTotal.WithLabelValues(engine).Add(0)
+		}
+		prometheus.MustRegister(RequestsTotal, RequestDuration, SearxngStageDuration, SearchRequestDuration, SearxngFailureStreak, SearxngCooldownUntilSeconds, ResultsCount, LowResultsEngineResultsTotal, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveRateLimitRemaining, BraveRateLimitLimit, BraveRateLimitResetSeconds, ProviderAttemptsTotal, ProviderSkipsTotal, ProviderEligibility, SearxngStageTotal, PremiumStageDuration, SearchResultsTotal, PremiumCallsPerRequest)
 	})
 }

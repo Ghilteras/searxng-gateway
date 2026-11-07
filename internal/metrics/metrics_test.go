@@ -316,3 +316,30 @@ func TestV310SeriesRegisteredWithExpectedLabels(t *testing.T) {
 		t.Errorf("premium_stage_duration buckets = %v, want %v", bounds, durationBuckets)
 	}
 }
+
+func TestLowResultsEngineSeriesRegistered(t *testing.T) {
+	Init()
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() != "searxng_gateway_low_results_engine_results_total" {
+			continue
+		}
+		want := []string{"arxiv", "brave", "docker_hub", "exa", "github", "marginalia", "mwmbl", "other", "parallel", "pypi", "serper", "stackoverflow", "tavily"}
+		var got []string
+		for _, metric := range family.GetMetric() {
+			if len(metric.GetLabel()) != 1 || metric.GetLabel()[0].GetName() != "engine" {
+				t.Fatalf("labels = %v, want exactly [engine]", metric.GetLabel())
+			}
+			got = append(got, metric.GetLabel()[0].GetValue())
+		}
+		sort.Strings(got)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("engine series = %v, want %v", got, want)
+		}
+		return
+	}
+	t.Fatal("low-results engine metric family not exposed")
+}

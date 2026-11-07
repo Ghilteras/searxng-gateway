@@ -2058,6 +2058,86 @@ func counterSumForLabels(t *testing.T, name string, wanted map[string]string) fl
 	return total
 }
 
+func TestLowResultsEngineAttribution(t *testing.T) {
+	metrics.Init()
+	c, _ := cache.New(100, 0)
+	p := newTestProxy(newCfg(), &fakeSearxng{}, c, breaker.New())
+	const metric = "searxng_gateway_low_results_engine_results_total"
+	braveBefore := counterValueForLabels(t, metric, map[string]string{"engine": "brave"})
+	marginaliaBefore := counterValueForLabels(t, metric, map[string]string{"engine": "marginalia"})
+	otherBefore := counterValueForLabels(t, metric, map[string]string{"engine": "other"})
+	p.observe(&searxng.Response{Results: []searxng.Result{
+		{Engine: "brave", Engines: []string{"brave", "wikipedia"}},
+		{Engine: "brave", Engines: []string{"brave"}},
+		{Engine: "brave", Engines: []string{"brave", "marginalia"}},
+		{Engine: "marginalia", Engines: []string{"marginalia", "brave"}},
+	}})
+	if got := counterValueForLabels(t, metric, map[string]string{"engine": "brave"}) - braveBefore; got != 3 {
+		t.Errorf("brave attribution delta = %v, want 3", got)
+	}
+	if got := counterValueForLabels(t, metric, map[string]string{"engine": "marginalia"}) - marginaliaBefore; got != 1 {
+		t.Errorf("marginalia attribution delta = %v, want 1", got)
+	}
+	if got := counterValueForLabels(t, metric, map[string]string{"engine": "other"}) - otherBefore; got != 0 {
+		t.Errorf("other attribution delta = %v, want 0", got)
+	}
+}
+
+func TestLowResultsEngineAttributionBoundedAndEarlyReturns(t *testing.T) {
+	metrics.Init()
+	const metric = "searxng_gateway_low_results_engine_results_total"
+	c, _ := cache.New(100, 0)
+	p := newTestProxy(newCfg(), &fakeSearxng{}, c, breaker.New())
+	before := make(map[string]float64)
+	for _, engine := range []string{"brave", "exa", "parallel", "serper", "tavily", "marginalia", "mwmbl", "github", "stackoverflow", "arxiv", "pypi", "docker_hub", "other"} {
+		before[engine] = counterValueForLabels(t, metric, map[string]string{"engine": engine})
+	}
+	histBefore := histogramSampleCount(t, "searxng_gateway_results_count")
+	p.observe(&searxng.Response{Results: []searxng.Result{
+		{Engine: "brave"}, {Engine: "exa"}, {Engine: "tavily"}, {Engine: "arxiv"}, {Engine: "github"}, {Engine: "mwmbl"},
+	}})
+	if got := histogramSampleCount(t, "searxng_gateway_results_count") - histBefore; got != 1 {
+		t.Fatalf("old histogram sample delta = %d, want 1", got)
+	}
+	for _, engine := range []string{"brave", "exa", "parallel", "serper", "tavily", "marginalia", "mwmbl", "github", "stackoverflow", "arxiv", "pypi", "docker_hub"} {
+		if got := counterValueForLabels(t, metric, map[string]string{"engine": engine}) - before[engine]; got != 0 {
+			t.Errorf("%s attribution delta = %v, want 0", engine, got)
+		}
+	}
+	if got := counterValueForLabels(t, metric, map[string]string{"engine": "other"}) - before["other"]; got != 0 {
+		t.Errorf("other attribution delta for six results = %v, want 0", got)
+	}
+	p.observe(&searxng.Response{Results: []searxng.Result{{Engine: "mystery"}, {Engine: ""}}})
+	if got := counterValueForLabels(t, metric, map[string]string{"engine": "other"}) - before["other"]; got != 2 {
+		t.Errorf("other attribution delta = %v, want 2", got)
+	}
+
+	// Cache hits and zero-result failures return before observe and must not add
+	// any low-results attribution observations.
+	var totalBefore float64
+	var totalNow func() float64
+	totalNow = func() float64 {
+		var total float64
+		for _, engine := range []string{"brave", "exa", "parallel", "serper", "tavily", "marginalia", "mwmbl", "github", "stackoverflow", "arxiv", "pypi", "docker_hub", "other"} {
+			total += counterValueForLabels(t, metric, map[string]string{"engine": engine})
+		}
+		return total
+	}
+	// Include the direct observe events in the baseline.
+	totalBefore = totalNow()
+	c.Set("cached", &searxng.Response{Results: []searxng.Result{{Engine: "brave"}}})
+	if _, err := p.Search(context.Background(), "cached"); err != nil {
+		t.Fatal(err)
+	}
+	zeroProxy := newTestProxy(newCfg(), &fakeSearxng{resp: &searxng.Response{}}, c, breaker.New(), &fakeBackend{name: "brave", avail: true, err: errors.New("failure")})
+	if _, err := zeroProxy.Search(context.Background(), "empty"); err == nil {
+		t.Fatal("zero-result Search unexpectedly succeeded")
+	}
+	if got := totalNow() - totalBefore; got != 0 {
+		t.Errorf("cache-hit and zero-result attribution delta = %v, want 0", got)
+	}
+}
+
 // gaugeValueForLabels returns the value of the gauge series matching all wanted
 // labels, or 0 when the series does not exist.
 func gaugeValueForLabels(t *testing.T, name string, wanted map[string]string) float64 {

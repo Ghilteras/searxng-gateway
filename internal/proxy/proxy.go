@@ -897,6 +897,11 @@ func (p *Proxy) inCooldown() bool {
 // observe records Prometheus metrics for the given response.
 func (p *Proxy) observe(r *searxng.Response) {
 	metrics.ResultsCount.Observe(float64(len(r.Results)))
+	if len(r.Results) <= 5 {
+		for _, res := range r.Results {
+			metrics.LowResultsEngineResultsTotal.WithLabelValues(lowResultsEngineLabel(res.Engine)).Inc()
+		}
+	}
 
 	distinct := make(map[string]struct{}, len(r.Results))
 	for _, res := range r.Results {
@@ -1074,6 +1079,17 @@ func collapseSpace(q string) string {
 func sourceLabel(engine string) string {
 	switch engine {
 	case "brave", "exa", "parallel", "serper", "tavily":
+		return engine
+	default:
+		return "other"
+	}
+}
+
+// lowResultsEngineLabel bounds the low-results attribution metric to its fixed
+// engine vocabulary; unknown and empty engine names map to "other".
+func lowResultsEngineLabel(engine string) string {
+	switch engine {
+	case "brave", "exa", "parallel", "serper", "tavily", "marginalia", "mwmbl", "github", "stackoverflow", "arxiv", "pypi", "docker_hub":
 		return engine
 	default:
 		return "other"
