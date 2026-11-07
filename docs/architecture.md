@@ -95,7 +95,7 @@ The premium pool is derived from configured `<NAME>_API_KEY` variables; missing-
 | Backend | Factory name | Key env var | Keyless? | Notes |
 |---------|-------------|-------------|----------|-------|
 | Brave Search API | `brave` | `BRAVE_API_KEY` | No | `$5 credit = ~1,000 queries/mo` |
-| Exa | `exa` | `EXA_API_KEY` | No | Also supports MCP mode (`EXA_MCP_URL`). API requests use search `type: fast`; HTTP timeout `EXA_TIMEOUT_SECONDS` (default 3s). Requests `contents.highlights` (500 chars) with `maxAgeHours: -1`, i.e. cached content only, so no live page fetch is added |
+| Exa | `exa` | `EXA_API_KEY` | No | Also supports MCP mode (`EXA_MCP_URL`). API requests use search `type: fast`; HTTP timeout `EXA_TIMEOUT_SECONDS` (default 3s). Requests `contents.highlights` (500 chars) with `contents.maxAgeHours: -1`, i.e. cached content only, so no live page fetch is added |
 | Parallel | `parallel` | `PARALLEL_API_KEY` | No | Auto-enrolled when key is configured |
 | Tavily | `tavily` | `TAVILY_API_KEY` | No | `TAVILY_SEARCH_DEPTH=basic\|advanced` |
 | Serper | `serper` | `SERPER_API_KEY` | No | Homepage example; docs page returned 404; free-query recurrence unverified |

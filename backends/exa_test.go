@@ -253,9 +253,9 @@ func TestConfiguredPoolExaUsesOwnTimeout(t *testing.T) {
 }
 
 func TestExaRequestAsksForCachedHighlights(t *testing.T) {
-	var got exaAPIRequest
+	var body map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"results": []map[string]interface{}{}})
@@ -268,17 +268,27 @@ func TestExaRequestAsksForCachedHighlights(t *testing.T) {
 	if _, err := b.Search(SearchOptions{Query: "q"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.Type != exaSearchType {
-		t.Errorf("type = %q, want %q", got.Type, exaSearchType)
+	if body["type"] != "fast" {
+		t.Errorf("type = %v, want fast", body["type"])
 	}
-	if got.Contents == nil || got.Contents.Highlights == nil {
-		t.Fatalf("contents.highlights not requested: %+v", got.Contents)
+	// maxAgeHours belongs to ContentsOptions; a top-level field is ignored by the
+	// API, so the wire shape must be asserted on a raw map, never on our struct.
+	if _, present := body["maxAgeHours"]; present {
+		t.Error("maxAgeHours must not be sent at the top level; the API ignores it there")
 	}
-	if got.Contents.Highlights.MaxCharacters != exaHighlightMaxCharacters {
-		t.Errorf("maxCharacters = %d, want %d", got.Contents.Highlights.MaxCharacters, exaHighlightMaxCharacters)
+	contents, ok := body["contents"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("contents missing or not an object: %v", body["contents"])
 	}
-	if got.MaxAgeHours == nil || *got.MaxAgeHours != exaMaxAgeHoursCachedOnly {
-		t.Errorf("maxAgeHours = %v, want %d", got.MaxAgeHours, exaMaxAgeHoursCachedOnly)
+	if got := contents["maxAgeHours"]; got != float64(exaMaxAgeHoursCachedOnly) {
+		t.Errorf("contents.maxAgeHours = %v, want %d", got, exaMaxAgeHoursCachedOnly)
+	}
+	highlights, ok := contents["highlights"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("contents.highlights missing or not an object: %v", contents["highlights"])
+	}
+	if got := highlights["maxCharacters"]; got != float64(exaHighlightMaxCharacters) {
+		t.Errorf("contents.highlights.maxCharacters = %v, want %d", got, exaHighlightMaxCharacters)
 	}
 }
 

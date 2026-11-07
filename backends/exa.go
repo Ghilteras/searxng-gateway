@@ -118,7 +118,10 @@ func (e *ExaBackend) Search(opts SearchOptions) ([]SearchResult, error) {
 // Exa OpenAPI spec (docs.exa.ai/reference/search) `type` accepts instant, fast,
 // auto, deep-lite, deep, deep-reasoning alongside numResults; `fast` returns
 // high-quality results with reduced latency and is recommended for
-// user-facing search. Adopted 2026-10-11: p50 fell from 1.5s to 0.35s.
+// user-facing search. Adopted 2026-10-11: p50 fell from 1.5s to 0.35s after 16
+// breaker trips. Exa now marks `fast` legacy with `lite` as the replacement;
+// `lite` restricts several parameters, so switching types is a separate,
+// separately measured decision.
 const exaSearchType = "fast"
 
 // Exa content options. `highlights` is Exa's documented default for compact,
@@ -132,15 +135,17 @@ const (
 )
 
 type exaAPIRequest struct {
-	Query       string       `json:"query"`
-	NumResults  int          `json:"numResults,omitempty"`
-	Type        string       `json:"type,omitempty"`
-	Contents    *exaContents `json:"contents,omitempty"`
-	MaxAgeHours *int         `json:"maxAgeHours,omitempty"`
+	Query      string       `json:"query"`
+	NumResults int          `json:"numResults,omitempty"`
+	Type       string       `json:"type,omitempty"`
+	Contents   *exaContents `json:"contents,omitempty"`
 }
 
+// exaContents mirrors Exa's ContentsOptions: maxAgeHours belongs here, not at the
+// top level of the search body, where the API ignores it as an unknown field.
 type exaContents struct {
-	Highlights *exaHighlights `json:"highlights,omitempty"`
+	Highlights  *exaHighlights `json:"highlights,omitempty"`
+	MaxAgeHours *int           `json:"maxAgeHours,omitempty"`
 }
 
 type exaHighlights struct {
@@ -163,11 +168,13 @@ type exaAPIResponse struct {
 func newExaAPIRequest(query string, count int) exaAPIRequest {
 	cachedOnly := exaMaxAgeHoursCachedOnly
 	return exaAPIRequest{
-		Query:       query,
-		NumResults:  count,
-		Type:        exaSearchType,
-		Contents:    &exaContents{Highlights: &exaHighlights{MaxCharacters: exaHighlightMaxCharacters}},
-		MaxAgeHours: &cachedOnly,
+		Query:      query,
+		NumResults: count,
+		Type:       exaSearchType,
+		Contents: &exaContents{
+			Highlights:  &exaHighlights{MaxCharacters: exaHighlightMaxCharacters},
+			MaxAgeHours: &cachedOnly,
+		},
 	}
 }
 
