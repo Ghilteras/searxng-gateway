@@ -167,6 +167,7 @@ Tracing is **disabled by default**. Set `OTEL_TRACES_EXPORTER` to `console` (str
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `engine_results_total` | Counter | `engine` | Results contributed per engine (SearXNG engines + premium backends) |
+| `searxng_gateway_low_results_engine_results_total` | Counter | `engine` | Unit = RESULT COUNT (not response count); only counts results from responses with ≤5 results. Never compare as a share of `results_count_bucket{le="5"}` thin-response counts. |
 | `engine_unresponsive_total` | Counter | `engine`, `reason` | Times an engine was reported unresponsive by SearXNG |
 | `engine_status` | Gauge | `engine` | 1 if the engine responded in the last request, 0 otherwise |
 

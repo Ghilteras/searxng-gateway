@@ -1088,12 +1088,13 @@ func sourceLabel(engine string) string {
 // lowResultsEngineLabel bounds the low-results attribution metric to its fixed
 // engine vocabulary; unknown and empty engine names map to "other".
 func lowResultsEngineLabel(engine string) string {
-	switch engine {
-	case "brave", "exa", "parallel", "serper", "tavily", "marginalia", "mwmbl", "github", "stackoverflow", "arxiv", "pypi", "docker_hub":
-		return engine
-	default:
-		return "other"
+	normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(engine)), " ", "_")
+	for _, known := range metrics.LowResultsEngines {
+		if known != "other" && normalized == known {
+			return known
+		}
 	}
+	return "other"
 }
 
 // isClientError returns true if reason indicates a 4xx client error

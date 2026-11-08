@@ -133,6 +133,7 @@ var (
 	})
 	// LowResultsEngineResultsTotal counts result contributions by bounded
 	// primary engine for responses containing at most five results.
+	LowResultsEngines            = []string{"brave", "exa", "parallel", "serper", "tavily", "marginalia", "mwmbl", "github", "stackoverflow", "arxiv", "pypi", "docker_hub", "other"}
 	LowResultsEngineResultsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "searxng_gateway_low_results_engine_results_total",
@@ -296,7 +297,7 @@ var initOnce sync.Once
 // It is safe to call multiple times — subsequent calls are no-ops.
 func Init() {
 	initOnce.Do(func() {
-		for _, engine := range []string{"brave", "exa", "parallel", "serper", "tavily", "marginalia", "mwmbl", "github", "stackoverflow", "arxiv", "pypi", "docker_hub", "other"} {
+		for _, engine := range LowResultsEngines {
 			LowResultsEngineResultsTotal.WithLabelValues(engine).Add(0)
 		}
 		prometheus.MustRegister(RequestsTotal, RequestDuration, SearxngStageDuration, SearchRequestDuration, SearxngFailureStreak, SearxngCooldownUntilSeconds, ResultsCount, LowResultsEngineResultsTotal, EnginesCount, CacheSize, RetryAttemptsTotal, RetryExhaustedTotal, EngineResultsTotal, EngineUnresponsiveTotal, EngineStatus, BraveRateLimitRemaining, BraveRateLimitLimit, BraveRateLimitResetSeconds, ProviderAttemptsTotal, ProviderSkipsTotal, ProviderEligibility, SearxngStageTotal, PremiumStageDuration, SearchResultsTotal, PremiumCallsPerRequest)

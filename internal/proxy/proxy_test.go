@@ -2003,6 +2003,21 @@ func histogramSampleCountForLabels(t *testing.T, name string, wanted map[string]
 	return count
 }
 
+func histogramBucketCountForLE(t *testing.T, name string, upperBound float64) uint64 {
+	t.Helper()
+	var count uint64
+	for _, mf := range gatherMetricFamily(t, name) {
+		for _, m := range mf.GetMetric() {
+			for _, bucket := range m.GetHistogram().GetBucket() {
+				if bucket.GetUpperBound() == upperBound {
+					count += bucket.GetCumulativeCount()
+				}
+			}
+		}
+	}
+	return count
+}
+
 func gatherMetricFamily(t *testing.T, name string) []*dto.MetricFamily {
 	t.Helper()
 	mfs, err := prometheus.DefaultGatherer.Gather()
@@ -2083,6 +2098,66 @@ func TestLowResultsEngineAttribution(t *testing.T) {
 	}
 }
 
+func TestLowResultsEngineAttributionExactlyFiveResults(t *testing.T) {
+	metrics.Init()
+	const metric = "searxng_gateway_low_results_engine_results_total"
+	c, _ := cache.New(100, 0)
+	p := newTestProxy(newCfg(), &fakeSearxng{}, c, breaker.New())
+	engines := []string{"brave", "exa", "tavily", "arxiv", "github"}
+	before := make(map[string]float64, len(engines))
+	for _, engine := range engines {
+		before[engine] = counterValueForLabels(t, metric, map[string]string{"engine": engine})
+	}
+	histBefore := histogramSampleCount(t, "searxng_gateway_results_count")
+	leFiveBefore := histogramBucketCountForLE(t, "searxng_gateway_results_count", 5)
+	results := make([]searxng.Result, 0, len(engines))
+	for i, engine := range engines {
+		results = append(results, searxng.Result{Engine: engine, URL: fmt.Sprintf("https://attribution-%d.example", i)})
+	}
+	p.observe(&searxng.Response{Results: results})
+	if got := histogramSampleCount(t, "searxng_gateway_results_count") - histBefore; got != 1 {
+		t.Fatalf("old histogram sample delta at exactly five results = %d, want 1", got)
+	}
+	if got := histogramBucketCountForLE(t, "searxng_gateway_results_count", 5) - leFiveBefore; got != 1 {
+		t.Fatalf("old histogram le=5 bucket delta at exactly five results = %d, want 1", got)
+	}
+	for _, engine := range engines {
+		if got := counterValueForLabels(t, metric, map[string]string{"engine": engine}) - before[engine]; got != 1 {
+			t.Errorf("%s attribution delta at exactly five results = %v, want 1", engine, got)
+		}
+	}
+}
+
+func TestSearchRecordsLowResultsEngineAttribution(t *testing.T) {
+	metrics.Init()
+	const metric = "searxng_gateway_low_results_engine_results_total"
+	engines := []string{"brave", "marginalia", "docker hub"}
+	before := make(map[string]float64, len(engines))
+	for _, engine := range []string{"brave", "marginalia", "docker_hub"} {
+		before[engine] = counterValueForLabels(t, metric, map[string]string{"engine": engine})
+	}
+	results := make([]searxng.Result, 0, len(engines))
+	for i, engine := range engines {
+		results = append(results, searxng.Result{Engine: engine, URL: fmt.Sprintf("https://search-attribution-%d.example", i)})
+	}
+	c, _ := cache.New(100, 0)
+	p := newTestProxy(newCfg(), &fakeSearxng{resp: &searxng.Response{Results: results}}, c, breaker.New())
+	if _, err := p.Search(context.Background(), "low-results-attribution-search-path"); err != nil {
+		t.Fatalf("Search error = %v", err)
+	}
+	for engine, want := range map[string]float64{"brave": 1, "marginalia": 1, "docker_hub": 1} {
+		if got := counterValueForLabels(t, metric, map[string]string{"engine": engine}) - before[engine]; got != want {
+			t.Errorf("%s attribution delta through Search = %v, want %v", engine, got, want)
+		}
+	}
+}
+
+func TestLowResultsEngineDockerHubSpaceNormalization(t *testing.T) {
+	if got := lowResultsEngineLabel("docker hub"); got != "docker_hub" {
+		t.Fatalf("lowResultsEngineLabel(\"docker hub\") = %q, want docker_hub", got)
+	}
+}
+
 func TestLowResultsEngineAttributionBoundedAndEarlyReturns(t *testing.T) {
 	metrics.Init()
 	const metric = "searxng_gateway_low_results_engine_results_total"
@@ -2125,9 +2200,13 @@ func TestLowResultsEngineAttributionBoundedAndEarlyReturns(t *testing.T) {
 	}
 	// Include the direct observe events in the baseline.
 	totalBefore = totalNow()
+	cacheHitBefore := counterValueForLabels(t, "searxng_gateway_requests_total", map[string]string{"outcome": "cache_hit"})
 	c.Set("cached", &searxng.Response{Results: []searxng.Result{{Engine: "brave"}}})
 	if _, err := p.Search(context.Background(), "cached"); err != nil {
 		t.Fatal(err)
+	}
+	if got := counterValueForLabels(t, "searxng_gateway_requests_total", map[string]string{"outcome": "cache_hit"}) - cacheHitBefore; got != 1 {
+		t.Errorf("cache_hit request counter delta = %v, want 1", got)
 	}
 	zeroProxy := newTestProxy(newCfg(), &fakeSearxng{resp: &searxng.Response{}}, c, breaker.New(), &fakeBackend{name: "brave", avail: true, err: errors.New("failure")})
 	if _, err := zeroProxy.Search(context.Background(), "empty"); err == nil {
