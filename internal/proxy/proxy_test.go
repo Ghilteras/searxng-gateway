@@ -2189,9 +2189,7 @@ func TestLowResultsEngineAttributionBoundedAndEarlyReturns(t *testing.T) {
 
 	// Cache hits and zero-result failures return before observe and must not add
 	// any low-results attribution observations.
-	var totalBefore float64
-	var totalNow func() float64
-	totalNow = func() float64 {
+	totalNow := func() float64 {
 		var total float64
 		for _, engine := range []string{"brave", "exa", "parallel", "serper", "tavily", "marginalia", "mwmbl", "github", "stackoverflow", "arxiv", "pypi", "docker_hub", "other"} {
 			total += counterValueForLabels(t, metric, map[string]string{"engine": engine})
@@ -2199,7 +2197,7 @@ func TestLowResultsEngineAttributionBoundedAndEarlyReturns(t *testing.T) {
 		return total
 	}
 	// Include the direct observe events in the baseline.
-	totalBefore = totalNow()
+	totalBefore := totalNow()
 	cacheHitBefore := counterValueForLabels(t, "searxng_gateway_requests_total", map[string]string{"outcome": "cache_hit"})
 	c.Set("cached", &searxng.Response{Results: []searxng.Result{{Engine: "brave"}}})
 	if _, err := p.Search(context.Background(), "cached"); err != nil {
