@@ -54,7 +54,7 @@ Live gateway (stack 31, consumer-facing route `searxng-fallback`): revision `934
 
 ## Request-budget and tracing env (verified live 2026-09-25)
 
-- `FALLBACK_TIMEOUT_SECONDS=8` — parent request budget; must stay below the tighter caller (OpenCode `fetch` 10s, OpenClaw 20s — both route to `searxng-fallback`).
+- `FALLBACK_TIMEOUT_SECONDS=8` — parent request budget; must stay below the tighter caller (OpenCode `fetch` 10s, OpenClaw 20s — both route to `searxng-fallback`) with headroom for the response path: the handler stops waiting for a slow premium call at this budget, but synchronous stages, scheduling stalls and response writing still add time after it.
 - `SEARXNG_TIMEOUT_SECONDS=3` — whole SearXNG retry stage (250ms/500ms backoff, up to 3 attempts).
 - `BRAVE_TIMEOUT_SECONDS=3` — legacy name; sets the HTTP timeout for **every** premium provider, not just Brave.
 - Other live values: `SUFFICIENT_MIN_RESULTS=10` (verified 2026-10-08: container env + compose), `SEARXNG_FAIL_THRESHOLD=6`, `SEARXNG_FAIL_COOLDOWN_SECONDS=180`. Premium providers auto-enroll by configured API key in order: brave, exa, parallel, tavily, serper.

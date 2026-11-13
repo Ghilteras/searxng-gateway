@@ -1021,7 +1021,7 @@ func TestLogPremiumFailureEmitsBoundedKind(t *testing.T) {
 	const bodySecret = "BODY-SENTINEL"
 	const credentialSecret = "CREDENTIAL-SENTINEL"
 	poisoned := errors.New(querySecret + " " + bodySecret + " " + credentialSecret)
-	var logs strings.Builder
+	var logs syncLogSink
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
@@ -1074,7 +1074,7 @@ func TestTyped432TripsBreakerInPrimaryPhase(t *testing.T) {
 	bm := breaker.New()
 	c, _ := cache.New(10, 0)
 	p := newTestProxy(cfg, &fakeSearxng{}, c, bm, backend)
-	var logs strings.Builder
+	var logs syncLogSink
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
@@ -1566,7 +1566,7 @@ func TestSearchFallsThroughAfterSearxngChildBudget(t *testing.T) {
 	}
 }
 
-func TestSearchDeadlineCancelsPremiumAndReturnsPartialOrError(t *testing.T) {
+func TestSearchDeadlineDiscardsLatePremiumResults(t *testing.T) {
 	metrics.Init()
 	for _, withResults := range []bool{true, false} {
 		t.Run(fmt.Sprintf("results_%v", withResults), func(t *testing.T) {
@@ -1579,41 +1579,69 @@ func TestSearchDeadlineCancelsPremiumAndReturnsPartialOrError(t *testing.T) {
 			cfg.SufficientMinResults = 10
 			started := make(chan struct{})
 			canceled := make(chan struct{})
+			workerDone := make(chan struct{})
+			released := make(chan struct{})
+			var releaseOnce sync.Once
+			t.Cleanup(func() {
+				releaseOnce.Do(func() { close(released) })
+			})
 			fb := &contextBackend{name: "brave", fn: func(ctx context.Context) ([]backends.SearchResult, error) {
+				defer close(workerDone)
 				close(started)
 				<-ctx.Done()
 				close(canceled)
+				<-released
 				return nil, ctx.Err()
 			}}
 			// SearXNG (primary) fails fast so the premium stage owns the budget.
 			sx := &fakeSearxng{err: errors.New("upstream down")}
 			if withResults {
 				fb.fn = func(ctx context.Context) ([]backends.SearchResult, error) {
+					defer close(workerDone)
 					close(started)
 					<-ctx.Done()
 					close(canceled)
+					<-released
 					return []backends.SearchResult{{Title: "kept", URL: "https://kept.test", Engine: "brave"}}, nil
 				}
 			}
 			p := newTestProxy(cfg, sx, c, breaker.New(), fb)
-			out, err := p.Search(context.Background(), "premium-deadline")
+			type searchResult struct {
+				response *searxng.Response
+				err      error
+			}
+			searchDone := make(chan searchResult, 1)
+			go func() {
+				response, err := p.Search(context.Background(), "premium-deadline")
+				searchDone <- searchResult{response: response, err: err}
+			}()
+			var out *searxng.Response
+			var err error
+			select {
+			case got := <-searchDone:
+				out, err = got.response, got.err
+			case <-time.After(time.Second):
+				t.Fatal("Search waited for premium completion after the parent budget")
+			}
 			<-started
 			<-canceled
 			if withResults {
-				if err != nil || len(out.Results) != 1 {
-					t.Fatalf("response=%v err=%v", out, err)
+				if err == nil || out != nil {
+					t.Fatalf("response=%v err=%v; want late post-cancellation results discarded", out, err)
 				}
-				if got := outcomeCounter(t, "timeout") - beforeTimeout; got != 0 {
-					t.Errorf("request timeout outcome delta = %v, want 0 for a partial response", got)
+				if got := outcomeCounter(t, "timeout") - beforeTimeout; got != 1 {
+					t.Errorf("request timeout outcome delta = %v, want 1", got)
 				}
-				if got := outcomeCounter(t, "premium_ok") - beforePremium; got != 1 {
-					t.Errorf("premium_ok outcome delta = %v, want 1", got)
+				if got := outcomeCounter(t, "premium_ok") - beforePremium; got != 0 {
+					t.Errorf("premium_ok outcome delta = %v, want 0 for discarded late results", got)
 				}
 			} else if err == nil {
 				t.Fatal("expected error with no accumulated results")
 			} else if got := outcomeCounter(t, "timeout") - beforeTimeout; got != 1 {
 				t.Errorf("request timeout outcome delta = %v, want 1", got)
 			}
+			releaseOnce.Do(func() { close(released) })
+			<-workerDone
 		})
 	}
 }
@@ -2565,7 +2593,7 @@ func TestCleanNoResultsIsNotCachedAndDiagnosticsArePrivate(t *testing.T) {
 	const urlMarker = "https://PRIVATE-URL-MARKER.example/path"
 	const secretMarker = "SECRET-PRIVATE-MARKER-93"
 	query := "QUERY-PRIVATE-MARKER-71 " + urlMarker + " " + secretMarker // DELIBERATELY NEVER LOG THIS VALUE.
-	var logs strings.Builder
+	var logs syncLogSink
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
@@ -2611,7 +2639,7 @@ func TestCleanNoResultsIsNotCachedAndDiagnosticsArePrivate(t *testing.T) {
 
 func TestMixedPremiumFaultAndEmptyIsFallbackFail(t *testing.T) {
 	metrics.Init()
-	var logs strings.Builder
+	var logs syncLogSink
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
@@ -2670,7 +2698,7 @@ func TestAllPremiumBreakersOpenIsFallbackFail(t *testing.T) {
 
 func TestNoResultsCAPTCHADegraded(t *testing.T) {
 	metrics.Init()
-	var logs strings.Builder
+	var logs syncLogSink
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
@@ -2781,7 +2809,7 @@ func TestMixedEmptyAndOpenBreakerVetoesNoResults(t *testing.T) {
 
 func TestNotAttemptedConfiguredProviderVetoesNoResults(t *testing.T) {
 	metrics.Init()
-	var logs strings.Builder
+	var logs syncLogSink
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
@@ -2824,7 +2852,7 @@ func TestZeroResultsSearxngFaultOrCooldownIsFallbackFail(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			metrics.Init()
-			var logs strings.Builder
+			var logs syncLogSink
 			previous := log.Writer()
 			log.SetOutput(&logs)
 			t.Cleanup(func() { log.SetOutput(previous) })
@@ -2853,7 +2881,7 @@ func TestZeroResultsSearxngFaultOrCooldownIsFallbackFail(t *testing.T) {
 
 func TestZeroResultCallerCancellationDiagnostic(t *testing.T) {
 	metrics.Init()
-	var logs strings.Builder
+	var logs syncLogSink
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
@@ -2892,7 +2920,7 @@ func TestZeroResultCallerCancellationDiagnostic(t *testing.T) {
 
 func TestZeroResultParentDeadlineDiagnostic(t *testing.T) {
 	metrics.Init()
-	var logs strings.Builder
+	var logs syncLogSink
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })

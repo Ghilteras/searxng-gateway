@@ -292,29 +292,40 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 
 	metrics.SearxngStageTotal.WithLabelValues(stageOutcome).Inc()
 
-	// 4. Premium stage: join the concurrent first call, merge its results into
-	// the shared accumulators (premium-only dedup; seenURLs is the union that
-	// drives the target), then run the EXISTING serial top-up only while the
-	// distinct-URL union is below the target. The guaranteed minimum of one
-	// admitted call was already satisfied by the first call (or no provider
-	// could be admitted at all), so the loop needs no minimum of its own.
+	// 4. Premium stage: merge a completed concurrent first call into the shared
+	// accumulators (premium-only dedup; seenURLs is the union that drives the
+	// target), then run the EXISTING serial top-up only while the distinct-URL
+	// union is below the target. The guaranteed minimum of one admitted call
+	// was already satisfied by the first call (or no provider could be admitted
+	// at all), so the loop needs no minimum of its own.
 	premiumActive := time.Duration(0)
 	if first != nil {
-		fr := first.wait()
-		admittedTotal += fr.admitted
-		premiumActive += fr.elapsed
-		premiumResults = fr.results
-		for u := range fr.seen {
-			seenURLs[u] = true
-		}
-		premiumErrMsgs = append(premiumErrMsgs, fr.errMsgs...)
-		if timeoutCtx.Err() == nil {
-			topStart := time.Now()
-			var admitted int
-			premiumResults, _, _, premiumErrMsgs, admitted =
-				p.premiumLoop(timeoutCtx, upstreamQuery, premiumResults, seenURLs, usedPremiums, premiumErrMsgs, 0, 0)
-			admittedTotal += admitted
-			premiumActive += time.Since(topStart)
+		if fr, completed := first.wait(timeoutCtx); completed {
+			admittedTotal += fr.admitted
+			premiumActive += fr.elapsed
+			premiumResults = fr.results
+			for u := range fr.seen {
+				seenURLs[u] = true
+			}
+			premiumErrMsgs = append(premiumErrMsgs, fr.errMsgs...)
+			if timeoutCtx.Err() == nil {
+				topStart := time.Now()
+				var admitted int
+				premiumResults, _, _, premiumErrMsgs, admitted =
+					p.premiumLoop(timeoutCtx, upstreamQuery, premiumResults, seenURLs, usedPremiums, premiumErrMsgs, 0, 0)
+				admittedTotal += admitted
+				premiumActive += time.Since(topStart)
+			}
+		} else {
+			// Admission is visible independently of worker completion.
+			// No serial top-up or access to worker-owned maps is allowed here.
+			for _, event := range diagnostics.providers() {
+				if event.InFlight || event.Outcome != "" {
+					admittedTotal++
+				}
+			}
+			premiumActive += time.Since(first.started)
+			premiumErrMsgs = append(premiumErrMsgs, timeoutCtx.Err().Error())
 		}
 		metrics.PremiumStageDuration.Observe(premiumActive.Seconds())
 	}
@@ -555,6 +566,7 @@ type providerDiagnostic struct {
 	Results           int    `json:"results,omitempty"`
 	Skip              string `json:"skip,omitempty"`
 	EligibilityReason string `json:"eligibility_reason,omitempty"`
+	InFlight          bool   `json:"in_flight,omitempty"`
 }
 
 type requestDiagnostics struct {
@@ -566,6 +578,14 @@ type requestDiagnostics struct {
 func (d *requestDiagnostics) addProvider(event providerDiagnostic) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if !event.InFlight && event.Outcome != "" {
+		for i, previous := range d.providerEvents {
+			if previous.Provider == event.Provider && previous.InFlight {
+				d.providerEvents[i] = event
+				return
+			}
+		}
+	}
 	d.providerEvents = append(d.providerEvents, event)
 }
 
@@ -577,6 +597,9 @@ func (d *requestDiagnostics) providers() []providerDiagnostic {
 
 func (d *requestDiagnostics) cleanEmpty() bool {
 	for _, event := range d.providers() {
+		if event.InFlight {
+			return false
+		}
 		if event.Skip != "" {
 			if event.Outcome != "" || event.Results != 0 {
 				return false
@@ -665,12 +688,12 @@ func traceID(id string) string {
 	return id
 }
 
-// firstPremium is the guaranteed first premium call running concurrently with
-// the SearXNG stage. All of its state is local to the goroutine until wait()
-// returns, so the merge into the request accumulators happens on one goroutine.
+// firstPremium publishes its result before closing done. The worker never
+// blocks publishing, even when the request stops waiting.
 type firstPremium struct {
-	done chan struct{}
-	res  firstPremiumResult
+	done    chan struct{}
+	res     firstPremiumResult
+	started time.Time
 }
 
 type firstPremiumResult struct {
@@ -685,23 +708,29 @@ type firstPremiumResult struct {
 // NextAvailable provider that the breaker admits; skips do not count) via the
 // same premiumLoop used by the serial top-up, capped at one admitted call.
 func (p *Proxy) startFirstPremium(ctx context.Context, query string, usedPremiums map[string]bool) *firstPremium {
-	f := &firstPremium{done: make(chan struct{})}
+	f := &firstPremium{
+		done:    make(chan struct{}),
+		started: time.Now(),
+	}
 	go func() {
 		defer close(f.done)
-		start := time.Now()
 		seen := make(map[string]bool)
-		defer func() { f.res.elapsed = time.Since(start) }()
+		defer func() { f.res.elapsed = time.Since(f.started) }()
 		results, seen, _, errMsgs, admitted := p.premiumLoop(ctx, query, nil, seen, usedPremiums, nil, 1, 1)
 		f.res.results, f.res.seen, f.res.errMsgs, f.res.admitted = results, seen, errMsgs, admitted
 	}()
 	return f
 }
 
-// wait blocks until the first call finished (its context is bound to the
-// request budget, so cancellation bounds the wait) and returns its result.
-func (f *firstPremium) wait() firstPremiumResult {
-	<-f.done
-	return f.res
+// wait returns the completed first call, or stops waiting when ctx is done.
+// A false return transfers no worker-owned state to the request.
+func (f *firstPremium) wait(ctx context.Context) (firstPremiumResult, bool) {
+	select {
+	case <-f.done:
+		return f.res, true
+	case <-ctx.Done():
+		return firstPremiumResult{}, false
+	}
 }
 
 // premiumBreakerID namespaces premium-provider breakers so a SearXNG engine
@@ -793,6 +822,9 @@ func (p *Proxy) admitPremiumCall(
 		return nil, "", eligibilityReason, skip, false, admissionErr
 	}
 	admitted = true
+	if diagnostics, _ := ctx.Value(requestDiagnosticsKey{}).(*requestDiagnostics); diagnostics != nil {
+		diagnostics.addProvider(providerDiagnostic{Provider: provider.Name(), InFlight: true})
+	}
 	completed := false
 	defer func() {
 		if !completed {

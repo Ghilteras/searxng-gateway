@@ -86,12 +86,15 @@ var (
 		},
 		[]string{"outcome"},
 	)
-	// PremiumStageDuration is the active premium time of an uncached request:
-	// the first (concurrent) premium call plus the serial top-up, excluding any
-	// time spent waiting for the SearXNG stage.
+	// PremiumStageDuration is the active premium time of an uncached request: the
+	// first (concurrent) premium call plus the serial top-up. When the request is
+	// completed normally it excludes time spent waiting for the SearXNG stage; when
+	// the request abandons the join at its parent deadline it is censored at that
+	// abandonment and DOES include the SearXNG-stage wait, so treat it as an upper
+	// bound on premium work in the abandoned case.
 	PremiumStageDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "searxng_gateway_premium_stage_duration_seconds",
-		Help:    "Active duration of the premium stage (first call plus serial top-up)",
+		Help:    "Active premium-stage duration, ending at completion or request abandonment",
 		Buckets: durationBuckets,
 	})
 	// SearchResultsTotal counts results included in a freshly assembled

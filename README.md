@@ -183,7 +183,7 @@ See [docs/architecture.md](docs/architecture.md#request-contract) for the reques
 | `TAVILY_INCLUDE_RAW_CONTENT` | `false` | no | Request full page content inline when `true` |
 | `TAVILY_INCLUDE_ANSWER` | `false` | no | Request Tavily's direct answer when `true` |
 | `SUFFICIENT_MIN_RESULTS` | `1` | no | Target distinct-URL result count; loop stops when reached (recommend 10 with premiums) |
-| `FALLBACK_TIMEOUT_SECONDS` | `8` | no | Hard total request budget: the bounded SearXNG stage plus the premium stage; accumulated nonempty results are returned at the deadline |
+| `FALLBACK_TIMEOUT_SECONDS` | `8` | no | Hard total request budget: the bounded SearXNG stage plus the premium stage; accumulated nonempty results are returned at the deadline, and a first premium call still running at the deadline is abandoned rather than awaited (its results are discarded, its admission still counted) |
 | `SEARXNG_TIMEOUT_SECONDS` | `3` | no | Total SearXNG stage budget shared by the HTTP request and all retries/backoff; the stage is cancelled when it expires. A stage expiry while the parent request budget is still alive counts as a SearXNG failure; a parent-budget expiry or caller cancellation does not |
 | `SEARXNG_FAIL_THRESHOLD` | `6` | no | Consecutive SearXNG failures before cooldown |
 | `SEARXNG_FAIL_COOLDOWN_SECONDS` | `180` | no | Cooldown duration for SearXNG (seconds) |

@@ -58,7 +58,7 @@ func TestV3StructuralProviderFailureAllowsNoResults(t *testing.T) {
 		{name: "credentials rejected 433", code: 433, reason: backends.UnavailabilityCredentialsRejected},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var logs strings.Builder
+			var logs syncLogSink
 			previous := log.Writer()
 			log.SetOutput(&logs)
 			t.Cleanup(func() { log.SetOutput(previous) })
@@ -125,6 +125,7 @@ func TestV3CleanEmptyRejectsContradictoryOrUnknownEvidence(t *testing.T) {
 		{Provider: "brave", Skip: "breaker_open"},
 		{Provider: "brave", Skip: "not_attempted"},
 		{Provider: "brave", Outcome: "quota"},
+		{Provider: "brave", InFlight: true},
 	} {
 		d := &requestDiagnostics{providerEvents: []providerDiagnostic{event}}
 		if d.cleanEmpty() {

@@ -333,12 +333,14 @@ func TestParentBudgetExpiryStopsBothStages(t *testing.T) {
 	cfg.FallbackTimeout = 80 * time.Millisecond
 	cfg.SearxngTimeout = 5 * time.Second
 	var sxCtxErr, premiumCtxErr atomic.Value
+	premiumDone := make(chan struct{})
 	sx := &contextSearxng{fn: func(ctx context.Context) (*searxng.Response, error) {
 		<-ctx.Done()
 		sxCtxErr.Store(ctx.Err().Error())
 		return nil, ctx.Err()
 	}}
 	first := &contextBackend{name: "brave", fn: func(ctx context.Context) ([]backends.SearchResult, error) {
+		defer close(premiumDone)
 		<-ctx.Done()
 		premiumCtxErr.Store(ctx.Err().Error())
 		return nil, ctx.Err()
@@ -357,6 +359,7 @@ func TestParentBudgetExpiryStopsBothStages(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Errorf("Search took %v after the 80ms budget", elapsed)
 	}
+	<-premiumDone
 	if sxCtxErr.Load() == nil || premiumCtxErr.Load() == nil {
 		t.Errorf("stages not both cancelled: searxng=%v premium=%v", sxCtxErr.Load(), premiumCtxErr.Load())
 	}
