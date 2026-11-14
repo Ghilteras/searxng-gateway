@@ -1,5 +1,11 @@
 # MEMORY — homelab-gateway
 
+## 2026-11-13 — Gateway long-session operational lessons and placement
+
+→ journal: search "Gateway long-session operational lessons"
+
+---
+
 ## 2026-11-06 — Gateway MEMORY index pruning and separator repair
 
 → journal: search "Gateway MEMORY index pruning"
