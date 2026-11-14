@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,6 +28,44 @@ import (
 	"sx/internal/proxy"
 	"sx/internal/searxng"
 )
+
+// syncLogSink permits log writes after the handler returns while tests read logs.
+// A bare bytes.Buffer installed with log.SetOutput is a data race in that situation.
+type syncLogSink struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncLogSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncLogSink) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func TestSyncLogSinkIsConcurrencySafe(t *testing.T) {
+	var sink syncLogSink
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				_, _ = sink.Write([]byte("line\n"))
+				_ = sink.String()
+			}
+		}(i)
+	}
+	wg.Wait()
+	if got, want := strings.Count(sink.String(), "line\n"), 8*50; got != want {
+		t.Fatalf("wrote %d lines, want %d", got, want)
+	}
+}
 
 type stubSearxng struct {
 	resp  *searxng.Response
@@ -118,7 +157,7 @@ func TestSearchEndpointFallback(t *testing.T) {
 
 func TestSearchFailureDoesNotDiscloseProviderError(t *testing.T) {
 	const sentinel = "SENTINEL-PROVIDER-BODY-DO-NOT-LEAK"
-	var logs bytes.Buffer
+	var logs syncLogSink
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
@@ -178,7 +217,7 @@ func TestSearchEndpointCleanNoResults(t *testing.T) {
 
 func TestSearchEndpointCAPTCHADegradedNoResults(t *testing.T) {
 	metrics.Init()
-	var logs bytes.Buffer
+	var logs syncLogSink
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
@@ -336,7 +375,7 @@ func TestSearchEndpointTavilyStructuralZeroResultHTTP(t *testing.T) {
 	} {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
 			metrics.Init()
-			var logs bytes.Buffer
+			var logs syncLogSink
 			previous := log.Writer()
 			log.SetOutput(&logs)
 			t.Cleanup(func() { log.SetOutput(previous) })
@@ -379,7 +418,7 @@ func TestSearchEndpointTavilyStructuralOpenBreakerZeroResultHTTP(t *testing.T) {
 		t.Fatalf("Tavily quota_exhausted eligibility = %v, want 1 after structural breaker trip", got)
 	}
 	beforeSkipped := providerSkipValue(t, "tavily", "breaker_open")
-	var logs bytes.Buffer
+	var logs syncLogSink
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
@@ -427,7 +466,7 @@ func TestSearchEndpointStructuralBreakerWithAdmittedEmptyProviderReturnsNoResult
 		t.Fatalf("Tavily quota_exhausted eligibility = %v, want 1", got)
 	}
 	beforeSkipped := providerSkipValue(t, "tavily", "breaker_open")
-	var logs bytes.Buffer
+	var logs syncLogSink
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })

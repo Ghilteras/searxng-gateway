@@ -1,4 +1,4 @@
-# MEMORY — homelab-gateway
+# MEMORY — searxng-gateway (checkout: /home/angelo/homelab-gateway)
 
 ## 2026-11-13 — Gateway long-session operational lessons and placement
 

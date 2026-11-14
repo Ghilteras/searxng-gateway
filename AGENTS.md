@@ -7,7 +7,7 @@ Proxy HTTP davanti a SearXNG: stage SearXNG e primo provider premium (Brave, Exa
 - **Linguaggio**: Go 1.25.0
 - **Build**: automatica via GitHub Actions su push main e tag `v*` — `.github/workflows/build.yml` (`docker/build-push-action@v6`, platforms `linux/amd64,linux/arm64`, cache gha, push su GHCR). NIENTE build locale multi-arch: il builder buildx `multiarch` è stato rimosso dal homelab (2026-08-04).
 - **Test**: `go test ./...`
-- **Lint**: `golangci-lint run`
+- **Lint**: `/home/angelo/go/bin/golangci-lint run` — v2.1.6, the same version CI pins via `golangci-lint-action@v7.0.1` (`.github/workflows/build.yml:37-40`). The binary is NOT on PATH, so the bare command fails with `command not found`; there is no repo-level `.golangci.yml`, so CI and a local run use the same default linter set (`errcheck`, `govet`, `ineffassign`, `staticcheck`, `unused`).
 - **Semantic tooling**: Serena/gopls symbol lookup is unavailable in this repo — use direct file edits (`read`/`grep`/`edit`) and never abort a task because gopls is unavailable.
 
 ## Architettura
