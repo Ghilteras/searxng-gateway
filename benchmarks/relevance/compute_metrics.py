@@ -65,6 +65,11 @@ def table(headers, rows):
     for row in rows:
         print(' | '.join(row[i].ljust(widths[i]) for i in range(len(headers))).rstrip())
 
+def is_absent(text):
+    """An excerpt is absent when blank or when it is the gateway's absence label."""
+    t = str(text or '').strip()
+    return t == '' or t.startswith('No snippet available')
+
 primary = load_grades(ROOT / 'grades-primary-2026-11-06.txt')
 second = load_grades(ROOT / 'grades-second-2026-11-06.txt')
 baseline_docs = load_json(ROOT / 'key-baseline-2026-11-06.json')
@@ -151,14 +156,14 @@ for arm in ['gateway', 'upstream']:
     for empty in [True, False]:
         vals = [primary[doc_id] for doc_id, doc in all_docs.items()
                 if doc['arm'] == arm and doc_id in primary
-                and (not str(excerpt_by_id.get(doc_id, '')).strip()) == empty]
+                and is_absent(excerpt_by_id.get(doc_id, '')) == empty]
         snippet_rows.append([arm, 'empty' if empty else 'non-empty', fmt(mean([[x] for x in vals], 0)), len(vals)])
 for doc_id, doc in all_docs.items():
     # A captured excerpt is "absent" when it is blank OR is the gateway's absence
     # label. Since 2026-11-23 the gateway replaces a missing snippet with
     # "No snippet available (result host: …)" and sets content_is_fallback, so a
     # capture taken after that change will never show a blank excerpt.
-    if doc_id in primary and not str(excerpt_by_id.get(doc_id, '')).strip():
+    if doc_id in primary and is_absent(excerpt_by_id.get(doc_id, '')):
         empty_grade_counts[primary[doc_id]] += 1
 table(['arm', 'excerpt', 'mean grade', 'docs'], snippet_rows)
 print('empty docs by grade')
