@@ -45,40 +45,43 @@ def score_rows(docs, grades, rank_field='rank'):
         judged = [grades[doc_id] for _, doc_id in top if doc_id in grades]
         used_counts[group] = len(judged)
         ideal = dcg(sorted(judged, reverse=True))
-        if ideal == 0:
-            continue
-        values = [dcg(judged) / ideal, int(max(judged, default=0) >= 2)]
+        ndcg = dcg(judged) / ideal if ideal else None
+        values = [ndcg, int(max(judged, default=0) >= 2)]
         scored[group] = values
     return scored, used_counts
 
 def mean(rows, index):
-    vals = [row[index] for row in rows]
+    vals = [row[index] for row in rows if row[index] is not None]
     return sum(vals) / len(vals) if vals else float('nan')
 
 def fmt(value):
-    return f'{value:.3f}'
+    return 'NA' if value is None else f'{value:.3f}'
 
 def table(headers, rows):
     rows = [[str(x) for x in row] for row in rows]
     widths = [max(len(str(headers[i])), *(len(row[i]) for row in rows)) for i in range(len(headers))]
-    print(' | '.join(str(headers[i]).ljust(widths[i]) for i in range(len(headers))))
+    print(' | '.join(str(headers[i]).ljust(widths[i]) for i in range(len(headers))).rstrip())
     print('-+-'.join('-' * widths[i] for i in range(len(headers))))
     for row in rows:
-        print(' | '.join(row[i].ljust(widths[i]) for i in range(len(headers))))
+        print(' | '.join(row[i].ljust(widths[i]) for i in range(len(headers))).rstrip())
 
 primary = load_grades(ROOT / 'grades-primary-2026-11-06.txt')
 second = load_grades(ROOT / 'grades-second-2026-11-06.txt')
 baseline_docs = load_json(ROOT / 'key-baseline-2026-11-06.json')
 pilot_docs = load_json(ROOT / 'key-2026-11-06.json')
 blind = [json.loads(line) for line in (ROOT / 'blind-2026-11-06.jsonl').read_text().splitlines() if line.strip()]
-summary = load_json(Path('/home/angelo/.local/state/searxng-baseline-2026-11-06/summary.json'))
+summary = load_json(ROOT / 'baseline-summary-2026-11-06.json')
 
 baseline, baseline_used = score_rows(baseline_docs, primary)
 pilot, pilot_used = score_rows(pilot_docs, primary)
 
 print('BASELINE GATEWAY (nDCG@5, Success@5)')
 base_rows = []
-for case in sorted((str(c) for c in [1, 2, 3, *range(5, 15), *range(16, 21)]), key=int):
+# Cases 4 and 15 are absent from the capture by construction: their ground-truth
+# pages failed validation upstream (HTTP 404 and 429), so the baseline is 18 cases.
+EXCLUDED_CASES = {4, 15}
+baseline_cases = sorted({int(item['case']) for item in summary} - EXCLUDED_CASES)
+for case in (str(c) for c in baseline_cases):
     key = (case, 'gateway')
     if key in baseline:
         n, s = baseline[key]
@@ -86,7 +89,7 @@ for case in sorted((str(c) for c in [1, 2, 3, *range(5, 15), *range(16, 21)]), k
         base_rows.append([case, fmt(n), fmt(s), count if count < 5 else ''])
     else:
         base_rows.append([case, 'NA', 'NA', baseline_used.get(key, 0)])
-valid_base = [baseline[(case, 'gateway')] for case in (str(c) for c in [1, 2, 3, *range(5, 15), *range(16, 21)]) if (case, 'gateway') in baseline]
+valid_base = [baseline[(str(case), 'gateway')] for case in baseline_cases if (str(case), 'gateway') in baseline]
 base_rows.append(['MEAN', fmt(mean(valid_base, 0)), fmt(mean(valid_base, 1)), ''])
 table(['case', 'nDCG@5', 'Success@5', 'used (<5 only)'], base_rows)
 
@@ -151,6 +154,10 @@ for arm in ['gateway', 'upstream']:
                 and (not str(excerpt_by_id.get(doc_id, '')).strip()) == empty]
         snippet_rows.append([arm, 'empty' if empty else 'non-empty', fmt(mean([[x] for x in vals], 0)), len(vals)])
 for doc_id, doc in all_docs.items():
+    # A captured excerpt is "absent" when it is blank OR is the gateway's absence
+    # label. Since 2026-11-23 the gateway replaces a missing snippet with
+    # "No snippet available (result host: …)" and sets content_is_fallback, so a
+    # capture taken after that change will never show a blank excerpt.
     if doc_id in primary and not str(excerpt_by_id.get(doc_id, '')).strip():
         empty_grade_counts[primary[doc_id]] += 1
 table(['arm', 'excerpt', 'mean grade', 'docs'], snippet_rows)

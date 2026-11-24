@@ -1,0 +1,244 @@
+[
+  {
+    "case": 1,
+    "query": "stop a container starting again on boot",
+    "total_results": 37,
+    "expected_hosts": [
+      "docs.docker.com"
+    ],
+    "expected_path_prefixes": [
+      "/reference/compose-file/"
+    ],
+    "rank": null,
+    "engine": null
+  },
+  {
+    "case": 2,
+    "query": "how search engines are weighted when results are merged",
+    "total_results": 31,
+    "expected_hosts": [
+      "docs.searxng.org"
+    ],
+    "expected_path_prefixes": [
+      "/admin/settings/settings_engines"
+    ],
+    "rank": null,
+    "engine": null
+  },
+  {
+    "case": 3,
+    "query": "systemd timer calendar expression for daily at 4am",
+    "total_results": 10,
+    "expected_hosts": [
+      "freedesktop.org"
+    ],
+    "expected_path_prefixes": [
+      "/software/systemd/"
+    ],
+    "rank": 8,
+    "engine": "brave"
+  },
+  {
+    "case": 5,
+    "query": "rotate an encryption key used for secrets",
+    "total_results": 84,
+    "expected_hosts": [
+      "getsops.io",
+      "github.com"
+    ],
+    "expected_path_prefixes": [
+      "/",
+      "/getsops/sops"
+    ],
+    "rank": 3,
+    "engine": "exa"
+  },
+  {
+    "case": 6,
+    "query": "cancel an in-flight http request in go",
+    "total_results": 61,
+    "expected_hosts": [
+      "pkg.go.dev"
+    ],
+    "expected_path_prefixes": [
+      "/context"
+    ],
+    "rank": null,
+    "engine": null
+  },
+  {
+    "case": 7,
+    "query": "typescript type that enforces a shape without changing the type",
+    "total_results": 31,
+    "expected_hosts": [
+      "typescriptlang.org"
+    ],
+    "expected_path_prefixes": [
+      "/docs/"
+    ],
+    "rank": 1,
+    "engine": "tavily"
+  },
+  {
+    "case": 8,
+    "query": "alert routing and contact points",
+    "total_results": 45,
+    "expected_hosts": [
+      "grafana.com"
+    ],
+    "expected_path_prefixes": [
+      "/docs/"
+    ],
+    "rank": 4,
+    "engine": "brave"
+  },
+  {
+    "case": 9,
+    "query": "reclaim disk space after deleting rows",
+    "total_results": 32,
+    "expected_hosts": [
+      "postgresql.org"
+    ],
+    "expected_path_prefixes": [
+      "/docs/"
+    ],
+    "rank": null,
+    "engine": null
+  },
+  {
+    "case": 10,
+    "query": "reverse proxy path is rewritten with a trailing slash",
+    "total_results": 39,
+    "expected_hosts": [
+      "nginx.org"
+    ],
+    "expected_path_prefixes": [
+      "/en/docs/"
+    ],
+    "rank": null,
+    "engine": null
+  },
+  {
+    "case": 11,
+    "query": "sqlite write-ahead logging mode",
+    "total_results": 33,
+    "expected_hosts": [
+      "sqlite.org"
+    ],
+    "expected_path_prefixes": [
+      "/wal.html"
+    ],
+    "rank": 2,
+    "engine": "tavily"
+  },
+  {
+    "case": 12,
+    "query": "cancel a coroutine and clean up its resources",
+    "total_results": 29,
+    "expected_hosts": [
+      "docs.python.org"
+    ],
+    "expected_path_prefixes": [
+      "/3/"
+    ],
+    "rank": null,
+    "engine": null
+  },
+  {
+    "case": 13,
+    "query": "remove a secondary checkout of a repository",
+    "total_results": 34,
+    "expected_hosts": [
+      "git-scm.com"
+    ],
+    "expected_path_prefixes": [
+      "/docs/git-worktree"
+    ],
+    "rank": null,
+    "engine": null
+  },
+  {
+    "case": 14,
+    "query": "rate limited response should tell the client when to retry",
+    "total_results": 30,
+    "expected_hosts": [
+      "rfc-editor.org",
+      "datatracker.ietf.org"
+    ],
+    "expected_path_prefixes": [
+      "/",
+      "/"
+    ],
+    "rank": 24,
+    "engine": "marginalia"
+  },
+  {
+    "case": 16,
+    "query": "mock a module in the test runner",
+    "total_results": 181,
+    "expected_hosts": [
+      "bun.sh"
+    ],
+    "expected_path_prefixes": [
+      "/docs/"
+    ],
+    "rank": null,
+    "engine": null
+  },
+  {
+    "case": 17,
+    "query": "compute a percentile from a histogram metric",
+    "total_results": 31,
+    "expected_hosts": [
+      "prometheus.io"
+    ],
+    "expected_path_prefixes": [
+      "/docs/"
+    ],
+    "rank": null,
+    "engine": null
+  },
+  {
+    "case": 18,
+    "query": "container health check how often it runs",
+    "total_results": 39,
+    "expected_hosts": [
+      "docs.docker.com"
+    ],
+    "expected_path_prefixes": [
+      "/"
+    ],
+    "rank": null,
+    "engine": null
+  },
+  {
+    "case": 19,
+    "query": "difference between readiness and liveness probes",
+    "total_results": 33,
+    "expected_hosts": [
+      "kubernetes.io"
+    ],
+    "expected_path_prefixes": [
+      "/docs/"
+    ],
+    "rank": 1,
+    "engine": "parallel"
+  },
+  {
+    "case": 20,
+    "query": "duplicate json keys are silently accepted",
+    "total_results": 30,
+    "expected_hosts": [
+      "rfc-editor.org",
+      "datatracker.ietf.org",
+      "ecma-international.org"
+    ],
+    "expected_path_prefixes": [
+      "/",
+      "/",
+      "/"
+    ],
+    "rank": null,
+    "engine": null
+  }
+]
