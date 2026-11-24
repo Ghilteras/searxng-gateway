@@ -50,7 +50,7 @@ The upstream query keeps the caller's case (trim + whitespace collapse) so opera
 - `format` is accepted only for SearXNG compatibility and is ignored: a successful response is JSON whatever `format` asks for, and the SearXNG stage is always called with `format=json`.
 - SearXNG parameters — `language`, `time_range`, `safesearch`, `pageno`, `categories`, `engines` — are not forwarded and are silently ignored, so they neither narrow, paginate nor filter the merged response.
 - Premium providers receive fixed gateway options, not caller input: Brave is always called with `safesearch=moderate`, and a caller can neither change nor read that from the response.
-- A result whose upstream provider supplied no text carries the label `No snippet available (result host: <host>)` and `content_is_fallback: true`; real snippets are never rewritten.
+- A result whose upstream provider supplied no text carries `content_is_fallback: true` and a label: `No snippet available (result host: <host>)` when the result URL has an http(s) host, and the bare `No snippet available` otherwise. Real snippets are never rewritten, and the marker is never accepted from upstream.
 - Engine bangs inside `q` (for example `!bi`) therefore narrow only the SearXNG stage, while premium providers receive the literal query string.
 
 ## Request flow

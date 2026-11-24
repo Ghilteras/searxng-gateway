@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -3458,6 +3459,10 @@ func TestFallbackSnippet(t *testing.T) {
 		{"malformed", "://bad", "No snippet available"},
 		{"empty", "", "No snippet available"},
 		{"non-http scheme", "ftp://example.test/x", "No snippet available"},
+		{"uppercase scheme", "HTTPS://Example.test/x", "No snippet available (result host: Example.test)"},
+		{"userinfo is not echoed", "https://user:secret@example.test/x", "No snippet available (result host: example.test)"},
+		{"empty host", "http://:8080/x", "No snippet available"},
+		{"ipv6 host", "https://[::1]:8080/x", "No snippet available (result host: ::1)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3465,6 +3470,48 @@ func TestFallbackSnippet(t *testing.T) {
 				t.Errorf("fallbackSnippet(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+	if got := fallbackSnippet("https://user:secret@example.test/x"); strings.Contains(got, "secret") {
+		t.Errorf("label leaked credentials: %q", got)
+	}
+}
+
+func TestContentIsFallbackJSONShape(t *testing.T) {
+	on, err := json.Marshal(searxng.Result{Title: "t", URL: "https://x.test", Content: "No snippet available", ContentIsFallback: true})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(on), `"content_is_fallback":true`) {
+		t.Errorf("marker true missing from wire JSON: %s", on)
+	}
+	off, err := json.Marshal(searxng.Result{Title: "t", URL: "https://x.test", Content: "real"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(off), "content_is_fallback") {
+		t.Errorf("marker must be omitted on real snippets: %s", off)
+	}
+}
+
+func TestPremiumBlankSnippetIsLabelled(t *testing.T) {
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{}}}
+	blank := &fakeBackend{name: "exa", avail: true, results: []backends.SearchResult{
+		{Title: "exa blank", URL: "https://docs.example.test/exa", Content: "", Engine: "exa"},
+	}}
+	c, err := cache.New(10, time.Minute)
+	if err != nil {
+		t.Fatalf("cache.New: %v", err)
+	}
+	p := newTestProxy(newCfg(), sx, c, breaker.New(), blank)
+	got, err := p.Search(context.Background(), "premium-blank")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got.Results) == 0 {
+		t.Fatal("no results")
+	}
+	if !got.Results[0].ContentIsFallback || got.Results[0].Content != "No snippet available (result host: docs.example.test)" {
+		t.Errorf("premium blank row = (%q, fallback=%v), want labelled and marked", got.Results[0].Content, got.Results[0].ContentIsFallback)
 	}
 }
 
@@ -3475,8 +3522,18 @@ func TestEmptySnippetIsLabelledAndMarked(t *testing.T) {
 	}}}
 	c, _ := cache.New(10, time.Minute)
 	p := newTestProxy(newCfg(), sx, c, breaker.New())
-	if _, err := p.Search(context.Background(), "fallback-label"); err != nil {
+	fresh, err := p.Search(context.Background(), "fallback-label")
+	if err != nil {
 		t.Fatalf("Search: %v", err)
+	}
+	if len(fresh.Results) != 2 {
+		t.Fatalf("fresh results = %d, want 2", len(fresh.Results))
+	}
+	if fresh.Results[0].Content != "No snippet available (result host: docs.example.test)" || !fresh.Results[0].ContentIsFallback {
+		t.Errorf("fresh blank row = (%q, fallback=%v), want labelled and marked", fresh.Results[0].Content, fresh.Results[0].ContentIsFallback)
+	}
+	if fresh.Results[1].Content != "genuine snippet" || fresh.Results[1].ContentIsFallback {
+		t.Errorf("fresh real row = (%q, fallback=%v), want untouched and unmarked", fresh.Results[1].Content, fresh.Results[1].ContentIsFallback)
 	}
 	// second call must be a cache hit returning the same labelled rows
 	got, err := p.Search(context.Background(), "fallback-label")

@@ -440,13 +440,18 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 // fallbackSnippet labels the absence of a snippet. It deliberately carries no page
 // text: the gateway never fetches result URLs, so inventing an excerpt would
 // misrepresent what the provider supplied. The host is included because it is the
-// only descriptive fact the gateway already holds.
+// only descriptive fact the gateway already holds; when the URL has no usable
+// http(s) host, the bare label is returned instead.
 func fallbackSnippet(rawURL string) string {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return "No snippet available"
 	}
-	return "No snippet available (result host: " + u.Hostname() + ")"
+	host := u.Hostname()
+	if host == "" {
+		return "No snippet available"
+	}
+	return "No snippet available (result host: " + host + ")"
 }
 
 // targetResults is the distinct-URL target: once SearXNG + premium distinct URLs
