@@ -57,6 +57,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -419,10 +420,33 @@ func (p *Proxy) Search(ctx context.Context, raw string) (*searxng.Response, erro
 	span.SetAttributes(attribute.String("outcome", outcome), attribute.Int("result_count", len(allResults)))
 	span.SetStatus(codes.Ok, "")
 
+	// Present an explicit absence instead of a blank slot: an upstream engine may
+	// legitimately return a result with no text (mwmbl does when its API omits
+	// extract). The marker is gateway-generated only, so any value that arrived
+	// from upstream is cleared first.
+	for i := range allResults {
+		allResults[i].ContentIsFallback = false
+		if strings.TrimSpace(allResults[i].Content) == "" {
+			allResults[i].Content = fallbackSnippet(allResults[i].URL)
+			allResults[i].ContentIsFallback = true
+		}
+	}
 	mapped := &searxng.Response{Query: upstreamQuery, Results: allResults}
 	p.observe(mapped)
 	p.c.Set(key, mapped)
 	return mapped, nil
+}
+
+// fallbackSnippet labels the absence of a snippet. It deliberately carries no page
+// text: the gateway never fetches result URLs, so inventing an excerpt would
+// misrepresent what the provider supplied. The host is included because it is the
+// only descriptive fact the gateway already holds.
+func fallbackSnippet(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "No snippet available"
+	}
+	return "No snippet available (result host: " + u.Hostname() + ")"
 }
 
 // targetResults is the distinct-URL target: once SearXNG + premium distinct URLs

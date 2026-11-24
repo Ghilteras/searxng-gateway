@@ -19,6 +19,9 @@ type Result struct {
 	Score         float64  `json:"score"`
 	PublishedDate string   `json:"publishedDate,omitempty"`
 	Template      string   `json:"template,omitempty"`
+	// ContentIsFallback marks a gateway-generated "no snippet" label (the upstream
+	// provider supplied no text). Never populated from upstream input.
+	ContentIsFallback bool `json:"content_is_fallback,omitempty"`
 }
 
 // Response is the top-level API response from SearXNG.

@@ -3448,3 +3448,66 @@ func resultURLs(rs []searxng.Result) []string {
 	}
 	return urls
 }
+
+func TestFallbackSnippet(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"http host", "http://nginx.org/r/proxy_buffering", "No snippet available (result host: nginx.org)"},
+		{"https host", "https://www.postgresql.org/message-id/x", "No snippet available (result host: www.postgresql.org)"},
+		{"host only", "https://example.test", "No snippet available (result host: example.test)"},
+		{"no scheme", "example.test/path", "No snippet available"},
+		{"malformed", "://bad", "No snippet available"},
+		{"empty", "", "No snippet available"},
+		{"non-http scheme", "ftp://example.test/x", "No snippet available"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fallbackSnippet(tc.in); got != tc.want {
+				t.Errorf("fallbackSnippet(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmptySnippetIsLabelledAndMarked(t *testing.T) {
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
+		{Title: "blank", URL: "https://docs.example.test/page", Engine: "mwmbl"},
+		{Title: "real", URL: "https://other.example.test/page", Content: "genuine snippet", Engine: "marginalia"},
+	}}}
+	c, _ := cache.New(10, time.Minute)
+	p := newTestProxy(newCfg(), sx, c, breaker.New())
+	if _, err := p.Search(context.Background(), "fallback-label"); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// second call must be a cache hit returning the same labelled rows
+	got, err := p.Search(context.Background(), "fallback-label")
+	if err != nil {
+		t.Fatalf("Search (cached): %v", err)
+	}
+	if len(got.Results) != 2 {
+		t.Fatalf("results = %d, want 2", len(got.Results))
+	}
+	if got.Results[0].Content != "No snippet available (result host: docs.example.test)" || !got.Results[0].ContentIsFallback {
+		t.Errorf("blank row = (%q, fallback=%v), want labelled and marked", got.Results[0].Content, got.Results[0].ContentIsFallback)
+	}
+	if got.Results[1].Content != "genuine snippet" || got.Results[1].ContentIsFallback {
+		t.Errorf("real row = (%q, fallback=%v), want untouched and unmarked", got.Results[1].Content, got.Results[1].ContentIsFallback)
+	}
+}
+
+func TestUpstreamFallbackMarkerIsNotTrusted(t *testing.T) {
+	sx := &fakeSearxng{resp: &searxng.Response{Results: []searxng.Result{
+		{Title: "claimed", URL: "https://claim.example.test/x", Content: "real text", Engine: "mwmbl", ContentIsFallback: true},
+	}}}
+	c, _ := cache.New(10, time.Minute)
+	p := newTestProxy(newCfg(), sx, c, breaker.New())
+	got, err := p.Search(context.Background(), "upstream-marker")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got.Results[0].ContentIsFallback {
+		t.Error("upstream-supplied fallback marker survived; it must be cleared")
+	}
+	if got.Results[0].Content != "real text" {
+		t.Errorf("content = %q, want untouched", got.Results[0].Content)
+	}
+}

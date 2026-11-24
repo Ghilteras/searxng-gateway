@@ -50,6 +50,7 @@ The upstream query keeps the caller's case (trim + whitespace collapse) so opera
 - `format` is accepted only for SearXNG compatibility and is ignored: a successful response is JSON whatever `format` asks for, and the SearXNG stage is always called with `format=json`.
 - SearXNG parameters — `language`, `time_range`, `safesearch`, `pageno`, `categories`, `engines` — are not forwarded and are silently ignored, so they neither narrow, paginate nor filter the merged response.
 - Premium providers receive fixed gateway options, not caller input: Brave is always called with `safesearch=moderate`, and a caller can neither change nor read that from the response.
+- A result whose upstream provider supplied no text carries the label `No snippet available (result host: <host>)` and `content_is_fallback: true`; real snippets are never rewritten.
 - Engine bangs inside `q` (for example `!bi`) therefore narrow only the SearXNG stage, while premium providers receive the literal query string.
 
 ## Request flow
@@ -111,8 +112,9 @@ The gateway returns JSON in SearXNG format regardless of which backend provided 
 | `title` | Backend-specific title | — |
 | `url` | Backend-specific URL | Deduplicated across all backends |
 | `content` | Backend-specific snippet | `description` from Brave; first highlight from Exa (falling back to its `text`/`summary`); `content`/`summary` from Tavily; `snippet` from Serper; first non-empty excerpt from Parallel |
+| `content_is_fallback` | Gateway | `true` only when `content` is the gateway's absence label; never accepted from upstream and omitted on real snippets |
 | `engine` | Backend name | e.g. `"brave"`, `"exa"`, `"parallel"`, `"tavily"`, `"serper"`, or a SearXNG engine name; the label is ambiguous between a gateway premium provider and an upstream engine of the same name |
-| `engines` | `[]string{engine}` | List format for compatibility |
+| `engines` | `[]string{engine}` for gateway providers; SearXNG results pass through upstream's array | List format for compatibility |
 | `score` | — | Not set by premium providers (omitted) |
 
 Premium provider results are normalised to `searxng.Result` at merge time in `proxy.go`. SearXNG results are passed through as-is.
