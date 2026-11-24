@@ -1,0 +1,415 @@
+{
+  "C1-D01": {
+    "case": "C1",
+    "arm": "upstream",
+    "rank": 1,
+    "url": "https://awesome-go.com/",
+    "engine": "marginalia"
+  },
+  "C1-D02": {
+    "case": "C1",
+    "arm": "gateway",
+    "rank": 4,
+    "url": "https://stackharbor.com/en/knowledge-base/traefik-routers-services-middlewares/",
+    "engine": "brave"
+  },
+  "C1-D03": {
+    "case": "C1",
+    "arm": "upstream",
+    "rank": 2,
+    "url": "https://www.cisa.gov/news-events/bulletins/sb26-229",
+    "engine": "marginalia"
+  },
+  "C1-D04": {
+    "case": "C1",
+    "arm": "upstream",
+    "rank": 3,
+    "url": "https://www.cisa.gov/news-events/bulletins/sb26-125",
+    "engine": "marginalia"
+  },
+  "C1-D05": {
+    "case": "C1",
+    "arm": "gateway",
+    "rank": 5,
+    "url": "https://adhdecode.com/articles/traefik/traefik-middleware-explained/",
+    "engine": "brave"
+  },
+  "C1-D06": {
+    "case": "C1",
+    "arm": "upstream",
+    "rank": 5,
+    "url": "https://www.redpacketsecurity.com/cisa-vulnerability-summary-for-the-week-of-april-27-2026/",
+    "engine": "marginalia"
+  },
+  "C1-D07": {
+    "case": "C1",
+    "arm": "upstream",
+    "rank": 4,
+    "url": "https://noise.getoto.net/author/grab-tech/",
+    "engine": "marginalia"
+  },
+  "C1-D08": {
+    "case": "C1",
+    "arm": "gateway",
+    "rank": 3,
+    "url": "https://doc.traefik.io/traefik/middlewares/overview/",
+    "engine": "brave"
+  },
+  "C1-D09": {
+    "case": "C1",
+    "arm": "gateway",
+    "rank": 2,
+    "url": "https://doc.traefik.io/traefik/reference/routing-configuration/http/middlewares/chain/",
+    "engine": "brave"
+  },
+  "C1-D10": {
+    "case": "C1",
+    "arm": "gateway",
+    "rank": 1,
+    "url": "https://community.traefik.io/t/about-the-middleware-order-that-traefik-apply/11534",
+    "engine": "brave"
+  },
+  "C2-D01": {
+    "case": "C2",
+    "arm": "gateway",
+    "rank": 5,
+    "url": "https://stackoverflow.com/questions/38290143/difference-between-become-and-become-user-in-ansible",
+    "engine": "exa"
+  },
+  "C2-D02": {
+    "case": "C2",
+    "arm": "gateway",
+    "rank": 4,
+    "url": "https://docs.ansible.com/projects/ansible/latest/collections/ansible/builtin/sudo%5Fbecome.html",
+    "engine": "exa"
+  },
+  "C2-D03": {
+    "case": "C2",
+    "arm": "upstream",
+    "rank": 2,
+    "url": "https://man.archlinux.org/man/extra/ansible-core/ansible-console.1.en",
+    "engine": "marginalia"
+  },
+  "C2-D04": {
+    "case": "C2",
+    "arm": "upstream",
+    "rank": 1,
+    "url": "https://tuxknight-notes.readthedocs.io/en/latest/ansible-v2/rst/become.html",
+    "engine": "marginalia"
+  },
+  "C2-D05": {
+    "case": "C2",
+    "arm": "gateway",
+    "rank": 3,
+    "url": "https://docs.ansible.com/projects/ansible/14/plugins/become.html",
+    "engine": "exa"
+  },
+  "C2-D06": {
+    "case": "C2",
+    "arm": "gateway",
+    "rank": 2,
+    "url": "https://docs.ansible.com/projects/ansible/latest/cli/ansible.html",
+    "engine": "exa"
+  },
+  "C2-D07": {
+    "case": "C2",
+    "arm": "upstream",
+    "rank": 4,
+    "url": "https://www.stackoverflow.com/questions/21344777",
+    "engine": "marginalia"
+  },
+  "C2-D08": {
+    "case": "C2",
+    "arm": "upstream",
+    "rank": 5,
+    "url": "https://manpages.ubuntu.com/manpages/xenial/man1/ansible.1.html",
+    "engine": "marginalia"
+  },
+  "C2-D09": {
+    "case": "C2",
+    "arm": "gateway",
+    "rank": 1,
+    "url": "https://docs.ansible.com/projects/ansible/latest/playbook_guide/playbooks_privilege_escalation.html",
+    "engine": "exa"
+  },
+  "C3-D01": {
+    "case": "C3",
+    "arm": "upstream",
+    "rank": 4,
+    "url": "https://www.tribblix.org/man/man1/git-config.html",
+    "engine": "marginalia"
+  },
+  "C3-D02": {
+    "case": "C3",
+    "arm": "gateway",
+    "rank": 5,
+    "url": "https://git-scm.com/docs/git-worktree/2.22.0",
+    "engine": "parallel"
+  },
+  "C3-D03": {
+    "case": "C3",
+    "arm": "gateway",
+    "rank": 4,
+    "url": "https://git-scm.com/docs/git-worktree/2.20.0",
+    "engine": "parallel"
+  },
+  "C3-D04": {
+    "case": "C3",
+    "arm": "upstream",
+    "rank": 2,
+    "url": "https://www.stackoverflow.com/questions/35598477",
+    "engine": "marginalia"
+  },
+  "C3-D05": {
+    "case": "C3",
+    "arm": "gateway",
+    "rank": 2,
+    "url": "http://man7.org/linux/man-pages/man1/git-worktree.1.html",
+    "engine": "parallel"
+  },
+  "C3-D06": {
+    "case": "C3",
+    "arm": "gateway",
+    "rank": 1,
+    "url": "http://man.he.net/man1/git-worktree",
+    "engine": "parallel"
+  },
+  "C3-D07": {
+    "case": "C3",
+    "arm": "upstream",
+    "rank": 3,
+    "url": "https://elpa.nongnu.org/nongnu-devel/doc/magit.html",
+    "engine": "marginalia"
+  },
+  "C3-D08": {
+    "case": "C3",
+    "arm": "upstream",
+    "rank": 1,
+    "url": "https://www.stackoverflow.com/questions/69125521",
+    "engine": "marginalia"
+  },
+  "C3-D09": {
+    "case": "C3",
+    "arm": "gateway",
+    "rank": 3,
+    "url": "https://raw.githubusercontent.com/git/git/v2.27.0/Documentation/git-worktree.txt",
+    "engine": "parallel"
+  },
+  "C3-D10": {
+    "case": "C3",
+    "arm": "upstream",
+    "rank": 5,
+    "url": "https://www.mankier.com/1/git-config",
+    "engine": "marginalia"
+  },
+  "C4-D01": {
+    "case": "C4",
+    "arm": "gateway",
+    "rank": 2,
+    "url": "https://www.plural.sh/blog/kubernetes-pod-pending-a-command-driven-scheduling-debug-pathkubernetes-pod-pending-causes-and-fixes",
+    "engine": "tavily"
+  },
+  "C4-D02": {
+    "case": "C4",
+    "arm": "upstream",
+    "rank": 2,
+    "url": "https://codemia.io/knowledge-hub/path/aks_reporting_insufficient_pods",
+    "engine": "marginalia"
+  },
+  "C4-D03": {
+    "case": "C4",
+    "arm": "upstream",
+    "rank": 1,
+    "url": "https://thebackroomtech.com/kubernetes-ai-workload-management-setup/",
+    "engine": "marginalia"
+  },
+  "C4-D04": {
+    "case": "C4",
+    "arm": "gateway",
+    "rank": 5,
+    "url": "https://serverfault.com/questions/997794/pods-stuck-in-pending-no-events-being-logged",
+    "engine": "tavily"
+  },
+  "C4-D05": {
+    "case": "C4",
+    "arm": "upstream",
+    "rank": 3,
+    "url": "https://www.wiz.io/academy/container-security/kubernetes-nodes-vs-pods",
+    "engine": "marginalia"
+  },
+  "C4-D06": {
+    "case": "C4",
+    "arm": "gateway",
+    "rank": 3,
+    "url": "https://www.netdata.cloud/guides/kubernetes/kubernetes-pod-pending",
+    "engine": "tavily"
+  },
+  "C4-D07": {
+    "case": "C4",
+    "arm": "gateway",
+    "rank": 1,
+    "url": "https://oneuptime.com/blog/post/2026-02-17-how-to-fix-gke-pod-stuck-in-pending-state-due-to-insufficient-cpu-or-memory-resources/view",
+    "engine": "tavily"
+  },
+  "C4-D08": {
+    "case": "C4",
+    "arm": "upstream",
+    "rank": 5,
+    "url": "https://kodekloud.com/blog/ckad-exam-verification-guide/",
+    "engine": "marginalia"
+  },
+  "C4-D09": {
+    "case": "C4",
+    "arm": "gateway",
+    "rank": 4,
+    "url": "https://kubernetes.io/docs/concepts/configuration/manage-resources-containers",
+    "engine": "tavily"
+  },
+  "C4-D10": {
+    "case": "C4",
+    "arm": "upstream",
+    "rank": 4,
+    "url": "https://codesignal.com/learn/courses/reliability-and-operations/lessons/systematic-kubernetes-troubleshooting",
+    "engine": "marginalia"
+  },
+  "C5-D01": {
+    "case": "C5",
+    "arm": "upstream",
+    "rank": 1,
+    "url": "https://kieranpotts.com/standards/023",
+    "engine": "marginalia"
+  },
+  "C5-D02": {
+    "case": "C5",
+    "arm": "gateway",
+    "rank": 1,
+    "url": "https://dilankam.medium.com/understanding-retries-exponential-backoffs-and-circuit-breakers-in-distributed-systems-4355db103505",
+    "engine": "brave"
+  },
+  "C5-D03": {
+    "case": "C5",
+    "arm": "upstream",
+    "rank": 4,
+    "url": "https://www.adaface.com/blog/microservices-interview-questions/",
+    "engine": "marginalia"
+  },
+  "C5-D04": {
+    "case": "C5",
+    "arm": "gateway",
+    "rank": 4,
+    "url": "https://alokknight.com/blog/api-resilience-rate-limiting-circuit-breakers",
+    "engine": "brave"
+  },
+  "C5-D05": {
+    "case": "C5",
+    "arm": "upstream",
+    "rank": 3,
+    "url": "https://jeffbailey.us/blog/2025/12/23/fundamentals-of-software-availability/",
+    "engine": "marginalia"
+  },
+  "C5-D06": {
+    "case": "C5",
+    "arm": "upstream",
+    "rank": 5,
+    "url": "https://composio.dev/content/ai-agent-security-reliability-data-integrity",
+    "engine": "marginalia"
+  },
+  "C5-D07": {
+    "case": "C5",
+    "arm": "gateway",
+    "rank": 5,
+    "url": "https://tomodahinata.com/en/blog/retry-backoff-circuit-breaker-resilience-patterns-guide",
+    "engine": "brave"
+  },
+  "C5-D08": {
+    "case": "C5",
+    "arm": "gateway",
+    "rank": 2,
+    "url": "https://stackoverflow.com/questions/74875520/what-is-the-difference-between-circuit-breaker-and-retry-in-spring-boot-microser",
+    "engine": "brave"
+  },
+  "C5-D09": {
+    "case": "C5",
+    "arm": "upstream",
+    "rank": 2,
+    "url": "https://jeffbailey.us/blog/2025/10/11/fundamental-software-concepts/",
+    "engine": "marginalia"
+  },
+  "C5-D10": {
+    "case": "C5",
+    "arm": "gateway",
+    "rank": 3,
+    "url": "https://dzone.com/articles/understanding-retry-pattern-with-exponential-back",
+    "engine": "brave"
+  },
+  "C6-D01": {
+    "case": "C6",
+    "arm": "gateway",
+    "rank": 3,
+    "url": "https://www.olostep.com/blog/deduplicate-search-results-ai-agents",
+    "engine": "exa"
+  },
+  "C6-D02": {
+    "case": "C6",
+    "arm": "upstream",
+    "rank": 4,
+    "url": "https://e-publishing.cern.ch/index.php/OSSYM/issue/download/ossym2025/OSSYM-2025-Proceedings",
+    "engine": "marginalia"
+  },
+  "C6-D03": {
+    "case": "C6",
+    "arm": "gateway",
+    "rank": 5,
+    "url": "https://deepwiki.com/oritwoen/askweb/2.4-multi-provider-search-orchestration",
+    "engine": "exa"
+  },
+  "C6-D04": {
+    "case": "C6",
+    "arm": "upstream",
+    "rank": 5,
+    "url": "https://www.foo.be/opensource-discoveries/",
+    "engine": "marginalia"
+  },
+  "C6-D05": {
+    "case": "C6",
+    "arm": "gateway",
+    "rank": 2,
+    "url": "https://github.com/vaughanb/searchmux",
+    "engine": "exa"
+  },
+  "C6-D06": {
+    "case": "C6",
+    "arm": "gateway",
+    "rank": 1,
+    "url": "https://deepwiki.com/searxng/searxng/3.3-result-processing-and-aggregation",
+    "engine": "exa"
+  },
+  "C6-D07": {
+    "case": "C6",
+    "arm": "upstream",
+    "rank": 2,
+    "url": "https://www.cochrane.org/authors/handbooks-and-manuals/handbook/archive/v6.1",
+    "engine": "marginalia"
+  },
+  "C6-D08": {
+    "case": "C6",
+    "arm": "upstream",
+    "rank": 1,
+    "url": "https://www.cochrane.org/authors/handbooks-and-manuals/handbook/archive/v6.2",
+    "engine": "marginalia"
+  },
+  "C6-D09": {
+    "case": "C6",
+    "arm": "gateway",
+    "rank": 4,
+    "url": "https://deepwiki.com/hec-ovi/websearch-skill/3.2-result-fusion-deduplication-and-canonicalization",
+    "engine": "exa"
+  },
+  "C6-D10": {
+    "case": "C6",
+    "arm": "upstream",
+    "rank": 3,
+    "url": "https://ecp.ep.liu.se/index.php/clarin/issue/download/1/29",
+    "engine": "marginalia"
+  }
+}

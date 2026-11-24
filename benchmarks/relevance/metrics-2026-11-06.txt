@@ -1,0 +1,15 @@
+BASELINE ARM (18 external cases, gateway only)
+nDCG@5 mean 0.929 ; Success@5 18/18 = 1.000
+DOCUMENTATION-PRECISION RUBRIC (same 18 cases)
+Hit@1 0.111 (2/18) ; Hit@5 0.278 (5/18) ; Hit@10 0.333 (6/18) ; MRR@10 0.178
+PILOT CASES (6, two arms)
+gateway nDCG@5 0.927 ; upstream nDCG@5 0.871 ; upstream unscorable on 2 of 6 cases (all five results graded 0)
+CLASS MEANS (pilot, gateway)
+doc-navigation 0.922 ; troubleshooting 0.926 ; broader 0.933
+JUDGE AGREEMENT
+29 shared ids ; exact 75.9% ; within-1 100% ; Cohen kappa 0.562
+PER-ENGINE USEFULNESS (primary judge, graded docs)
+brave 30 docs mean 2.267 ; exa 30 mean 2.200 ; tavily 30 mean 2.100 ; parallel 30 mean 2.067 ; marginalia 29 mean 0.862 ; total 149 mean 1.906
+mwmbl: 0 appearances in the 149 graded top-5 documents
+SNIPPET AVAILABILITY AT CAPTURE
+gateway top-5 results: 30/120 empty snippet (25%), all Exa; upstream 0/30

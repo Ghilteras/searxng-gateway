@@ -1,0 +1,722 @@
+{
+  "B07-D01": {
+    "case": 7,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://www.typescriptlang.org/docs/handbook/2/objects.html",
+    "engine": "tavily",
+    "expected_match": true
+  },
+  "B13-D01": {
+    "case": 13,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://help.github.com/en/github/using-git/managing-remote-repositories",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B06-D01": {
+    "case": 6,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://pkg.go.dev/net/http",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B05-D01": {
+    "case": 5,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://docs.aws.amazon.com/secretsmanager/latest/userguide/manage_update-encryption-key.html",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B01-D01": {
+    "case": 1,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://rinas.tech/blogs/how-to-disable-auto-start-for-a-docker-container.html",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B09-D01": {
+    "case": 9,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://www.alibabacloud.com/help/en/rds/support/how-do-i-use-the-optimize-table-statement-to-release-the-tablespace-of-an-apsaradb-rds-for-mysql-instance",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B02-D01": {
+    "case": 2,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://www.cs.cmu.edu/~callan/Papers/sigir02-lsi.pdf",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B09-D02": {
+    "case": 9,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://dev.mysql.com/doc/refman/8.4/en/optimize-table.html",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B19-D01": {
+    "case": 19,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://kubernetes.io/docs/concepts/workloads/pods/probes",
+    "engine": "parallel",
+    "expected_match": true
+  },
+  "B01-D02": {
+    "case": 1,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://docs.podman.io/en/stable/markdown/podman-stop.1.html",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B03-D01": {
+    "case": 3,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://silentlad.com/systemd-timers-oncalendar-(cron)-format-explained",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B05-D02": {
+    "case": 5,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://getsops.io/docs/usage/key-management/",
+    "engine": "exa",
+    "expected_match": true
+  },
+  "B08-D01": {
+    "case": 8,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://grafana.com/docs/grafana/latest/alerting/fundamentals/",
+    "engine": "brave",
+    "expected_match": true
+  },
+  "B16-D01": {
+    "case": 16,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://github.com/nodejs/node/issues/51164",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B13-D02": {
+    "case": 13,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://stackoverflow.com/questions/57474691/is-there-a-way-to-uncheckout-a-branch-from-a-worktree",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B18-D01": {
+    "case": 18,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://renode.space/blog/docker-healthcheck-interval-and-start-period",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B16-D02": {
+    "case": 16,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://jasmine.github.io/tutorials/module_mocking",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B17-D01": {
+    "case": 17,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://sciencing.com/compute-percentiles-histogram-8507271.html",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B11-D01": {
+    "case": 11,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://www.sqlite.org/wal.html",
+    "engine": "tavily",
+    "expected_match": true
+  },
+  "B20-D01": {
+    "case": 20,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://esdiscuss.org/topic/json-duplicate-keys",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B20-D02": {
+    "case": 20,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://pas7.com.ua/blog/en/nestjs-strict-json",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B05-D03": {
+    "case": 5,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://docs.trustivan.com/deployment/key-rotation",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B06-D02": {
+    "case": 6,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://docs.aws.amazon.com/sdk-for-go/api/aws/request",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B11-D02": {
+    "case": 11,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://mohit-bhalla.medium.com/understanding-wal-mode-in-sqlite-boosting-performance-in-sql-crud-operations-for-ios-5a8bd8be93d2",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B16-D03": {
+    "case": 16,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://dev.to/jackmellis/don-t-mock-modules-4jof",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B03-D02": {
+    "case": 3,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://wiki.archlinux.org/title/Systemd/Timers",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B03-D03": {
+    "case": 3,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://unix.stackexchange.com/questions/191270/systemd-timer-every-x-days-at-0400",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B09-D03": {
+    "case": 9,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://dba.stackexchange.com/questions/62969/how-to-reclaim-disk-space-after-delete-without-rebuilding-table",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B01-D03": {
+    "case": 1,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://dev.ngockhuong.com/posts/how-to-disable-auto-start-for-docker-containers",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B11-D03": {
+    "case": 11,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://blog.pecar.me/sqlite-wal",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B02-D02": {
+    "case": 2,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://www.algolia.com/blog/engineering/why-weights-are-often-counterproductive-in-ranking",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B16-D04": {
+    "case": 16,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://nodejs.org/api/test.html",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B14-D01": {
+    "case": 14,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://serpapi.com/blog/http-429-too-many-requests/",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B10-D01": {
+    "case": 10,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://www.besthub.dev/articles/mastering-nginx-proxy-pass-when-to-use-vs-no-slash-and-load-balancing-tips-30355f305739",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B03-D04": {
+    "case": 3,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://oneuptime.com/blog/post/2026-03-02-how-to-configure-systemd-calendar-timers-on-ubuntu/view",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B17-D02": {
+    "case": 17,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://www.mathworks.com/matlabcentral/answers/1909915-getting-a-percentile-from-a-histogram",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B13-D03": {
+    "case": 13,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://tortoisegit.org/docs/tortoisegit/tgit-dug-worktrees.html",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B02-D03": {
+    "case": 2,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://www.sciencedirect.com/science/article/abs/pii/S030643791630271X",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B16-D05": {
+    "case": 16,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://modern-web.dev/docs/test-runner/writing-tests/mocking",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B07-D02": {
+    "case": 7,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://www.reddit.com/r/typescript/comments/ukj6cv/explicitly_typing_a_const_object",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B07-D03": {
+    "case": 7,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://blog.logrocket.com/type-casting-typescript",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B14-D02": {
+    "case": 14,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://developerdatatools.com/workflows/how-to-debug-api-rate-limit-429-responses",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B11-D04": {
+    "case": 11,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://sqlite.org/forum/forumpost/c4dbf6ca17",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B10-D02": {
+    "case": 10,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://oneuptime.com/blog/post/2025-12-16-fix-trailing-slash-nginx-proxy-pass/view",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B18-D02": {
+    "case": 18,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://deplo.build/docs/guides/observability/health-checks",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B12-D01": {
+    "case": 12,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://medium.com/androiddevelopers/cancellation-in-coroutines-aa6b90163629",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B20-D03": {
+    "case": 20,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://biomejs.dev/linter/rules/no-duplicate-object-keys/json",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B12-D02": {
+    "case": 12,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://kt.academy/article/cc-cancellation",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B07-D04": {
+    "case": 7,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://mimo.org/glossary/typescript/object-type",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B14-D03": {
+    "case": 14,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "http://docs.digitalocean.com/support/what-retry-or-backoff-behavior-should-i-follow-for-429-responses-from-serverless-inference/index.html.md",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B13-D04": {
+    "case": 13,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://code.googlesource.com/git/%2B/HEAD/Documentation/git-worktree.adoc",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B17-D03": {
+    "case": 17,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://mathoverflow.net/questions/14481/calculate-percentiles-from-a-histogram",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B19-D02": {
+    "case": 19,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://cloud.google.com/blog/products/containers-kubernetes/kubernetes-best-practices-setting-up-health-checks-with-readiness-and-liveness-probes",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B14-D04": {
+    "case": 14,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://bird.com/explained/platform/what-is-api-rate-limiting-and-how-do-i-handle-a-429",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B14-D05": {
+    "case": 14,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://www.caard.net/blog/api-rate-limits-best-practices",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B05-D04": {
+    "case": 5,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://docs.k3s.io/cli/secrets-encrypt",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B03-D05": {
+    "case": 3,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://blog.techiescamp.com/systemd-timers/",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B08-D02": {
+    "case": 8,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://grafana.com/docs/grafana/latest/alerting/fundamentals/notifications/",
+    "engine": "brave",
+    "expected_match": true
+  },
+  "B10-D03": {
+    "case": 10,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://dev.to/schiff_heimlich/the-nginx-proxypass-trailing-slash-detail-that-caught-me-5d29",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B08-D03": {
+    "case": 8,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://oneuptime.com/blog/post/2026-02-20-grafana-alerting-setup/view",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B10-D04": {
+    "case": 10,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://stevehodgkiss.net/pdf-uploads/nginx-proxy-pass-trailing-slash.pdf",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B12-D03": {
+    "case": 12,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://stackoverflow.com/questions/69097765/how-to-stop-or-cancel-a-kotlin-coroutine-stop-currently-running-code-block-inst",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B20-D04": {
+    "case": 20,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://www.reddit.com/r/Nestjs_framework/comments/1tsx23t/how_do_you_handle_duplicate_json_keys_in_nodejs",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B01-D04": {
+    "case": 1,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://www.golinuxcloud.com/podman-start-stop-restart-container",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B12-D04": {
+    "case": 12,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://sam-cooper.medium.com/kotlin-coroutine-cancellation-explained-6a545c8da252",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B06-D03": {
+    "case": 6,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://go.dev/src/net/http/transport.go",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B18-D03": {
+    "case": 18,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://docs.cradlepoint.com/r/Containers-Advanced-Configuration-Guide/Health-Check",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B08-D04": {
+    "case": 8,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://community.grafana.com/t/how-does-alert-routing-work-between-alert-rules-and-notification-policies-in-grafana-alerting/161541",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B06-D04": {
+    "case": 6,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://github.com/golang/go/issues/79040",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B10-D05": {
+    "case": 10,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://posthog.com/docs/advanced/proxy/nextjs.md",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B06-D05": {
+    "case": 6,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://pkg.go.dev/github.com/aws/aws-sdk-go@v1.54.16/aws/request",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B09-D04": {
+    "case": 9,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://stackoverflow.com/questions/74475408/reclaim-disk-space-after-delete-of-millions-of-rows-from-mysql-table",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B18-D04": {
+    "case": 18,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://github.com/moby/moby/blob/master/daemon/health.go",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B12-D05": {
+    "case": 12,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://betulnecanli.medium.com/cancelling-coroutines-e15ebfe28248",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B19-D03": {
+    "case": 19,
+    "arm": "gateway",
+    "original_rank": 1,
+    "url": "https://v1-35.docs.kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B20-D05": {
+    "case": 20,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://aident.ai/blog/python-json-duplicate-keys-strict-test",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B02-D04": {
+    "case": 2,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://www.infotoday.com/searcher/may01/liddy.htm",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B19-D04": {
+    "case": 19,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://v1-36.docs.kubernetes.io/docs/concepts/workloads/pods/probes/",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B17-D04": {
+    "case": 17,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://www.sumologic.com/help/docs/metrics/introduction/metric-histograms/",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B02-D05": {
+    "case": 2,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://stackoverflow.com/questions/55604273/for-web-search-rankings-how-is-rank-merging-usually-done",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B07-D05": {
+    "case": 7,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://medium.com/@AlexanderObregon/safe-typescript-type-casting-without-surprises-a1afe26a36a1",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B08-D05": {
+    "case": 8,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://oneuptime.com/blog/post/2026-01-30-grafana-alert-contact-points/view",
+    "engine": "brave",
+    "expected_match": false
+  },
+  "B09-D05": {
+    "case": 9,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://learn.microsoft.com/en-us/troubleshoot/sql/database-engine/database-file-operations/space-table-uses-not-released",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B18-D05": {
+    "case": 18,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://www.manning.com/preview/learn-docker-in-a-month-of-lunches-second-edition/chapter-8",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B05-D05": {
+    "case": 5,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://docs.n8n.io/deploy/host-n8n/configure-n8n/security/rotate-encryption-keys",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B01-D05": {
+    "case": 1,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://www.cloudbees.com/blog/ensuring-containers-are-always-running-with-dockers-restart-policy",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B13-D05": {
+    "case": 13,
+    "arm": "gateway",
+    "original_rank": 2,
+    "url": "https://www.gitfox.app/support/committing-repository-workflow/worktrees",
+    "engine": "exa",
+    "expected_match": false
+  },
+  "B11-D05": {
+    "case": 11,
+    "arm": "gateway",
+    "original_rank": 4,
+    "url": "https://www.bytebase.com/blog/write-ahead-logging",
+    "engine": "tavily",
+    "expected_match": false
+  },
+  "B19-D05": {
+    "case": 19,
+    "arm": "gateway",
+    "original_rank": 5,
+    "url": "https://www.redhat.com/en/blog/liveness-and-readiness-probes",
+    "engine": "parallel",
+    "expected_match": false
+  },
+  "B17-D05": {
+    "case": 17,
+    "arm": "gateway",
+    "original_rank": 3,
+    "url": "https://materialize.com/docs/transform-data/patterns/percentiles/",
+    "engine": "brave",
+    "expected_match": false
+  }
+}
