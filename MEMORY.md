@@ -1,5 +1,11 @@
 # MEMORY — searxng-gateway (checkout: /home/angelo/homelab-gateway)
 
+## 2026-11-24 — Gateway TOOLS.md snapshots evicted
+
+→ journal: read 20261125-014310-617
+
+---
+
 ## 2026-11-23 — Gateway v3.2.22 snippet label, pilot evidence, and release lessons
 
 → journal: search "Gateway v3.2.22 snippet label"

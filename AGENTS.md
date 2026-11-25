@@ -4,8 +4,8 @@
 
 Proxy HTTP davanti a SearXNG: stage SearXNG e primo provider premium (Brave, Exa, Parallel, Serper, Tavily) in parallelo, poi top-up premium seriale finché i risultati sono insufficienti. Circuit breaker per engine bloccati, metriche Prometheus, cache.
 
-- **Linguaggio**: Go 1.25.0
-- **Build**: automatica via GitHub Actions su push main e tag `v*` — `.github/workflows/build.yml` (`docker/build-push-action@v6`, platforms `linux/amd64,linux/arm64`, cache gha, push su GHCR). NIENTE build locale multi-arch: il builder buildx `multiarch` è stato rimosso dal homelab (2026-08-04).
+- **Linguaggio**: Go
+- **Build**: automatica via GitHub Actions su push main e tag `v*` — `.github/workflows/build.yml`, build e push multi-platform su GHCR. NIENTE build locale multi-arch.
 - **Test**: `go test ./...`
 - **Lint**: `/home/angelo/go/bin/golangci-lint run` — v2.1.6, the same version CI pins via `golangci-lint-action@v7.0.1` (`.github/workflows/build.yml:37-40`). The binary is NOT on PATH, so the bare command fails with `command not found`; there is no repo-level `.golangci.yml`, so CI and a local run use the same default linter set (`errcheck`, `govet`, `ineffassign`, `staticcheck`, `unused`).
 - **Semantic tooling**: Serena/gopls symbol lookup is unavailable in this repo — use direct file edits (`read`/`grep`/`edit`) and never abort a task because gopls is unavailable.
@@ -40,6 +40,6 @@ cmd/gateway/main.go → internal/proxy/proxy.go (bounded SearXNG stage and the g
 - Deploy SOLO via Portainer API (skill portainer-redeploy), MAI docker compose/run/rm.
 - Stack 31 (id: ai) è il target di deploy ROUTINE di questo repo: un aggiornamento del gateway si deploya come qualsiasi altro stack, SENZA conferma extra.
 - Qualsiasi altro stack → fermati e chiedi ad Angelo di usare homelab-config.
-- Routine: improvements ship as releases without waiting for a go; stack 31 deploy is routine (owner standing rule, 2026-10-11).
+- Routine: improvements ship as releases without waiting for a go; stack 31 deploy is routine.
 
 L'immagine si deploya da homelab-config (`stacks/31-ai.yml`): aggiornare il tag e le env var, redeploy stack 31 via Portainer.
