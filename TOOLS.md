@@ -1,3 +1,10 @@
+---
+tier: 1
+description: Machine-environment facts of the gateway repo that do not change with a deploy. Injected every session.
+size_limit: 180 words (wc -w)
+last_curated: 2026-11-24
+---
+
 # TOOLS — homelab-gateway
 Project operations and metric inventory pointers; verify deploy-varying values live.
 

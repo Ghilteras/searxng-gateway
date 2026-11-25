@@ -1,3 +1,10 @@
+---
+tier: 2
+description: Index.
+size_limit: 330 words
+last_curated: 2026-11-24
+---
+
 # MEMORY — searxng-gateway (checkout: /home/angelo/homelab-gateway)
 
 ## 2026-11-24 — Gateway TOOLS.md snapshots evicted

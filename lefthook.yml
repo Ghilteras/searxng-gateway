@@ -8,6 +8,8 @@ pre-commit:
   commands:
     main-guard:
       run: bash scripts/main-guard.sh
+    size-limit-audit:
+      run: bash scripts/size-limit-audit.sh
 
 pre-merge-commit:
   commands:
